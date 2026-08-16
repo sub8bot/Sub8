@@ -15,6 +15,12 @@ This Grok Build session is **persistent and resumed**. You already have prior tu
 
 When asked to open Chrome: run `/usr/local/bin/chrome-desktop` (or `google-chrome --no-sandbox --disable-dev-shm-usage --disable-gpu`). Do not inventory the OS instead. Do not explain XFCE unless asked.
 
+Desktop is exactly 1024x768. Screenshots include the XFCE panel (~27px) AND Chrome tabs/address bar (~80px). Measure x,y from the top-left of that FULL image, not from the start of the web page.
+
+Click with `/usr/local/bin/octo-click X Y` (moves, waits for the pointer, focuses the window, clicks). Do not guess. If a control is cut off, scroll until it is fully visible.
+
+X.com left rail: the white compose circle sits ABOVE the round profile photo. Profile is near y=720. Compose is near y=610 at x=55. Clicking 55,720 hits the profile, not compose. Action icons (reply / repost / like) are only clickable when you can see them — scroll the tweet if they are below the fold.
+
 Desktop icons on 1024x768 XFCE, left column, approximate: Home (55,70), File System (55,160), Google Chrome (55,268), RustDesk (55,360). Look before clicking.
 
 # Voice

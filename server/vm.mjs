@@ -321,7 +321,23 @@ async function ensureApps(name, onLog) {
   if (!inst.ok) throw new Error(`app install failed: ${inst.out.slice(-800)}`);
   const auth = await pushHostGrokAuth(name);
   if (auth.ok) onLog("Grok session copied onto the computer.");
+  await installOctoClick(name);
   await installAgentsMd(name, "");
+}
+
+export async function installOctoClick(container) {
+  const host = path.resolve(fileRoot, "vm", "octo-click.sh");
+  const cp = await docker(["cp", host, `${container}:/tmp/octo-click.sh`]);
+  if (!cp.ok) return;
+  await docker([
+    "exec",
+    "-u",
+    "root",
+    container,
+    "bash",
+    "-lc",
+    "install -m 755 /tmp/octo-click.sh /usr/local/bin/octo-click",
+  ]);
 }
 
 export async function installAgentsMd(container, extra = "") {
@@ -487,6 +503,29 @@ function pngSize(buf) {
   return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
 }
 
+async function annotateShot(hostPath, x, y) {
+  const script = path.resolve(appRoot, "scripts", "annotate-shot.py");
+  const tmp = `${hostPath}.ann.png`;
+  const r = await new Promise((resolve) => {
+    const child = spawn("python3", [script, hostPath, tmp, String(Math.round(x)), String(Math.round(y))], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    child.stdout?.on("data", (d) => (out += d));
+    child.stderr?.on("data", (d) => (out += d));
+    child.on("error", (err) => resolve({ ok: false, out: String(err) }));
+    child.on("close", (code) => resolve({ ok: code === 0, out }));
+  });
+  if (!r.ok) return null;
+  try {
+    const buf = await fs.readFile(tmp);
+    await fs.rename(tmp, hostPath);
+    return buf;
+  } catch {
+    return null;
+  }
+}
+
 export async function screenshot(bot) {
   const name = requireVm(bot, "screenshot");
   return trace.span(bot, "outside", "screenshot", {}, async () => {
@@ -505,8 +544,11 @@ export async function screenshot(bot) {
     await fs.mkdir(path.dirname(hostPath), { recursive: true });
     const cp = await docker(["cp", `${name}:${dest}`, hostPath]);
     if (!cp.ok) throw new Error(`copy screenshot failed: ${cp.out}`);
-    const buf = await fs.readFile(hostPath);
-    return { path: hostPath, ...pngSize(buf), bytes: buf.length, buf };
+    const raw = await fs.readFile(hostPath);
+    const loc = await mouseLocation(bot).catch(() => ({ x: -1, y: -1 }));
+    const annotated = await annotateShot(hostPath, loc.x, loc.y);
+    const buf = annotated || raw;
+    return { path: hostPath, ...pngSize(buf), bytes: buf.length, buf, pointer: loc };
   });
 }
 
