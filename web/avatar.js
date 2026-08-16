@@ -164,7 +164,7 @@ function createView(item) {
     bot,
     size: item.size || 36,
     color: item.color,
-    framing: item.framing || "face",
+    framing: item.framing || "icon",
     body,
     moodKey: "",
   };
@@ -176,8 +176,14 @@ function frameCamera(camera, framing, body) {
     camera.lookAt(0, -0.08, 0);
     return;
   }
-  camera.position.set(0.08, 0.05, 3.32);
-  camera.lookAt(0, 0.02, 0);
+  if (framing === "face") {
+    camera.position.set(0.08, 0.05, 3.32);
+    camera.lookAt(0, 0.02, 0);
+    return;
+  }
+  // icon: head reads clearly, tentacles still show in the circle
+  camera.position.set(0.05, 0.38, 4.28);
+  camera.lookAt(0, -0.28, 0);
 }
 
 function applyView(view, item) {
@@ -186,7 +192,7 @@ function applyView(view, item) {
     view.size = size;
     sizeCanvas(view.canvas, size);
   }
-  const framing = item.framing || "face";
+  const framing = item.framing || "icon";
   const body = "smooth";
   if (framing !== view.framing || body !== view.body) {
     view.framing = framing;

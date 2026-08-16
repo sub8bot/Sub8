@@ -253,7 +253,7 @@ const OCTO = {
 };
 
 /**
- * Procedural Grok Bot — white sphere, two black stadium eyes.
+ * Procedural OctoBot — Smooth octopus body, emoji faces, looping motions.
  * Drop into any Three.js scene: `scene.add(new GrokBot())`.
  */
 export class GrokBot extends THREE.Group {

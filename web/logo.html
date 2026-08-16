@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>OctoBot logo</title>
+    <style>
+      html, body { margin: 0; background: transparent; }
+      canvas { display: block; }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/vendor/three/build/three.module.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <script type="module">
+      import * as THREE from "three";
+      import { GrokBot } from "./grok-bot.js";
+
+      const params = new URLSearchParams(location.search);
+      const size = Number(params.get("size") || 2048);
+      const color = params.get("color") || "#ffe566";
+      const face = params.get("face") || "happy";
+
+      const renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        alpha: true,
+        preserveDrawingBuffer: true,
+        premultipliedAlpha: false,
+      });
+      renderer.setClearColor(0x000000, 0);
+      renderer.setPixelRatio(1);
+      renderer.setSize(size, size);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      document.body.appendChild(renderer.domElement);
+
+      const scene = new THREE.Scene();
+      scene.add(new THREE.HemisphereLight(0xffffff, 0xffe8d2, 1.05));
+      const key = new THREE.DirectionalLight(0xffffff, 0.85);
+      key.position.set(2.2, 2.6, 3.4);
+      scene.add(key);
+      const fill = new THREE.DirectionalLight(0xfff4ea, 0.42);
+      fill.position.set(-2.8, 0.45, 1.2);
+      scene.add(fill);
+      const rim = new THREE.DirectionalLight(0xffffff, 0.28);
+      rim.position.set(0.2, 1.1, -2.6);
+      scene.add(rim);
+
+      const hex = Number.parseInt(color.replace("#", ""), 16);
+      const bot = new GrokBot({ radius: 1, color: hex, eyeColor: 0x111111, body: "smooth" });
+      bot.setExpression(face);
+      bot.playAnimation("none");
+      scene.add(bot);
+
+      const camera = new THREE.PerspectiveCamera(28, 1, 0.1, 20);
+      camera.position.set(0.03, 0.22, 7.15);
+      camera.lookAt(0, -0.16, 0);
+
+      renderer.render(scene, camera);
+      window.__logoReady = true;
+    </script>
+  </body>
+</html>

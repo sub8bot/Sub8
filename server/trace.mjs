@@ -1,7 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { dataDir } from "./paths.mjs";
 
-const dir = path.resolve(process.cwd(), "data", "traces");
+const dir = path.join(dataDir, "traces");
 
 function fileFor(botId) {
   return path.join(dir, `${botId}.jsonl`);

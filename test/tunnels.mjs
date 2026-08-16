@@ -22,7 +22,7 @@ function test(name, fn) {
 async function pickBot() {
   const bots = await store.loadBots();
   const live = bots.find((b) => b.vm?.status === "running" && b.vm?.container);
-  if (!live) throw new Error("No running bot computer. Start Local Bot first.");
+  if (!live) throw new Error("No running bot computer. Start OctoBot first.");
   return live;
 }
 

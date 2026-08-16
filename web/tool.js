@@ -39,8 +39,8 @@ function mount() {
     <div class="page">
       <header class="top">
         <div>
-          <h1>Grok Bot catalog</h1>
-          <p class="lede">Faces and motions. Click a card to preview.</p>
+          <h1>OctoBot catalog</h1>
+          <p class="lede">Cute octopus faces and motions. Click a card to preview.</p>
         </div>
         <div class="count">${faces.length} faces · ${motions.length} motions</div>
       </header>

@@ -29,7 +29,7 @@ while IFS= read -r pid cmd; do
   esac
 done < <(ps -ax -o pid=,command=)
 if [ "$has_main" = 1 ] && [ "$has_window" = 1 ]; then
-  echo "Local Bot window already running — focusing"
+  echo "OctoBot window already running — focusing"
   # Second instance exits after requestSingleInstanceLock focuses the existing window.
   npx electron . >/dev/null 2>&1 || true
   if [ -n "$SERVER" ]; then
@@ -38,7 +38,7 @@ if [ "$has_main" = 1 ] && [ "$has_window" = 1 ]; then
   exit 0
 fi
 if [ "$has_main" = 1 ]; then
-  echo "Local Bot Electron has no window — relaunching"
+  echo "OctoBot Electron has no window — relaunching"
   while IFS= read -r pid cmd; do
     case "$cmd" in
       "$APP_ELECTRON"*) kill "$pid" 2>/dev/null || true ;;

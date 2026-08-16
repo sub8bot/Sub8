@@ -6,14 +6,15 @@ import * as store from "./store.mjs";
 import * as vm from "./vm.mjs";
 import * as routines from "./routines.mjs";
 import { runTurn, publicBot, pingHarness, webSearch, orchestratorReply } from "./agent.mjs";
+import { appRoot, dataDir } from "./paths.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(__dirname, "..");
+const root = appRoot;
 const PORT = Number(process.env.PORT || 8787);
 
 const app = express();
 app.use(express.json({ limit: "8mb" }));
-app.use("/screens", express.static(path.join(root, "data", "screens")));
+app.use("/screens", express.static(path.join(dataDir, "screens")));
 app.use("/vendor/three", express.static(path.join(root, "node_modules", "three")));
 
 const busyIds = new Set();
@@ -231,7 +232,7 @@ app.get("/api/bots/:id/stream-health", async (req, res) => {
   if (!bot) return res.status(404).json({ error: "not found" });
   try {
     const health = await vm.streamHealth(bot);
-    const shotPath = path.join(root, "data", "screens", `${bot.id}.png`);
+    const shotPath = path.join(dataDir, "screens", `${bot.id}.png`);
     let shot = null;
     try {
       const buf = await fs.readFile(shotPath);
@@ -248,7 +249,7 @@ app.get("/api/bots/:id/stream-health", async (req, res) => {
 });
 
 app.get("/api/bots/:id/screen", async (req, res) => {
-  const file = path.join(root, "data", "screens", `${req.params.id}.png`);
+  const file = path.join(dataDir, "screens", `${req.params.id}.png`);
   try {
     res.type("png").send(await fs.readFile(file));
   } catch {
@@ -586,7 +587,7 @@ app.get("/", (_req, res) => {
 });
 
 app.listen(PORT, "127.0.0.1", async () => {
-  console.log(`Local Bot http://127.0.0.1:${PORT}`);
+  console.log(`OctoBot http://127.0.0.1:${PORT}`);
   try {
     const bots = await store.loadBots();
     const keep = bots.map((b) => b.vm?.container || vm.containerName(b.id));

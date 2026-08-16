@@ -1,8 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { dataDir as defaultDataDir } from "./paths.mjs";
 
-export const dataDir = path.resolve(process.cwd(), "data");
+export const dataDir = defaultDataDir;
 export const botsPath = path.join(dataDir, "bots.json");
 const settingsPath = path.join(dataDir, "settings.json");
 export const conversationsDir = path.join(dataDir, "conversations");

@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { requireVm, assertVmShell } from "./isolation.mjs";
 import * as trace from "./trace.mjs";
+import { appRoot, fileRoot, dataDir } from "./paths.mjs";
 
 const DOCKER_HOST = process.env.DOCKER_HOST || `unix://${process.env.HOME}/.colima/default/docker.sock`;
 const IMAGE = process.env.LOCALBOT_IMAGE || "linuxserver/webtop:ubuntu-xfce";
@@ -312,7 +313,7 @@ async function ensureApps(name, onLog) {
   ]);
   if (!check.ok) onLog("Installing Chrome, RustDesk, and Grok Build on the computer…");
   else onLog("Updating Grok Build CLI on the computer…");
-  const scriptHost = path.resolve(process.cwd(), "vm", "setup-apps.sh");
+  const scriptHost = path.resolve(fileRoot, "vm", "setup-apps.sh");
   const cp = await docker(["cp", scriptHost, `${name}:/tmp/setup-apps.sh`]);
   if (!cp.ok) throw new Error(`copy setup-apps failed: ${cp.out}`);
   const inst = await docker(["exec", "-u", "root", name, "bash", "/tmp/setup-apps.sh"]);
@@ -324,7 +325,7 @@ async function ensureApps(name, onLog) {
 }
 
 export async function installAgentsMd(container, extra = "") {
-  const host = path.resolve(process.cwd(), "prompts", "grok-build-vm.txt");
+  const host = path.resolve(appRoot, "prompts", "grok-build-vm.txt");
   const base = await fs.readFile(host, "utf8").catch(() => "");
   const body = `${base}\n${extra}\n`;
   const b64 = Buffer.from(body, "utf8").toString("base64");
@@ -500,7 +501,7 @@ export async function screenshot(bot) {
       `${displayEnv(bot)}; xrandr --size 1024x768 >/dev/null 2>&1 || true; mkdir -p /tmp; scrot -o ${dest} || import -window root ${dest}`,
     ]);
     if (!r.ok) throw new Error(`screenshot failed: ${r.out.slice(-400)}`);
-    const hostPath = path.resolve(process.cwd(), "data", "screens", `${bot.id}.png`);
+    const hostPath = path.resolve(dataDir, "screens", `${bot.id}.png`);
     await fs.mkdir(path.dirname(hostPath), { recursive: true });
     const cp = await docker(["cp", `${name}:${dest}`, hostPath]);
     if (!cp.ok) throw new Error(`copy screenshot failed: ${cp.out}`);

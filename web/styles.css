@@ -143,7 +143,7 @@ body {
   gap: 12px;
 }
 .rail .plus, .rail .avatar, .avatar {
-  width: 38px; height: 38px; border-radius: 50%;
+  width: 42px; height: 42px; border-radius: 50%;
   border: 0; cursor: pointer; display: grid; place-items: center;
   background: #ececef; color: #111; font-size: 20px;
   padding: 0; overflow: hidden;
@@ -162,7 +162,7 @@ body {
 .rail .avatar.busy {
   box-shadow: 0 0 0 2px #fff, 0 0 0 4px color-mix(in srgb, var(--accent) 70%, #fff);
 }
-.avatar.sm { width: 28px; height: 28px; }
+.avatar.sm { width: 32px; height: 32px; }
 .avatar-canvas { display: block; width: 100%; height: 100%; }
 .avatar-3d { display: grid; place-items: center; width: 100%; height: 100%; }
 .rail-bot { position: relative; }
@@ -200,7 +200,7 @@ body {
   padding-bottom: 8px;
 }
 .avatar-preview {
-  width: 148px; height: 148px; margin: 8px auto 10px;
+  width: 168px; height: 168px; margin: 8px auto 10px;
   border-radius: 36px;
   background:
     radial-gradient(120% 90% at 50% 20%, #fff 0%, #eceef2 62%, #dfe2e8 100%);
@@ -211,7 +211,7 @@ body {
   box-shadow: 0 10px 28px rgba(17,17,17,.08);
 }
 .avatar-preview.sm {
-  width: 108px; height: 108px; border-radius: 28px;
+  width: 128px; height: 128px; border-radius: 28px;
 }
 .avatar-hint { text-align: center; margin: 0 8px 14px; line-height: 1.4; }
 .chips {
@@ -703,11 +703,6 @@ body {
   border-top: 0 !important;
 }
 .avatar-studio { margin-top: 8px; }
-.avatar-preview {
-  width: 120px;
-  height: 120px;
-  border-radius: 28px;
-}
 .muted { color: var(--muted); font-size: 13px; }
 #modal-host {
   position: absolute;

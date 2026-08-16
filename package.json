@@ -1,15 +1,24 @@
 {
-  "name": "local-bot",
-  "productName": "Local Bot",
+  "name": "octobot",
+  "productName": "OctoBot",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
+  "author": "Daniel Farina",
+  "description": "OctoBot — local desktop assistants that live on their own Linux computers.",
   "scripts": {
     "start": "node server/index.mjs",
     "app": "zsh start.sh",
     "electron": "electron .",
-    "test": "node test/tunnels.mjs"
+    "test": "node test/tunnels.mjs",
+    "icons": "python3 scripts/make-icons.py && iconutil -c icns build/icon.iconset -o build/icon.icns",
+    "logo": "node scripts/render-logo.mjs",
+    "dist": "electron-builder --mac --win --linux",
+    "dist:mac": "electron-builder --mac dmg zip --arm64 --x64",
+    "dist:win": "electron-builder --win zip --x64",
+    "dist:linux": "electron-builder --linux AppImage tar.gz --x64",
+    "release": "bash scripts/release.sh"
   },
   "dependencies": {
     "express": "^5.1.0",
@@ -19,6 +28,97 @@
     "ws": "^8.18.3"
   },
   "devDependencies": {
-    "electron": "^37.2.6"
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12",
+    "puppeteer-core": "^25.7.0"
+  },
+  "build": {
+    "appId": "app.octobot.desktop",
+    "productName": "OctoBot",
+    "copyright": "Copyright © 2026 Daniel Farina",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "server/**/*",
+      "web/**/*",
+      "prompts/**/*",
+      "vm/**/*",
+      "build/icon.png",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "vm/**/*",
+      "prompts/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "build/icon.png",
+        "to": "build/icon.png"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "identity": "Developer ID Application: Daniel Farina ([redacted])",
+      "notarize": false
+    },
+    "dmg": {
+      "title": "OctoBot",
+      "icon": "build/icon.icns",
+      "sign": true
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Utility",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "tar.gz",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    }
   }
 }

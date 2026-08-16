@@ -1,6 +1,6 @@
-# Grok Bot avatars
+# OctoBot avatars
 
-The app avatar is a live Three.js octopus (Smooth body) with emoji faces and looping motions. Preview every face and motion at `/tool.html`. Use this doc to drop the same thing into the main app.
+The OctoBot avatar is a live Three.js octopus (Smooth body) with emoji faces and looping motions. Preview every face and motion at `/tool.html`. Use this doc to drop the same thing into the main app.
 
 ## Files
 
@@ -32,7 +32,7 @@ syncAvatars([
     slot: "rail",             // unique per instance of the same bot
     size: 38,                 // CSS pixels
     color: bot.color,         // body hex
-    framing: "face",          // "face" = tight crop, "body" = full octopus
+    framing: "icon",          // "icon" = head + tentacles, "body" = full octopus, "face" = tight crop
     mood: inferMood(bot),     // or defaultAvatar({ expression, animation })
   },
 ]);
@@ -42,11 +42,11 @@ Call `syncAvatars` again whenever bots, messages, or settings change. Views are 
 
 The main app already does this in `refreshAvatars()` for:
 
-- rail icons (`data-avatar-slot="rail"`, size 38)
-- title (`title`, 28)
-- picker (`pick`, 32)
-- settings studio (`editor`, 148, `data-preview="1"`)
-- create preview (`create`, 108, preview)
+- rail icons (`data-avatar-slot="rail"`, size 42, `framing: "icon"`)
+- title (`title`, 32, icon)
+- picker (`pick`, 36, icon)
+- settings studio (`editor`, 168, `framing: "body"`, `data-preview="1"`)
+- create preview (`create`, 128, body, preview)
 
 Preview mode skips mood inference and shows the saved face + motion.
 
@@ -139,7 +139,7 @@ Same import map as `index.html`, then:
 </script>
 ```
 
-`framing: "body"` shows the full octopus. `framing: "face"` (app default) is a tight crop for small icons.
+`framing: "body"` shows the full octopus (settings and create). `framing: "icon"` is the app default for rail, title, and picker — head plus tentacles so it still reads as an octopus in a circle. `framing: "face"` is a tight crop if you only want the face.
 
 ## Add a face or motion
 

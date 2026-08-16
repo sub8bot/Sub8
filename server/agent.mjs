@@ -4,6 +4,7 @@ import OpenAI from "openai";
 import { spawn } from "node:child_process";
 import * as vm from "./vm.mjs";
 import * as routines from "./routines.mjs";
+import { appRoot } from "./paths.mjs";
 
 const COMPUTER_ACTIONS = [
   "screenshot",
@@ -220,14 +221,13 @@ export async function pingHarness(settings) {
 }
 
 async function loadSystemPrompt(bot) {
-  const root = process.cwd();
-  const adapter = await fs.readFile(path.join(root, "prompts", "local-adapter.txt"), "utf8");
-  const core = await fs.readFile(path.join(root, "prompts", "grok-bot-system.txt"), "utf8");
+  const adapter = await fs.readFile(path.join(appRoot, "prompts", "local-adapter.txt"), "utf8");
+  const core = await fs.readFile(path.join(appRoot, "prompts", "grok-bot-system.txt"), "utf8");
   const extra = bot.instructions?.trim() ? `\n\n## Standing instructions for this Bot\n${bot.instructions.trim()}\n` : "";
   const ident = `\nYou are the Bot named "${bot.name}". ${bot.description || ""}\n`;
   return `${adapter}\n${ident}${extra}${routines.promptBlock(bot)}\n${core}
 
-## Local Bot override (this wins)
+## OctoBot override (this wins)
 You already know the machine. Do not spend the first turns on \`pwd\`, \`whoami\`, \`ls /home\`, or hunting /workspace.
 After send_message, if the user asked for something on the desktop (research, Chrome, files they can see, clicks): call \`computer\` screenshot next, then click like a human.
 Use \`shell\` only for a concrete command you already know belongs on this computer (write a file under /config, run a known binary). Never explore the filesystem to "discover" where you are.
@@ -714,7 +714,7 @@ function runGrokBuild(harness, userText, signal, bot) {
     const ident = `You are the Bot named "${bot.name}". ${bot.description || ""}`.trim();
     const extra = bot.instructions?.trim() ? `\nStanding instructions:\n${bot.instructions.trim()}` : "";
     await vm.installAgentsMd(box, `${ident}${extra}`);
-    const rules = `${await fs.readFile(path.join(process.cwd(), "prompts", "grok-build-vm.txt"), "utf8")}\n${ident}${extra}\n`;
+    const rules = `${await fs.readFile(path.join(appRoot, "prompts", "grok-build-vm.txt"), "utf8")}\n${ident}${extra}\n`;
     const exists = await grokSessionOnDisk(box, sessionId);
     const recap = recapForGrok(bot);
     const prompt = exists

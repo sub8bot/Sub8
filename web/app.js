@@ -83,7 +83,7 @@ function attachLiveFrame(bot) {
     if (!wrap.dataset.empty) {
       wrap.dataset.empty = "1";
       wrap.innerHTML = `<div style="display:grid;place-items:center;height:100%;color:#6b7280;font-size:13px;padding:16px;text-align:center">${
-        bot?.vm?.status === "starting" ? "Starting Grok Bot's computer…" : bot?.vm?.error || "Computer not assigned yet"
+        bot?.vm?.status === "starting" ? "Starting OctoBot's computer…" : bot?.vm?.error || "Computer not assigned yet"
       }</div>`;
       liveFrameKey = null;
     }
@@ -301,13 +301,17 @@ function refreshAvatars() {
       id === "create"
         ? defaultAvatar({ expression: state.createFace, animation: "idle" })
         : inferMood(bot, { preview });
+    const slot = el.dataset.avatarSlot || "default";
+    const framing =
+      el.dataset.avatarFraming || (slot === "editor" || slot === "create" ? "body" : "icon");
     return [
       {
         el,
         id,
-        slot: el.dataset.avatarSlot || "default",
+        slot,
         size: Number(el.dataset.avatarSize || 36),
         color: bot?.color,
+        framing,
         mood,
       },
     ];
@@ -452,10 +456,10 @@ function paintTitle(bot) {
     <div class="botname">${
       bot
         ? `<button class="botname-btn" data-act="bot-settings" title="Bot settings">
-            <span class="avatar sm" data-avatar="${bot.id}" data-avatar-slot="title" data-avatar-size="28"></span>
+            <span class="avatar sm" data-avatar="${bot.id}" data-avatar-slot="title" data-avatar-size="32" data-avatar-framing="icon"></span>
             <span class="bot-label">${escapeHtml(bot.name)}</span>
           </button>`
-        : "Local Bot"
+        : "OctoBot"
     }
       <span class="muted harness-chip">${escapeHtml(provider)} · ${escapeHtml(model)}</span>
     </div>
@@ -495,7 +499,7 @@ function paintRail(bot) {
       node.dataset.id = b.id;
       node.innerHTML = `
         <button class="avatar" data-act="select" data-id="${b.id}">
-          <span class="avatar-3d" data-avatar="${b.id}" data-avatar-slot="rail" data-avatar-size="38"></span>
+          <span class="avatar-3d" data-avatar="${b.id}" data-avatar-slot="rail" data-avatar-size="42" data-avatar-framing="icon"></span>
         </button>
         <button class="rail-edit" data-act="edit-bot" data-id="${b.id}" title="Edit">✎</button>`;
       host.appendChild(node);
@@ -619,7 +623,7 @@ function pickerHtml() {
         (b) =>
           `<div class="pick ${b.id === state.selected ? "on" : ""}">
             <button class="pick-main" data-act="select" data-id="${b.id}">
-              <span class="avatar sm" data-avatar="${b.id}" data-avatar-slot="pick" data-avatar-size="32"></span>
+              <span class="avatar sm" data-avatar="${b.id}" data-avatar-slot="pick" data-avatar-size="36" data-avatar-framing="icon"></span>
               ${escapeHtml(b.name)}
             </button>
             <button class="pill" data-act="edit-bot" data-id="${b.id}">Edit</button>
@@ -703,7 +707,7 @@ function paintBotEditor(bot) {
   const avatar = defaultAvatar(bot.avatar);
   host.innerHTML = `
     <div class="avatar-studio">
-      <div class="avatar-preview" data-avatar="${bot.id}" data-avatar-slot="editor" data-avatar-size="148" data-preview="1"></div>
+      <div class="avatar-preview" data-avatar="${bot.id}" data-avatar-slot="editor" data-avatar-size="168" data-avatar-framing="body" data-preview="1"></div>
     </div>
     <label class="muted">Name</label>
     <input class="field" id="bn" value="${escapeHtml(bot.name || "")}" placeholder="Bot name" />
@@ -905,7 +909,7 @@ function createBotHtml() {
         <button class="close" data-act="close-modal">×</button>
         <h2>Create new Bot</h2>
         <div class="botset">
-          <div class="avatar-preview sm" data-avatar="create" data-avatar-slot="create" data-avatar-size="108" data-preview="1"></div>
+          <div class="avatar-preview sm" data-avatar="create" data-avatar-slot="create" data-avatar-size="128" data-avatar-framing="body" data-preview="1"></div>
           <label class="muted">Face</label>
           <div class="chips">
             ${faceList()
@@ -931,7 +935,7 @@ function harnessHtml(h) {
     <p class="muted" style="margin-top:-8px">Which model stack this app talks to.</p>
     <div class="block">
       <div class="card">
-        <div class="row"><div><div class="lbl">Harness</div><div class="sub">Both harnesses drive your computer the Grok Bot way: screenshot, then mouse/keyboard. Grok Build also keeps a resumed grok session on that desktop. Never on this Mac.</div></div>
+        <div class="row"><div><div class="lbl">Harness</div><div class="sub">Both harnesses drive your computer the OctoBot way: screenshot, then mouse/keyboard. Grok Build also keeps a resumed grok session on that desktop. Never on this Mac.</div></div>
           <select class="pill" data-harness="provider">
             <option value="spacexai" ${h.provider === "spacexai" || !h.provider ? "selected" : ""}>SpaceXAI (api.x.ai)</option>
             <option value="grok-build" ${h.provider === "grok-build" ? "selected" : ""}>Grok Build (local CLI)</option>
@@ -989,7 +993,7 @@ function settingsHtml() {
             : sec === "general"
             ? `<h2>General</h2>
           <div class="block"><h3>Account</h3>
-            <div class="card row"><div class="acct"><div class="me"></div><div><div class="who">Local Bot</div><div class="mail">signed in on this Mac</div></div></div></div>
+            <div class="card row"><div class="acct"><div class="me"></div><div><div class="who">OctoBot</div><div class="mail">signed in on this Mac</div></div></div></div>
           </div>
           <div class="block"><h3>Appearance</h3>
             <div class="card row"><div><div class="lbl">Theme</div></div>
@@ -1016,7 +1020,7 @@ function settingsHtml() {
                   <option value="never" ${s.localExecPermission === "never" ? "selected" : ""}>Never allow</option>
                 </select>
               </div>
-              <div class="row"><div><div class="lbl">Auto-review</div><div class="sub">Grok Bot checks each action before it runs and asks you first when needed.</div></div>
+              <div class="row"><div><div class="lbl">Auto-review</div><div class="sub">OctoBot checks each action before it runs and asks you first when needed.</div></div>
                 <button class="toggle ${s.autoReviewEnabled ? "on" : ""}" data-tog="autoReviewEnabled"><i></i></button>
               </div>
             </div>
@@ -1033,16 +1037,16 @@ function settingsHtml() {
                   <option value="dogfood" ${s.updateTrack === "dogfood" ? "selected" : ""}>dogfood</option>
                 </select>
               </div>
-              <div class="row"><div><div class="lbl">Version 0.1.0</div><div class="sub">Local Bot · you're on this machine</div></div>
+              <div class="row"><div><div class="lbl">Version 0.1.0</div><div class="sub">OctoBot · you're on this machine</div></div>
                 <button class="pill">Check for Updates</button></div>
             </div>
           </div>
-          <div class="block"><h3>Grok Bot's Computer</h3>
+          <div class="block"><h3>OctoBot's Computer</h3>
             <div class="card">
-              <div class="lbl">Update Grok Bot's Computer</div>
+              <div class="lbl">Update OctoBot's Computer</div>
               <div class="sub">Updates the computer your assistants share. Your files and logins stay.</div>
               <div class="banner">Your computer is a local Linux VM on this Mac</div>
-              <div class="row"><div><div class="lbl">Reset Grok Bot's Computer</div><div class="sub">Start fresh if the computer gets stuck.</div></div>
+              <div class="row"><div><div class="lbl">Reset OctoBot's Computer</div><div class="sub">Start fresh if the computer gets stuck.</div></div>
                 <button class="danger" data-act="reset-vm">Reset</button></div>
             </div>
           </div>`
