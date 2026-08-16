@@ -1,0 +1,140 @@
+:root {
+  --bg: #fff;
+  --text: #111;
+  --muted: #6b7280;
+  --line: #ececee;
+  --card: #f4f4f5;
+  --hover: #f3f4f6;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); }
+body {
+  font-family: var(--font);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+#app { min-height: 100vh; }
+
+.page {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 36px 28px 80px;
+}
+
+.top {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 28px;
+}
+h1 {
+  margin: 0 0 6px;
+  font-size: 28px;
+  letter-spacing: -0.03em;
+}
+.lede {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.45;
+}
+.count {
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.hero {
+  display: grid;
+  justify-items: center;
+  margin: 8px auto 36px;
+}
+.hero .stage {
+  width: 280px;
+  height: 280px;
+}
+.hero-meta {
+  margin-top: 14px;
+  font-weight: 600;
+  font-size: 14px;
+}
+.hero-meta span { color: var(--muted); font-weight: 500; }
+
+.swatches {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  margin-top: 16px;
+  max-width: 420px;
+}
+.swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+}
+.swatch.on { border-color: #111; }
+
+section { margin-top: 8px; }
+h2 {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(164px, 1fr));
+  gap: 12px;
+  margin-bottom: 32px;
+}
+.card {
+  appearance: none;
+  border: 0;
+  background: #fff;
+  border-radius: 22px;
+  padding: 14px 12px 12px;
+  cursor: pointer;
+  text-align: center;
+  box-shadow: 0 0 0 1px #ececee;
+  transition: scale 0.12s var(--ease), box-shadow 0.15s var(--ease);
+}
+.card:hover { background: #fafafa; }
+.card:active { scale: 0.98; }
+.card.on {
+  box-shadow: 0 0 0 2px #111;
+  background: #fff;
+}
+.stage {
+  width: 132px;
+  height: 132px;
+  margin: 0 auto 6px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+}
+.label {
+  font: 600 13px/1.2 var(--font);
+  color: #111;
+}
+.sub {
+  margin-top: 4px;
+  font: 500 11px/1.2 var(--font);
+  color: var(--muted);
+}
+
+.avatar-canvas { display: block; width: 100%; height: 100%; }
+
+@media (max-width: 640px) {
+  .page { padding: 24px 16px 64px; }
+  .hero .stage { width: 220px; height: 220px; }
+  .grid { grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); }
+}

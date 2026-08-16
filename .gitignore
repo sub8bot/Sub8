@@ -1,0 +1,10 @@
+node_modules
+data/*.json
+data/screens
+data/conversations
+data/traces
+.env
+dist
+.DS_Store
+*.log
+tmp

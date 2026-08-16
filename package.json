@@ -1,0 +1,24 @@
+{
+  "name": "local-bot",
+  "productName": "Local Bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "electron/main.mjs",
+  "scripts": {
+    "start": "node server/index.mjs",
+    "app": "zsh start.sh",
+    "electron": "electron .",
+    "test": "node test/tunnels.mjs"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "openai": "^5.12.2",
+    "three": "^0.184.0",
+    "uuid": "^11.1.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "electron": "^37.2.6"
+  }
+}
