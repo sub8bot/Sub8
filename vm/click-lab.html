@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>OctoBot click lab</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0d12; color: #e8edf5;
+    font: 13px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+  #hud {
+    position: absolute; top: 18px; left: 32px; z-index: 2;
+    background: rgba(10,12,18,.92); border: 1px solid #2a3344; border-radius: 10px;
+    padding: 10px 12px; min-width: 380px; max-width: 520px;
+  }
+  h1 { margin: 0 0 8px; font-size: 14px; color: #9ecbff; }
+  .row { display: flex; justify-content: space-between; gap: 12px; margin: 2px 0; }
+  .k { color: #8b97a8; }
+  .ok { color: #5ee9a5; } .bad { color: #ff6b7a; } .warn { color: #ffd166; }
+  #log { margin-top: 8px; max-height: 240px; overflow: auto; border-top: 1px solid #2a3344; padding-top: 6px; }
+  .hit { padding: 3px 0; border-bottom: 1px solid #1b2230; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <h1>OCTOBOT CLICK LAB</h1>
+  <div class="row"><span class="k">viewport</span><span id="vp">-</span></div>
+  <div class="row"><span class="k">dpr</span><span id="dpr">-</span></div>
+  <div class="row"><span class="k">window.screen</span><span id="win">-</span></div>
+  <div class="row"><span class="k">chrome chrome (outer-inner)</span><span id="chrome">-</span></div>
+  <div class="row"><span class="k">last click client</span><span id="clk">none</span></div>
+  <div class="row"><span class="k">last click screen</span><span id="clks">-</span></div>
+  <div class="row"><span class="k">aimed desktop</span><span id="aimed">from ?aim= or last command</span></div>
+  <div class="row"><span class="k">delta screen-aimed</span><span id="delta">waiting for clicks</span></div>
+  <div id="log"></div>
+</div>
+<script>
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+const hits = [];
+const params = new URLSearchParams(location.search);
+let aimed = null;
+if (params.get("aim")) {
+  const [x, y] = params.get("aim").split(",").map(Number);
+  if (Number.isFinite(x) && Number.isFinite(y)) aimed = { x, y };
+}
+
+function chromeH() { return Math.max(0, window.outerHeight - window.innerHeight); }
+function chromeW() { return Math.max(0, window.outerWidth - window.innerWidth); }
+
+function resize() {
+  canvas.width = innerWidth;
+  canvas.height = innerHeight;
+  document.getElementById("vp").textContent = `${innerWidth}×${innerHeight}`;
+  document.getElementById("dpr").textContent = String(devicePixelRatio);
+  document.getElementById("win").textContent = `screen ${screen.width}×${screen.height}  win ${window.screenX},${window.screenY}`;
+  document.getElementById("chrome").textContent = `${chromeW()}×${chromeH()}  (tabs/toolbar)`;
+  if (aimed) document.getElementById("aimed").textContent = `${aimed.x},${aimed.y}`;
+  draw();
+}
+
+function draw() {
+  const w = canvas.width, h = canvas.height;
+  ctx.fillStyle = "#0b0d12";
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = "#1b2433";
+  ctx.font = "11px ui-monospace, monospace";
+  ctx.fillStyle = "#4a5a70";
+  for (let x = 0; x <= w; x += 50) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    ctx.fillText(String(x), x + 3, 12);
+  }
+  for (let y = 0; y <= h; y += 50) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    if (y) ctx.fillText(String(y), 4, y - 3);
+  }
+  hits.forEach((hit, i) => {
+    if (hit.aimed) {
+      ctx.strokeStyle = "#4ea3ff"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(hit.aimedClientX - 14, hit.aimedClientY); ctx.lineTo(hit.aimedClientX + 14, hit.aimedClientY);
+      ctx.moveTo(hit.aimedClientX, hit.aimedClientY - 14); ctx.lineTo(hit.aimedClientX, hit.aimedClientY + 14); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(hit.aimedClientX, hit.aimedClientY); ctx.lineTo(hit.x, hit.y); ctx.stroke();
+    }
+    ctx.fillStyle = "#ff6b7a";
+    ctx.beginPath(); ctx.arc(hit.x, hit.y, 6, 0, Math.PI * 2); ctx.fill();
+    ctx.fillText(`#${i + 1} ${hit.x},${hit.y}`, hit.x + 8, hit.y - 8);
+    ctx.lineWidth = 1;
+  });
+}
+
+window.addEventListener("message", (e) => {
+  if (e.data && e.data.aim) aimed = e.data.aim;
+});
+
+document.addEventListener("click", (e) => {
+  const winX = window.screenX, winY = window.screenY;
+  const aimedClientX = aimed ? aimed.x - winX - chromeW() : null;
+  const aimedClientY = aimed ? aimed.y - winY - chromeH() : null;
+  const hit = {
+    x: e.clientX, y: e.clientY,
+    sx: e.screenX, sy: e.screenY,
+    aimed, aimedClientX, aimedClientY,
+  };
+  hits.push(hit);
+  document.getElementById("clk").textContent = `${hit.x}, ${hit.y}`;
+  document.getElementById("clks").textContent = `${hit.sx}, ${hit.sy}`;
+  let deltaTxt = "no aimed desktop coord";
+  let cls = "warn";
+  if (aimed) {
+    const dx = hit.sx - aimed.x;
+    const dy = hit.sy - aimed.y;
+    deltaTxt = `${dx >= 0 ? "+" : ""}${dx}, ${dy >= 0 ? "+" : ""}${dy}`;
+    cls = Math.abs(dx) <= 2 && Math.abs(dy) <= 2 ? "ok" : "bad";
+  }
+  const el = document.getElementById("delta");
+  el.textContent = deltaTxt;
+  el.className = cls;
+  const line = document.createElement("div");
+  line.className = "hit";
+  line.innerHTML = `#${hits.length} screen <b>${hit.sx},${hit.sy}</b> client <b>${hit.x},${hit.y}</b>` +
+    (aimed ? ` aimed desktop <b>${aimed.x},${aimed.y}</b> Δ <span class="${cls}">${deltaTxt}</span>` : "");
+  document.getElementById("log").prepend(line);
+  document.title = `click ${hit.sx},${hit.sy}` + (aimed ? ` aim ${aimed.x},${aimed.y} d ${deltaTxt}` : "");
+  draw();
+});
+
+window.addEventListener("resize", resize);
+resize();
+</script>
+</body>
+</html>

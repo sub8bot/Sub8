@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Click tracker</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0c1018; color: #e8edf5;
+    font: 13px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow: hidden; }
+  canvas { position: absolute; inset: 0; cursor: crosshair; }
+  #hud {
+    position: absolute; top: 20px; left: 36px; z-index: 2;
+    background: rgba(8,10,16,.94); border: 1px solid #2a3344; border-radius: 12px;
+    padding: 12px 14px; min-width: 420px; max-width: 560px;
+  }
+  h1 { margin: 0 0 8px; font-size: 15px; color: #9ecbff; letter-spacing: .04em; }
+  .row { display: flex; justify-content: space-between; gap: 12px; margin: 3px 0; }
+  .k { color: #8b97a8; }
+  .ok { color: #5ee9a5; } .bad { color: #ff6b7a; } .warn { color: #ffd166; }
+  #log { margin-top: 8px; max-height: 260px; overflow: auto; border-top: 1px solid #243044; padding-top: 6px; }
+  .hit { padding: 4px 0; border-bottom: 1px solid #1b2230; }
+  #banner { font-size: 22px; font-weight: 700; margin: 6px 0 4px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">
+  <h1>CLICK TRACKER</h1>
+  <div id="banner" class="warn">waiting…</div>
+  <div class="row"><span class="k">viewport</span><span id="vp">-</span></div>
+  <div class="row"><span class="k">window</span><span id="win">-</span></div>
+  <div class="row"><span class="k">chrome UI</span><span id="chr">-</span></div>
+  <div class="row"><span class="k">aimed desktop</span><span id="aimed">none</span></div>
+  <div class="row"><span class="k">last screen</span><span id="scr">-</span></div>
+  <div class="row"><span class="k">last client</span><span id="cli">-</span></div>
+  <div class="row"><span class="k">delta screen−aim</span><span id="del">-</span></div>
+  <div id="log"></div>
+</div>
+<script>
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+let aimed = null;
+const hits = [];
+
+function chromeH() { return Math.max(0, outerHeight - innerHeight); }
+function chromeW() { return Math.max(0, outerWidth - innerWidth); }
+
+async function refreshAim() {
+  try {
+    const r = await fetch("/aim", { cache: "no-store" });
+    const j = await r.json();
+    aimed = (j && Number.isFinite(j.x) && Number.isFinite(j.y)) ? { x: j.x, y: j.y } : null;
+    document.getElementById("aimed").textContent = aimed ? `${aimed.x},${aimed.y}` : "none";
+  } catch { /* ignore */ }
+}
+
+function resize() {
+  canvas.width = innerWidth;
+  canvas.height = innerHeight;
+  document.getElementById("vp").textContent = `${innerWidth}×${innerHeight} dpr ${devicePixelRatio}`;
+  document.getElementById("win").textContent = `screen ${screen.width}×${screen.height} at ${screenX},${screenY}`;
+  document.getElementById("chr").textContent = `${chromeW()}×${chromeH()}`;
+  draw();
+}
+
+function draw() {
+  const w = canvas.width, h = canvas.height;
+  ctx.fillStyle = "#0c1018";
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = "#1b2433";
+  ctx.font = "11px ui-monospace, monospace";
+  ctx.fillStyle = "#4a5a70";
+  for (let x = 0; x <= w; x += 50) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+    ctx.fillText(String(x), x + 3, 12);
+  }
+  for (let y = 0; y <= h; y += 50) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+    if (y) ctx.fillText(String(y), 4, y - 3);
+  }
+  hits.forEach((hit, i) => {
+    if (hit.aimed) {
+      const ax = hit.aimed.x - screenX - chromeW();
+      const ay = hit.aimed.y - screenY - chromeH();
+      ctx.strokeStyle = "#4ea3ff";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(ax - 16, ay); ctx.lineTo(ax + 16, ay);
+      ctx.moveTo(ax, ay - 16); ctx.lineTo(ax, ay + 16);
+      ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(hit.clientX, hit.clientY); ctx.stroke();
+    }
+    ctx.fillStyle = hit.ok ? "#5ee9a5" : "#ff6b7a";
+    ctx.beginPath(); ctx.arc(hit.clientX, hit.clientY, 7, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#e8edf5";
+    ctx.fillText(`#${i + 1} ${hit.screenX},${hit.screenY}`, hit.clientX + 10, hit.clientY - 8);
+    ctx.lineWidth = 1;
+  });
+}
+
+document.addEventListener("mousedown", async (e) => {
+  await refreshAim();
+  const dx = aimed ? e.screenX - aimed.x : null;
+  const dy = aimed ? e.screenY - aimed.y : null;
+  const ok = aimed ? Math.abs(dx) <= 2 && Math.abs(dy) <= 2 : null;
+  const hit = {
+    t: Date.now(),
+    screenX: e.screenX,
+    screenY: e.screenY,
+    clientX: e.clientX,
+    clientY: e.clientY,
+    aimed,
+    dx, dy, ok,
+    win: { x: screenX, y: screenY, chromeW: chromeW(), chromeH: chromeH() },
+  };
+  hits.push(hit);
+  document.getElementById("scr").textContent = `${hit.screenX},${hit.screenY}`;
+  document.getElementById("cli").textContent = `${hit.clientX},${hit.clientY}`;
+  const el = document.getElementById("del");
+  const ban = document.getElementById("banner");
+  if (!aimed) {
+    el.textContent = "no aim set";
+    el.className = "warn";
+    ban.textContent = "CLICK (no aim)";
+    ban.className = "warn";
+  } else {
+    const txt = `${dx >= 0 ? "+" : ""}${dx}, ${dy >= 0 ? "+" : ""}${dy}`;
+    el.textContent = txt;
+    el.className = ok ? "ok" : "bad";
+    ban.textContent = ok ? `PASS  ${txt}` : `FAIL  ${txt}`;
+    ban.className = ok ? "ok" : "bad";
+  }
+  const line = document.createElement("div");
+  line.className = "hit";
+  line.innerHTML = `#${hits.length} screen <b>${hit.screenX},${hit.screenY}</b> client <b>${hit.clientX},${hit.clientY}</b>` +
+    (aimed ? ` aim <b>${aimed.x},${aimed.y}</b> Δ <span class="${ok ? "ok" : "bad"}">${el.textContent}</span>` : "");
+  document.getElementById("log").prepend(line);
+  document.title = aimed ? `Δ ${el.textContent}` : `click ${hit.screenX},${hit.screenY}`;
+  draw();
+  fetch("/hit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(hit) }).catch(() => {});
+});
+
+setInterval(refreshAim, 250);
+window.addEventListener("resize", resize);
+refreshAim().then(resize);
+</script>
+</body>
+</html>
