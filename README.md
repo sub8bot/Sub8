@@ -57,7 +57,7 @@ export XAI_API_KEY=…          # or use Settings → Harness → Grok Build OAu
 
 ```bash
 npm test                      # isolation / tunnel tests
-npm run logo                  # re-render docs/brand/octobot-logo.png
+npm run logo                  # Three.js preview render (does not replace the 3D brand logo)
 npm run icons                 # icns / ico / png from the mascot
 ```
 
@@ -80,7 +80,7 @@ That builds Mac (signed + notarized DMG/zip), Windows zip, and Linux AppImage/ta
 
 | File | Use |
 |---|---|
-| [docs/brand/octobot-logo.png](docs/brand/octobot-logo.png) | Transparent 2048² mascot |
+| [docs/brand/octobot-logo.png](docs/brand/octobot-logo.png) | Transparent 3D octopus logo (2048²) |
 | [docs/brand/octobot-icon.png](docs/brand/octobot-icon.png) | App icon master (macOS applies the squircle) |
 | [docs/brand/octobot-icon-rounded.png](docs/brand/octobot-icon-rounded.png) | Rounded PNG for web / README |
 | [docs/brand/octobot-icon-source.png](docs/brand/octobot-icon-source.png) | Official purple octopus still |
