@@ -1,4 +1,5 @@
 node_modules
+.app
 data/*.json
 data/screens
 data/conversations

@@ -1,0 +1,36 @@
+#!/bin/zsh
+# Build a local OctoBot.app wrapper so macOS shows OctoBot, not Electron.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SRC="$ROOT/node_modules/electron/dist/Electron.app"
+DEST="$ROOT/.app/OctoBot.app"
+PLIST="$DEST/Contents/Info.plist"
+ICON="$ROOT/build/icon.icns"
+
+[ -d "$SRC" ] || { echo "Electron.app missing — run npm install" >&2; exit 1; }
+
+mkdir -p "$ROOT/.app"
+if [ ! -d "$DEST/Contents/MacOS/Electron" ] && [ ! -x "$DEST/Contents/MacOS/Electron" ]; then
+  rm -rf "$DEST"
+  ditto "$SRC" "$DEST"
+fi
+# Refresh if Electron was upgraded
+src_ver=$(defaults read "$SRC/Contents/Info" CFBundleVersion 2>/dev/null || true)
+dst_ver=$(defaults read "$DEST/Contents/Info" CFBundleVersion 2>/dev/null || true)
+if [ "$src_ver" != "$dst_ver" ] || [ ! -x "$DEST/Contents/MacOS/Electron" ]; then
+  rm -rf "$DEST"
+  ditto "$SRC" "$DEST"
+fi
+
+/usr/libexec/PlistBuddy -c "Set :CFBundleName OctoBot" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName OctoBot" "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string OctoBot" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier app.octobot.desktop.dev" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleExecutable Electron" "$PLIST"
+
+if [ -f "$ICON" ]; then
+  cp -f "$ICON" "$DEST/Contents/Resources/electron.icns"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile electron.icns" "$PLIST" 2>/dev/null || true
+fi
+
+echo "$DEST/Contents/MacOS/Electron"

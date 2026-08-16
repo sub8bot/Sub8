@@ -9,6 +9,11 @@ const PORT = process.env.PORT || "8787";
 const URL = process.env.LOCALBOT_URL || `http://127.0.0.1:${PORT}`;
 
 app.setName("OctoBot");
+app.setAboutPanelOptions({
+  applicationName: "OctoBot",
+  applicationVersion: app.getVersion(),
+  copyright: "Copyright © 2026 Daniel Farina",
+});
 if (!app.isPackaged) app.commandLine.appendSwitch("disable-http-cache");
 
 function packagedRoot() {

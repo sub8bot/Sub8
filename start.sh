@@ -18,32 +18,32 @@ else
   trap 'kill $SERVER 2>/dev/null || true' EXIT
   sleep 0.8
 fi
-APP_ELECTRON="$PWD/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
+APP_ELECTRON="$(zsh "$PWD/scripts/macos-dev-app.sh")"
+STOCK_ELECTRON="$PWD/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
 has_main=0
 has_window=0
 # Read ps in-shell so grep/pgrep -f cannot self-match this check.
 while IFS= read -r pid cmd; do
   case "$cmd" in
-    "$APP_ELECTRON"*) has_main=1 ;;
-    *"Electron Helper (Renderer)"*"--app-path=$PWD"*|*"--app-path=$PWD"*"Electron Helper (Renderer)"*) has_window=1 ;;
+    "$APP_ELECTRON"*|"$STOCK_ELECTRON"*) has_main=1 ;;
+    *"Helper (Renderer)"*"--app-path=$PWD"*|*"--app-path=$PWD"*"Helper (Renderer)"*) has_window=1 ;;
   esac
 done < <(ps -ax -o pid=,command=)
 if [ "$has_main" = 1 ] && [ "$has_window" = 1 ]; then
   echo "OctoBot window already running — focusing"
-  # Second instance exits after requestSingleInstanceLock focuses the existing window.
-  npx electron . >/dev/null 2>&1 || true
+  "$APP_ELECTRON" . >/dev/null 2>&1 || true
   if [ -n "$SERVER" ]; then
     wait "$SERVER"
   fi
   exit 0
 fi
 if [ "$has_main" = 1 ]; then
-  echo "OctoBot Electron has no window — relaunching"
+  echo "OctoBot has no window — relaunching"
   while IFS= read -r pid cmd; do
     case "$cmd" in
-      "$APP_ELECTRON"*) kill "$pid" 2>/dev/null || true ;;
+      "$APP_ELECTRON"*|"$STOCK_ELECTRON"*) kill "$pid" 2>/dev/null || true ;;
     esac
   done < <(ps -ax -o pid=,command=)
   sleep 0.4
 fi
-npx electron .
+exec "$APP_ELECTRON" .
