@@ -82,6 +82,8 @@ That builds Mac (signed + notarized DMG/zip), Windows zip, and Linux AppImage/ta
 |---|---|
 | [docs/brand/octobot-logo.png](docs/brand/octobot-logo.png) | Transparent 2048² mascot |
 | [docs/brand/octobot-icon.png](docs/brand/octobot-icon.png) | App icon master (macOS applies the squircle) |
-| `build/icon.icns` / `build/icon.ico` | Packaged app icons |
+| [docs/brand/octobot-icon-rounded.png](docs/brand/octobot-icon-rounded.png) | Rounded PNG for web / README |
+| [docs/brand/octobot-icon-source.png](docs/brand/octobot-icon-source.png) | Official purple octopus still |
+| `build/icon.icns` / `build/icon.ico` | Packaged app icons (all sizes) |
 
 Not affiliated with xAI.
