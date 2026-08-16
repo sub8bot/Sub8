@@ -81,6 +81,7 @@ That builds Mac (signed + notarized DMG/zip), Windows zip, and Linux AppImage/ta
 | File | Use |
 |---|---|
 | [docs/brand/octobot-logo.png](docs/brand/octobot-logo.png) | Transparent 3D octopus logo (2048²) |
+| [docs/brand/octobot-logo.mp4](docs/brand/octobot-logo.mp4) | 3D idle animation (6s) |
 | [docs/brand/octobot-icon.png](docs/brand/octobot-icon.png) | App icon master (macOS applies the squircle) |
 | [docs/brand/octobot-icon-rounded.png](docs/brand/octobot-icon-rounded.png) | Rounded PNG for web / README |
 | [docs/brand/octobot-icon-source.png](docs/brand/octobot-icon-source.png) | Official purple octopus still |
