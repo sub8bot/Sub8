@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/brand/octobot-logo.png" width="280" alt="OctoBot mascot">
+  <img src="docs/brand/octobot-logo-rounded.png" width="280" alt="OctoBot mascot">
 </p>
 
 <h1 align="center">OctoBot</h1>
@@ -80,7 +80,8 @@ That builds Mac (signed + notarized DMG/zip), Windows zip, and Linux AppImage/ta
 
 | File | Use |
 |---|---|
-| [docs/brand/octobot-logo.png](docs/brand/octobot-logo.png) | Transparent 3D octopus logo (2048²) |
+| [docs/brand/octobot-logo.png](docs/brand/octobot-logo.png) | Transparent 3D octopus (2048²) |
+| [docs/brand/octobot-logo-rounded.png](docs/brand/octobot-logo-rounded.png) | Rounded coral logo, octopus fills the tile |
 | [docs/brand/octobot-logo.mp4](docs/brand/octobot-logo.mp4) | 3D idle animation (6s) |
 | [docs/brand/octobot-icon.png](docs/brand/octobot-icon.png) | App icon master (macOS applies the squircle) |
 | [docs/brand/octobot-icon-rounded.png](docs/brand/octobot-icon-rounded.png) | Rounded PNG for web / README |
