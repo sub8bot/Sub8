@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node server/index.mjs",
     "app": "zsh start.sh",
-    "electron": "zsh scripts/macos-dev-app.sh >/dev/null && .app/OctoBot.app/Contents/MacOS/Electron .",
+    "electron": "zsh scripts/macos-dev-app.sh >/dev/null && open -n -a .app/OctoBot.app --args \"$PWD\"",
     "test": "node test/tunnels.mjs",
     "icons": "python3 scripts/make-icons.py && iconutil -c icns build/icon.iconset -o build/icon.icns",
     "logo": "node scripts/render-logo.mjs",

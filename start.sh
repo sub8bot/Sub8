@@ -18,7 +18,9 @@ else
   trap 'kill $SERVER 2>/dev/null || true' EXIT
   sleep 0.8
 fi
-APP_ELECTRON="$(zsh "$PWD/scripts/macos-dev-app.sh")"
+zsh "$PWD/scripts/macos-dev-app.sh" >/dev/null
+APP_BUNDLE="$PWD/.app/OctoBot.app"
+APP_ELECTRON="$APP_BUNDLE/Contents/MacOS/Electron"
 STOCK_ELECTRON="$PWD/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
 has_main=0
 has_window=0
@@ -31,7 +33,7 @@ while IFS= read -r pid cmd; do
 done < <(ps -ax -o pid=,command=)
 if [ "$has_main" = 1 ] && [ "$has_window" = 1 ]; then
   echo "OctoBot window already running — focusing"
-  "$APP_ELECTRON" . >/dev/null 2>&1 || true
+  open -a "$APP_BUNDLE" --args "$PWD"
   if [ -n "$SERVER" ]; then
     wait "$SERVER"
   fi
@@ -46,4 +48,8 @@ if [ "$has_main" = 1 ]; then
   done < <(ps -ax -o pid=,command=)
   sleep 0.4
 fi
-exec "$APP_ELECTRON" .
+open -n -a "$APP_BUNDLE" --args "$PWD"
+# keep start.sh alive while the window exists if we spawned the server
+if [ -n "$SERVER" ]; then
+  wait "$SERVER"
+fi
