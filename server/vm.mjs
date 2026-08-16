@@ -498,7 +498,7 @@ export async function screenshot(bot) {
       name,
       "bash",
       "-lc",
-      `${displayEnv(bot)}; xrandr --size 1024x768 >/dev/null 2>&1 || true; mkdir -p /tmp; scrot -o ${dest} || import -window root ${dest}`,
+      `${displayEnv(bot)}; xrandr --size 1024x768 >/dev/null 2>&1 || true; mkdir -p /tmp; scrot -p -o ${dest} || import -window root ${dest}`,
     ]);
     if (!r.ok) throw new Error(`screenshot failed: ${r.out.slice(-400)}`);
     const hostPath = path.resolve(dataDir, "screens", `${bot.id}.png`);
@@ -520,7 +520,7 @@ export async function mouseMove(bot, x, y) {
     bot.vm.container,
     "bash",
     "-lc",
-    `${displayEnv(bot)}; xdotool mousemove ${p.x} ${p.y}`,
+    `${displayEnv(bot)}; unset WINDOW; xdotool mousemove --screen 0 ${p.x} ${p.y}`,
   ]);
   if (!r.ok) throw new Error(`mousemove failed: ${r.out.slice(-400)}`);
 }
@@ -540,6 +540,27 @@ export async function mouseLocation(bot) {
   return { x, y, raw: r.out };
 }
 
+function pointerScript(x, y) {
+  return `
+unset WINDOW
+timeout 0.2 xdotool mousemove --sync --screen 0 ${x} ${y} >/dev/null 2>&1 \
+  || xdotool mousemove --screen 0 ${x} ${y}
+for i in 1 2 3 4 5; do
+  eval "$(xdotool getmouselocation --shell)"
+  dx=$((X - ${x})); dy=$((Y - ${y}))
+  [ "\${dx#-}" -le 2 ] && [ "\${dy#-}" -le 2 ] && break
+  xdotool mousemove --screen 0 ${x} ${y}
+  sleep 0.03
+done
+wid=$(xdotool getmouselocation --shell | awk -F= '/^WINDOW=/{print $2}')
+if [ -n "$wid" ] && [ "$wid" != "0" ]; then
+  timeout 0.2 xdotool windowactivate --sync "$wid" >/dev/null 2>&1 \
+    || xdotool windowactivate "$wid" >/dev/null 2>&1 || true
+fi
+unset WINDOW
+`.trim();
+}
+
 export async function click(bot, x, y, button = 1, count = 1) {
   requireVm(bot, "click");
   const p = clampPoint(x, y);
@@ -552,10 +573,10 @@ export async function click(bot, x, y, button = 1, count = 1) {
       bot.vm.container,
       "bash",
       "-lc",
-      `${displayEnv(bot)}; xdotool mousemove ${p.x} ${p.y} click --repeat ${n} --delay 50 ${button}`,
+      `${displayEnv(bot)}; ${pointerScript(p.x, p.y)}; xdotool click --clearmodifiers --repeat ${n} --delay 40 ${button}; eval "$(xdotool getmouselocation --shell)"; echo POINTER=$X,$Y`,
     ]);
     if (!r.ok) throw new Error(`click failed: ${r.out.slice(-400)}`);
-    await wait(120);
+    await wait(160);
   });
 }
 
@@ -569,7 +590,7 @@ export async function drag(bot, x1, y1, x2, y2) {
     bot.vm.container,
     "bash",
     "-lc",
-    `${displayEnv(bot)}; xdotool mousemove ${a.x} ${a.y} mousedown 1 mousemove ${b.x} ${b.y} mouseup 1`,
+    `${displayEnv(bot)}; ${pointerScript(a.x, a.y)}; xdotool mousedown 1; xdotool mousemove --screen 0 ${b.x} ${b.y}; xdotool mouseup 1`,
   ]);
   if (!r.ok) throw new Error(`drag failed: ${r.out.slice(-400)}`);
 }

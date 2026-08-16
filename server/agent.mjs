@@ -35,7 +35,7 @@ const TOOLS = [
     function: {
       name: "computer",
       description:
-        "Drive the desktop. Coordinates are pixels on the last screenshot (origin top-left, 1:1). Screenshot before any click.",
+        "Drive the desktop. x,y are pixels on the LAST screenshot (origin top-left, 1:1 with that image, including the top panel). Click the visual CENTER of a control you can actually see. If it is off-screen or cut off, scroll first — never guess. The screenshot shows the mouse pointer.",
       parameters: {
         type: "object",
         properties: {
@@ -490,7 +490,7 @@ async function shotPayload(bot, emit, note = "") {
   const shot = await vm.screenshot(bot);
   emit("screen", { url: `/api/bots/${bot.id}/screen?t=${Date.now()}`, width: shot.width, height: shot.height });
   const loc = await vm.mouseLocation(bot);
-  const caption = `${note} Screenshot ${shot.width}x${shot.height}. Mouse at ${loc.x},${loc.y}. Click coordinates are pixels on THIS image (origin top-left).`.trim();
+  const caption = `${note} Screenshot ${shot.width}x${shot.height}. Mouse pointer is at ${loc.x},${loc.y} (drawn on the image). Click the center of a control you can see on THIS image.`.trim();
   return { text: caption, imageB64: shot.buf.toString("base64"), caption, width: shot.width, height: shot.height };
 }
 
