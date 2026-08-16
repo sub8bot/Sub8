@@ -34,7 +34,7 @@ await page.screenshot({ path: path.join(outDir, "octo-catalog.png"), fullPage: f
 
 const happy = await page.$('[data-act="face"][data-id="happy"]');
 if (happy) await happy.click();
-for (const hex of ["#ffe566", "#ffc2d4", "#bde0fe", "#b9fbc0"]) {
+for (const hex of ["#b06dd1", "#9b6dd1", "#c56dd1", "#7d6dd1"]) {
   const swatch = await page.$(`[data-act="color"][data-id="${hex}"]`);
   if (swatch) await swatch.click();
   await new Promise((r) => setTimeout(r, 500));

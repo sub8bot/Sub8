@@ -4,10 +4,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-export XPLORER_NOTARY_KEY="${XPLORER_NOTARY_KEY:-$HOME/.appstoreconnect/private_keys/AuthKey_[redacted].p8}"
-export XPLORER_NOTARY_KEY_ID="${XPLORER_NOTARY_KEY_ID:-[redacted]}"
-export XPLORER_NOTARY_ISSUER="${XPLORER_NOTARY_ISSUER:-[redacted]}"
 export CSC_IDENTITY_AUTO_DISCOVERY="${CSC_IDENTITY_AUTO_DISCOVERY:-true}"
+if [ -z "${OCTOBOT_SIGN_IDENTITY:-}" ]; then
+  OCTOBOT_SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Developer ID Application/{print $2; exit}')"
+  export OCTOBOT_SIGN_IDENTITY
+fi
 
 VERSION="$(node -p "require('./package.json').version")"
 

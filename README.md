@@ -65,16 +65,11 @@ Avatars: [docs/avatars.md](docs/avatars.md). Catalog: `http://127.0.0.1:8787/too
 
 ## Release
 
-Same Apple account as Xnative (`Developer ID Application: Daniel Farina ([redacted])` + App Store Connect API key).
-
 ```bash
-export XPLORER_NOTARY_KEY="$HOME/.appstoreconnect/private_keys/AuthKey_[redacted].p8"
-export XPLORER_NOTARY_KEY_ID="[redacted]"
-export XPLORER_NOTARY_ISSUER="[redacted]"
 npm run release
 ```
 
-That builds Mac (signed + notarized DMG/zip), Windows zip, and Linux AppImage/tar.gz into `dist/`.
+That writes Mac (signed + notarized when Apple credentials are in the environment), Windows zip, and Linux AppImage/tar.gz into `dist/`. Signing secrets stay on the build machine — never in the repo.
 
 ## Brand
 

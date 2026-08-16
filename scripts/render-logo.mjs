@@ -16,7 +16,7 @@ const browser = await puppeteer.launch({
 
 const page = await browser.newPage();
 page.on("pageerror", (err) => console.error("pageerror", err.message));
-await page.goto("http://127.0.0.1:8787/logo.html?size=2048&color=%23ffe566&face=happy", {
+await page.goto("http://127.0.0.1:8787/logo.html?size=2048&color=%23b06dd1&face=happy", {
   waitUntil: "networkidle0",
   timeout: 20000,
 });

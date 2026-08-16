@@ -7,6 +7,9 @@ data/traces
 data/prod-ready-deadline.txt
 data/prod-ready-status.md
 .env
+.env.*
+*.p8
+**/AuthKey*.p8
 dist
 release
 .DS_Store

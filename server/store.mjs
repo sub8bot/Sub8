@@ -154,8 +154,8 @@ export async function saveBots(bots) {
 }
 
 const PALETTE = [
-  "#f5a623", "#ff6b35", "#e11d48", "#ec4899", "#8b5cf6", "#6366f1",
-  "#0ea5e9", "#06b6d4", "#22c55e", "#84cc16", "#eab308", "#111111",
+  "#b06dd1", "#9b6dd1", "#c56dd1", "#7d6dd1", "#d16db8", "#8b6de0",
+  "#be7adf", "#a56de0", "#d17dc9", "#9966cc", "#c98ae0", "#7c6cf0",
 ];
 
 export function newBot(partial = {}) {

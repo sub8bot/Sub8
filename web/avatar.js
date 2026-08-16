@@ -224,7 +224,7 @@ function sizeCanvas(canvas, css) {
 
 function lookForColor(hex) {
   const fallback = {
-    body: 0xffe566,
+    body: 0xb06dd1,
     eye: 0x111111,
     dark: false,
     blush: 0xffb3c6,

@@ -700,10 +700,10 @@ function paintBotEditor(bot) {
   }
   host.dataset.bot = bot.id;
   const colors = [
-    "#ffe566", "#ffd6a5", "#ffb4a2", "#ffc2d4", "#e7c6ff", "#c7ceea",
-    "#bde0fe", "#a0e7e5", "#b9fbc0", "#fdffb6", "#f8f4ee", "#e8e4df",
+    "#b06dd1", "#9b6dd1", "#c56dd1", "#7d6dd1", "#d16db8", "#8b6de0",
+    "#be7adf", "#a56de0", "#d17dc9", "#9966cc", "#c98ae0", "#7c6cf0",
   ];
-  const color = bot.color || "#ffe566";
+  const color = bot.color || "#b06dd1";
   const avatar = defaultAvatar(bot.avatar);
   host.innerHTML = `
     <div class="avatar-studio">
