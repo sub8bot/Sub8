@@ -30,7 +30,7 @@ Private repo for now. Grab a build from [Releases](https://github.com/daniel-far
 | macOS (Apple Silicon) | `OctoBot-0.1.0-mac-arm64.dmg` — signed and notarized |
 | macOS (Intel) | `OctoBot-0.1.0-mac-x64.dmg` — signed and notarized |
 | Windows | `OctoBot-0.1.0-win-x64.zip` |
-| Linux | `OctoBot-0.1.0-linux-x64.AppImage` or `.tar.gz` |
+| Linux | `OctoBot-0.1.0-linux-x86_64.AppImage` or `OctoBot-0.1.0-linux-x64.tar.gz` |
 
 **macOS:** open the DMG, drag OctoBot to Applications, launch. Gatekeeper should accept it (Developer ID + notarized).
 
