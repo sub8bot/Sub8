@@ -12,7 +12,8 @@ let URL = process.env.LOCALBOT_URL || `http://127.0.0.1:${PORT}`;
 
 function dockerHost() {
   const env = String(process.env.DOCKER_HOST || "").trim();
-  if (process.platform === "win32") return "npipe:////./pipe/docker_engine";
+  // Let Docker Desktop pick its own named pipe / WSL context.
+  if (process.platform === "win32") return "";
   if (env && !/colima/i.test(env) && !/^unix:\/\/[A-Za-z]:/.test(env)) return env;
   const socks = [path.join(os.homedir(), ".colima", "default", "docker.sock"), "/var/run/docker.sock"];
   for (const sock of socks) {
