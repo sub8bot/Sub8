@@ -23,10 +23,10 @@ Grab a build from [Releases](https://github.com/sub8bot/Sub8/releases).
 
 | Platform | Artifact |
 |---|---|
-| macOS (Apple Silicon) | [`Sub8-mac-arm64.dmg`](https://github.com/sub8bot/Sub8/releases/download/v0.3.7/Sub8-mac-arm64.dmg) — Developer ID signed |
-| macOS (Intel) | [`Sub8-mac-x64.dmg`](https://github.com/sub8bot/Sub8/releases/download/v0.3.7/Sub8-mac-x64.dmg) — Developer ID signed |
-| Windows | [`Sub8-win-x64.exe`](https://github.com/sub8bot/Sub8/releases/download/v0.3.7/Sub8-win-x64.exe) installer, or [`Sub8-win-x64.zip`](https://github.com/sub8bot/Sub8/releases/download/v0.3.7/Sub8-win-x64.zip) |
-| Linux | [`Sub8-linux-x86_64.AppImage`](https://github.com/sub8bot/Sub8/releases/download/v0.3.7/Sub8-linux-x86_64.AppImage) or [`Sub8-linux-x64.tar.gz`](https://github.com/sub8bot/Sub8/releases/download/v0.3.7/Sub8-linux-x64.tar.gz) |
+| macOS (Apple Silicon) | [`Sub8-mac-arm64.dmg`](https://github.com/sub8bot/Sub8/releases/download/v0.3.8/Sub8-mac-arm64.dmg) — Developer ID signed |
+| macOS (Intel) | [`Sub8-mac-x64.dmg`](https://github.com/sub8bot/Sub8/releases/download/v0.3.8/Sub8-mac-x64.dmg) — Developer ID signed |
+| Windows | [`Sub8-win-x64.exe`](https://github.com/sub8bot/Sub8/releases/download/v0.3.8/Sub8-win-x64.exe) installer, or [`Sub8-win-x64.zip`](https://github.com/sub8bot/Sub8/releases/download/v0.3.8/Sub8-win-x64.zip) |
+| Linux | [`Sub8-linux-x86_64.AppImage`](https://github.com/sub8bot/Sub8/releases/download/v0.3.8/Sub8-linux-x86_64.AppImage) or [`Sub8-linux-x64.tar.gz`](https://github.com/sub8bot/Sub8/releases/download/v0.3.8/Sub8-linux-x64.tar.gz) |
 
 **macOS:** open the DMG, drag Sub8 to Applications, launch. The app is Developer ID signed.
 
