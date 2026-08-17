@@ -183,6 +183,7 @@ function adoptBot(next) {
   const prev = state.bots[i];
   next.messages = unionClientMessages(next.messages, prev.messages);
   state.bots[i] = { ...prev, ...next, messages: next.messages };
+  if (typeof next.busy === "boolean") state.bots[i].busy = next.busy;
   return state.bots[i];
 }
 
@@ -1336,7 +1337,7 @@ function settingsHtml() {
           <div class="block"><h3>This Mac</h3>
             <div class="card">
               <div class="row"><div class="lbl">Timezone</div><span class="muted">${escapeHtml(state.timezone || "auto")}</span></div>
-              <div class="row"><div class="lbl">Version</div><span class="muted">Sub8 0.3.1</span></div>
+              <div class="row"><div class="lbl">Version</div><span class="muted">Sub8 0.3.2</span></div>
             </div>
           </div>`
             : sec === "usage"
@@ -2438,6 +2439,18 @@ function listen() {
       if (botId !== state.selected) return;
       state.humanControl = Boolean(on);
       paintControlChrome();
+    });
+    es.addEventListener("error", (e) => {
+      try {
+        const { botId } = JSON.parse(e.data);
+        const bot = state.bots.find((b) => b.id === botId);
+        if (bot) {
+          bot.busy = false;
+          if (botId === state.selected && $("#thread")) paintChat(bot);
+        }
+      } catch {
+        /* ignore */
+      }
     });
     es.addEventListener("tool", (e) => {
       const { botId, name } = JSON.parse(e.data);
