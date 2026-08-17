@@ -1,7 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
-import { spawn } from "node:child_process";
 import * as vm from "./vm.mjs";
 import * as routines from "./routines.mjs";
 import { appRoot } from "./paths.mjs";
@@ -355,7 +354,7 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
     };
     bot.messages.push(work);
     emit("message", work);
-    const text = await runGrokBuild(harness, grokText, signal, bot);
+    const text = await runGrokBuild(harness, grokText, signal, bot, emit);
     const msg = { id: `a${Date.now()}`, role: "assistant", content: text, ts: Date.now() };
     bot.messages.push(msg);
     emit("message", msg);
@@ -818,11 +817,73 @@ async function grokSessionOnDisk(box, sessionId) {
   return r.ok;
 }
 
-function runGrokBuild(harness, userText, signal, bot) {
+function summarizeVmCommand(cmd = "") {
+  const c = String(cmd);
+  if (/octo-click|xdotool click/i.test(c)) {
+    if (/\bclick\s+(4|5|6|7)\b/.test(c) || /\bscroll\b/i.test(c)) {
+      return { name: "computer", action: "scroll", summary: "Scrolled" };
+    }
+    if (/--repeat\s*2|double_click/i.test(c)) {
+      return { name: "computer", action: "double_click", summary: "Double-clicked" };
+    }
+    if (/\bclick\s+3\b/.test(c)) {
+      return { name: "computer", action: "right_click", summary: "Right-clicked" };
+    }
+    return { name: "computer", action: "left_click", summary: "Clicked" };
+  }
+  if (/xdotool type\b/i.test(c)) {
+    const t = (c.match(/type(?:\s+--\S+)*\s+'([^']*)'|type(?:\s+--\S+)*\s+"([^"]*)"/) || []).filter(Boolean)[1] || "";
+    return { name: "computer", action: "type", summary: toolSummary("computer", { action: "type", text: t }) };
+  }
+  if (/xdotool key\b/i.test(c)) {
+    const keys = (c.match(/key(?:\s+--\S+)*\s+(\S+)/) || [])[1] || "";
+    return { name: "computer", action: "key", summary: toolSummary("computer", { action: "key", keys }) };
+  }
+  if (/xdotool mousemove/i.test(c)) {
+    return { name: "computer", action: "mouse_move", summary: "Moved the pointer" };
+  }
+  if (/chrome-desktop|google-chrome/i.test(c)) {
+    const url = (c.match(/https?:\/\/\S+/) || [])[0] || "";
+    return { name: "computer", action: "open", summary: toolSummary("computer", { action: "open", text: url }) };
+  }
+  if (/\b(scrot|screenshot)\b/i.test(c)) {
+    return { name: "computer", action: "screenshot", summary: "Looked at the screen" };
+  }
+  return { name: "shell", action: "shell", summary: toolSummary("shell", { command: c }) };
+}
+
+function emitGrokToolActivity(bot, emit, seen, evt) {
+  const id = evt.toolCallId;
+  if (!id || seen.has(id) || typeof emit !== "function") return;
+  seen.add(id);
+  const cmd = evt.rawInput?.command || evt.rawOutput?.command || "";
+  const mapped =
+    evt.toolName === "web_search"
+      ? {
+          name: "web_search",
+          action: "web_search",
+          summary: toolSummary("web_search", { query: evt.rawInput?.query || evt.rawInput?.q || "" }),
+        }
+      : summarizeVmCommand(cmd);
+  const activity = {
+    id: `tl${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
+    role: "activity",
+    kind: "tool",
+    name: mapped.name,
+    action: mapped.action,
+    summary: mapped.summary,
+    ts: Date.now(),
+  };
+  bot.messages.push(activity);
+  emit("tool", { name: mapped.name, args: { action: mapped.action, command: cmd } });
+  emit("message", activity);
+}
+
+function runGrokBuild(harness, userText, signal, bot, emit) {
   const box = bot?.vm?.container || (bot?.id ? vm.containerName(bot.id) : "");
   if (!box) {
     return Promise.resolve(
-      "Grok Build only runs inside the bot computer, never on this Mac. Start the computer first.",
+      "Grok Build only runs inside a bot computer. Start the computer first.",
     );
   }
   const sessionId = bot.grokSessionId || bot.id;
@@ -844,15 +905,24 @@ function runGrokBuild(harness, userText, signal, bot) {
       : recap
         ? `Continuing this Bot's conversation on my computer.\nPrior conversation:\n${recap}\n\nUser:\n${userText}`
         : userText;
+    const promptFile = "/tmp/sub8-grok-prompt.txt";
+    await vm.writeFileToContainer(box, promptFile, prompt);
     const grokArgs = ["-m", harness.model || "grok-4.6"];
     if (exists) grokArgs.push("--resume", sessionId);
     else grokArgs.push("--session-id", sessionId);
+    // Same grok-build drive path on every OS. dontAsk + no TTY cancels
+    // tools (Windows Docker always; Electron on Mac often too).
     grokArgs.push(
-      "--single",
-      prompt,
+      "--prompt-file",
+      promptFile,
       "--permission-mode",
-      "dontAsk",
+      "bypassPermissions",
       "--always-approve",
+      "--max-turns",
+      "32",
+      "--no-alt-screen",
+      "--output-format",
+      "streaming-json",
       "--rules",
       rules,
     );
@@ -874,15 +944,10 @@ function runGrokBuild(harness, userText, signal, bot) {
         inner,
         ...grokArgs,
       ];
-      const dockerEnv = { ...process.env };
-      const host = vm.resolveDockerHost();
-      if (host) dockerEnv.DOCKER_HOST = host;
-      else delete dockerEnv.DOCKER_HOST;
-      const child = spawn("docker", args, {
-        env: dockerEnv,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      let out = "";
+      const child = vm.dockerSpawn(args);
+      let buf = "";
+      let reply = "";
+      const seenTools = new Set();
       let done = false;
       const finish = (text) => {
         if (done) return;
@@ -895,12 +960,34 @@ function runGrokBuild(harness, userText, signal, bot) {
         }
         resolve(text);
       };
+      const takeLine = (line) => {
+        const raw = String(line || "").trim();
+        if (!raw) return;
+        if (raw[0] !== "{") return;
+        let evt;
+        try {
+          evt = JSON.parse(raw);
+        } catch {
+          return;
+        }
+        if (evt.type === "text" && typeof evt.data === "string") reply += evt.data;
+        if (evt.type === "tool_call") emitGrokToolActivity(bot, emit, seenTools, evt);
+      };
+      const onChunk = (chunk) => {
+        buf += chunk.toString();
+        const lines = buf.split(/\r?\n/);
+        buf = lines.pop() || "";
+        for (const line of lines) takeLine(line);
+      };
       const timer = setTimeout(() => finish("Grok Build timed out inside the computer."), 180_000);
       signal?.addEventListener("abort", () => finish("Stopped."));
-      child.stdout.on("data", (d) => (out += d.toString()));
-      child.stderr.on("data", (d) => (out += d.toString()));
+      child.stdout.on("data", onChunk);
+      child.stderr.on("data", onChunk);
       child.on("error", (e) => finish(`Grok Build harness failed: ${e.message}`));
-      child.on("close", () => finish(out.trim() || "(no output from grok)"));
+      child.on("close", () => {
+        takeLine(buf);
+        finish(reply.trim() || "(no output from grok)");
+      });
     });
   })();
 }
