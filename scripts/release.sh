@@ -29,7 +29,7 @@ for dmg in dist/Sub8-mac-*.dmg dist/Sub8-"$VERSION"-mac-*.dmg dist/Sub8-"$VERSIO
 done
 
 echo "==> Windows"
-npx electron-builder --win zip --x64
+npx electron-builder --win nsis zip --x64
 
 echo "==> Linux"
 npx electron-builder --linux AppImage tar.gz --x64

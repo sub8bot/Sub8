@@ -25,12 +25,14 @@ Grab a build from [Releases](https://github.com/sub8bot/Sub8/releases).
 |---|---|
 | macOS (Apple Silicon) | [`Sub8-mac-arm64.dmg`](https://github.com/sub8bot/Sub8/releases/download/v0.3.0/Sub8-mac-arm64.dmg) — signed and notarized |
 | macOS (Intel) | [`Sub8-mac-x64.dmg`](https://github.com/sub8bot/Sub8/releases/download/v0.3.0/Sub8-mac-x64.dmg) — signed and notarized |
-| Windows | [`Sub8-win-x64.zip`](https://github.com/sub8bot/Sub8/releases/download/v0.3.0/Sub8-win-x64.zip) |
+| Windows | [`Sub8-win-x64.exe`](https://github.com/sub8bot/Sub8/releases/download/v0.3.1/Sub8-win-x64.exe) installer, or [`Sub8-win-x64.zip`](https://github.com/sub8bot/Sub8/releases/download/v0.3.1/Sub8-win-x64.zip) |
 | Linux | [`Sub8-linux-x86_64.AppImage`](https://github.com/sub8bot/Sub8/releases/download/v0.3.0/Sub8-linux-x86_64.AppImage) or [`Sub8-linux-x64.tar.gz`](https://github.com/sub8bot/Sub8/releases/download/v0.3.0/Sub8-linux-x64.tar.gz) |
 
 **macOS:** open the DMG, drag Sub8 to Applications, launch. Gatekeeper should accept it (Developer ID + notarized).
 
-**Windows / Linux:** unzip or run the AppImage.
+**Windows:** run the installer (`Sub8-win-x64.exe`), or unzip the portable zip. You need Docker Desktop.
+
+**Linux:** run the AppImage.
 
 You also need Docker (Colima on a Mac, or Docker Desktop) so each Bot can have a computer.
 
