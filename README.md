@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="/sub8bot/Sub8/raw/master/logo.png" width="280" alt="Sub8 mascot">
+  <img src="logo.png" width="280" alt="Sub8 mascot">
 </p>
 
 <h1 align="center">Sub8</h1>
@@ -14,7 +14,7 @@ Sub8 is a desktop app for macOS, Windows, and Linux. Each Bot gets an isolated L
 The mascot is the Smooth octopus you see in the rail: live Three.js, emoji faces, looping motions.
 
 <p align="center">
-  <img src="/sub8bot/Sub8/raw/master/docs/brand/octobot-catalog.png" width="720" alt="Sub8 face catalog">
+  <img src="docs/brand/octobot-catalog.png" width="720" alt="Sub8 face catalog">
 </p>
 
 ## Install
@@ -28,7 +28,7 @@ Grab a build from [Releases](https://github.com/sub8bot/Sub8/releases).
 | Windows | [`Sub8-win-x64.exe`](https://github.com/sub8bot/Sub8/releases/download/v0.3.7/Sub8-win-x64.exe) installer, or [`Sub8-win-x64.zip`](https://github.com/sub8bot/Sub8/releases/download/v0.3.7/Sub8-win-x64.zip) |
 | Linux | [`Sub8-linux-x86_64.AppImage`](https://github.com/sub8bot/Sub8/releases/download/v0.3.7/Sub8-linux-x86_64.AppImage) or [`Sub8-linux-x64.tar.gz`](https://github.com/sub8bot/Sub8/releases/download/v0.3.7/Sub8-linux-x64.tar.gz) |
 
-**macOS:** open the DMG, drag Sub8 to Applications, launch. Gatekeeper should accept it (Developer ID + notarized).
+**macOS:** open the DMG, drag Sub8 to Applications, launch. The app is Developer ID signed.
 
 **Windows:** run the installer (`Sub8-win-x64.exe`), or unzip the portable zip. You need Docker Desktop.
 
