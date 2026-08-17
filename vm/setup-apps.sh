@@ -12,16 +12,22 @@ apt-get update -qq
 apt-get install -y -qq wget ca-certificates desktop-file-utils xdg-utils fonts-liberation libnss3 libatk-bridge2.0-0 libgtk-3-0 libxss1 libasound2t64 libasound2 2>/dev/null || \
   apt-get install -y -qq wget ca-certificates desktop-file-utils xdg-utils fonts-liberation
 
+arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
+case "$arch" in
+  amd64|x86_64) chrome_deb="google-chrome-stable_current_amd64.deb"; rustdesk_deb="rustdesk-1.4.9-x86_64.deb" ;;
+  *) chrome_deb="google-chrome-stable_current_arm64.deb"; rustdesk_deb="rustdesk-1.4.9-aarch64.deb" ;;
+esac
+
 if [ "$need_chrome" = 1 ]; then
-  echo "Installing Google Chrome (arm64)…"
-  wget -q -O /tmp/chrome.deb "https://dl.google.com/linux/direct/google-chrome-stable_current_arm64.deb"
+  echo "Installing Google Chrome ($arch)…"
+  wget -q -O /tmp/chrome.deb "https://dl.google.com/linux/direct/${chrome_deb}"
   apt-get install -y -qq /tmp/chrome.deb || { dpkg -i /tmp/chrome.deb || true; apt-get install -f -y -qq; }
   rm -f /tmp/chrome.deb
 fi
 
 if [ "$need_rustdesk" = 1 ]; then
-  echo "Installing RustDesk 1.4.9…"
-  wget -q -O /tmp/rustdesk.deb "https://github.com/rustdesk/rustdesk/releases/download/1.4.9/rustdesk-1.4.9-aarch64.deb"
+  echo "Installing RustDesk 1.4.9 ($arch)…"
+  wget -q -O /tmp/rustdesk.deb "https://github.com/rustdesk/rustdesk/releases/download/1.4.9/${rustdesk_deb}"
   apt-get install -y -qq /tmp/rustdesk.deb || { dpkg -i /tmp/rustdesk.deb || true; apt-get install -f -y -qq; }
   rm -f /tmp/rustdesk.deb
 fi
