@@ -1323,7 +1323,16 @@ function settingsHtml() {
               : `<h2>Computer</h2>
           <div class="block">
             <div class="card">
-              <div class="row"><div><div class="lbl">Reset this Bot's computer</div><div class="sub">Wipes the Linux desktop for the Bot you're viewing. Files and logins on that computer go away.</div></div>
+              <div class="row"><div><div class="lbl">This Bot's desktop</div><div class="sub">${
+                state.bots.find((b) => b.id === state.selected)?.vm?.status === "running"
+                  ? `Running · stream port ${state.bots.find((b) => b.id === state.selected)?.vm?.novncPort || "—"}`
+                  : "Not attached. Reload to start or reconnect the existing computer."
+              }</div></div></div>
+              <div class="row"><div><div class="lbl">Reload computer</div><div class="sub">Start it if it’s down, or attach the existing one. Does not wipe files.</div></div>
+                <button class="pill primary" data-act="reload-vm">Reload</button></div>
+              <div class="row"><div><div class="lbl">Open in browser</div><div class="sub">Full desktop in a tab (Selkies). You can drive it there.</div></div>
+                <button class="pill" data-act="open-vm-browser">Open</button></div>
+              <div class="row"><div><div class="lbl">Reset computer</div><div class="sub">Destroys this Bot’s Linux desktop and makes a new empty one.</div></div>
                 <button class="danger" data-act="reset-vm">Reset</button></div>
             </div>
           </div>`
@@ -1605,7 +1614,24 @@ function bindDelegated() {
       render();
       return;
     }
-    if (act === "reset-vm") resetVm();
+    if (act === "reset-vm") {
+      if (confirm("Reset this Bot’s computer? Files and logins on that desktop will be gone.")) resetVm();
+      return;
+    }
+    if (act === "reload-vm") {
+      resumeVm();
+      return;
+    }
+    if (act === "open-vm-browser") {
+      const bot = state.bots.find((b) => b.id === state.selected);
+      const port = bot?.vm?.novncPort;
+      if (port) window.open(`http://127.0.0.1:${port}/`, "_blank");
+      else resumeVm().then(() => {
+        const b = state.bots.find((x) => x.id === state.selected);
+        if (b?.vm?.novncPort) window.open(`http://127.0.0.1:${b.vm.novncPort}/`, "_blank");
+      });
+      return;
+    }
     if (act === "add-routine") {
       state.modal = "routine";
       state.editingRoutineId = null;
@@ -2454,8 +2480,19 @@ function watchStream() {
   api(`/api/bots/${bot.id}/stream-health`)
     .then((h) => {
       if (h.ok && $("#screen-wrap iframe")) return;
+      if (!h.running && !startingVm) {
+        startingVm = true;
+        resumeVm()
+          .catch(() => {})
+          .finally(() => {
+            startingVm = false;
+          });
+        return;
+      }
       if (bot.vm?.novncPort) scheduleStreamRetry(bot, 400);
-      else if (!startingVm && vm.status !== "starting") {
+    })
+    .catch(() => {
+      if (!startingVm) {
         startingVm = true;
         resumeVm()
           .catch(() => {})
@@ -2463,9 +2500,6 @@ function watchStream() {
             startingVm = false;
           });
       }
-    })
-    .catch(() => {
-      if (bot.vm?.novncPort) scheduleStreamRetry(bot, 1200);
     });
 }
 

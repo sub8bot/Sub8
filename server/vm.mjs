@@ -195,8 +195,13 @@ export async function ensureImage(onLog = () => {}) {
   if (!pull.ok) throw new Error(`docker pull failed: ${pull.out.slice(-800)}`);
 }
 
+function configVolume(bot) {
+  return bot.vm?.volume || `localbot-config-${String(bot.id || "bot").slice(0, 8)}`;
+}
+
 export async function startVm(bot, onLog = () => {}, shouldAbort = async () => false) {
   const name = containerName(bot.id);
+  const volume = configVolume(bot);
   const abortIfGone = async () => {
     if (!(await shouldAbort())) return;
     await docker(["rm", "-f", name]);
@@ -210,12 +215,13 @@ export async function startVm(bot, onLog = () => {}, shouldAbort = async () => f
     await abortIfGone();
     await ensureApps(name, onLog);
     await abortIfGone();
-    return { container: name, novncPort: port, status: "running", display: ":1" };
+    return { container: name, novncPort: port, status: "running", display: ":1", volume };
   }
   if (existing.ok) await docker(["rm", "-f", name]);
 
   await ensureImage(onLog);
   await abortIfGone();
+  await docker(["volume", "create", volume]);
   const port = await allocatePort();
   onLog(`Starting computer on port ${port}…`);
   const runr = await docker([
@@ -238,6 +244,8 @@ export async function startVm(bot, onLog = () => {}, shouldAbort = async () => f
     "SELKIES_MANUAL_WIDTH=1024",
     "-e",
     "SELKIES_MANUAL_HEIGHT=768",
+    "-v",
+    `${volume}:/config`,
     "-p",
     `${port}:3000`,
     IMAGE,
@@ -260,7 +268,7 @@ export async function startVm(bot, onLog = () => {}, shouldAbort = async () => f
     "-lc",
     `${displayEnv({ vm: { display: ":1" } })}; xrandr --size 1024x768 || true`,
   ]);
-  return { container: name, novncPort: port, status: "running", display: ":1" };
+  return { container: name, novncPort: port, status: "running", display: ":1", volume };
 }
 
 async function detectMappedPort(name) {
@@ -369,6 +377,8 @@ export async function stopVm(bot) {
 /** Remove localbot-* containers that do not belong to a known bot. */
 export async function sweepOrphans(keepNames = []) {
   const keep = new Set(keepNames.filter(Boolean));
+  // Empty bot list = new data dir. Never delete every computer.
+  if (keep.size === 0) return [];
   const listed = await docker(["ps", "-aq", "--filter", "name=localbot-"]);
   if (!listed.ok || !listed.out.trim()) return [];
   const inspect = await docker([
@@ -448,7 +458,10 @@ export async function streamHealth(bot) {
 export async function waitForDesktop(bot, { timeoutMs = 90_000, onLog = () => {}, shouldAbort } = {}) {
   const start = Date.now();
   const gone = async () => Boolean(shouldAbort && (await shouldAbort()));
-  if (!bot.vm?.container || bot.vm.status !== "running") {
+  const name = containerName(bot.id);
+  const inspect = await docker(["inspect", "-f", "{{.State.Running}}", name]);
+  const alive = inspect.ok && inspect.out.trim() === "true";
+  if (!alive) {
     onLog("Starting computer…");
     const info = await startVm(bot, onLog, shouldAbort);
     bot.vm = { ...bot.vm, ...info, error: null };
@@ -528,19 +541,31 @@ async function annotateShot(hostPath, x, y) {
   }
 }
 
+async function takeScreenshotPng(bot, name, dest) {
+  return docker([
+    "exec",
+    "-u",
+    "abc",
+    name,
+    "bash",
+    "-lc",
+    `${displayEnv(bot)}; xrandr --size 1024x768 >/dev/null 2>&1 || true; mkdir -p /tmp; scrot -p -o ${dest} || import -window root ${dest}`,
+  ]);
+}
+
+function missingShotTool(out = "") {
+  return /scrot:.*(not found|command not found)|import:.*(not found|command not found)|command not found: (scrot|import)/i.test(out);
+}
+
 export async function screenshot(bot) {
   const name = requireVm(bot, "screenshot");
   return trace.span(bot, "outside", "screenshot", {}, async () => {
     const dest = `/tmp/shot-${Date.now()}.png`;
-    const r = await docker([
-      "exec",
-      "-u",
-      "abc",
-      name,
-      "bash",
-      "-lc",
-      `${displayEnv(bot)}; xrandr --size 1024x768 >/dev/null 2>&1 || true; mkdir -p /tmp; scrot -p -o ${dest} || import -window root ${dest}`,
-    ]);
+    let r = await takeScreenshotPng(bot, name, dest);
+    if (!r.ok && missingShotTool(r.out)) {
+      await ensureTools(name, () => {});
+      r = await takeScreenshotPng(bot, name, dest);
+    }
     if (!r.ok) throw new Error(`screenshot failed: ${r.out.slice(-400)}`);
     const hostPath = path.resolve(dataDir, "screens", `${bot.id}.png`);
     await fs.mkdir(path.dirname(hostPath), { recursive: true });

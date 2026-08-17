@@ -1,12 +1,42 @@
 import { app, BrowserWindow, session, shell, nativeImage } from "electron";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const PORT = process.env.PORT || "8787";
-const URL = process.env.LOCALBOT_URL || `http://127.0.0.1:${PORT}`;
+let PORT = process.env.PORT || "8787";
+let URL = process.env.LOCALBOT_URL || `http://127.0.0.1:${PORT}`;
+
+function dockerHost() {
+  const sock = path.join(os.homedir(), ".colima", "default", "docker.sock");
+  if (fs.existsSync(sock)) return `unix://${sock}`;
+  return process.env.DOCKER_HOST || "";
+}
+
+function portFree(port) {
+  return new Promise((resolve) => {
+    const s = net.createServer();
+    s.once("error", () => resolve(false));
+    s.once("listening", () => s.close(() => resolve(true)));
+    s.listen(port, "127.0.0.1");
+  });
+}
+
+async function resolvePort() {
+  try {
+    const r = await fetch("http://127.0.0.1:8787/api/health", { signal: AbortSignal.timeout(500) });
+    if (r.ok) return { port: 8787, already: true };
+  } catch {
+    /* free or not ours */
+  }
+  for (const p of [8787, 8791, 8792, 8793]) {
+    if (await portFree(p)) return { port: p, already: false };
+  }
+  return { port: 8787, already: false };
+}
 
 app.setName("OctoBot");
 app.setAboutPanelOptions({
@@ -32,17 +62,20 @@ function startServer() {
   const data = path.join(app.getPath("userData"), "data");
   fs.mkdirSync(data, { recursive: true });
   const serverPath = path.join(root, "server", "index.mjs");
+  const log = fs.openSync(path.join(app.getPath("userData"), "server.log"), "a");
   const child = spawn(process.execPath, [serverPath], {
-    cwd: app.isPackaged ? app.getPath("userData") : path.resolve(here, ".."),
+    cwd: app.getPath("userData"),
     env: {
       ...process.env,
       ELECTRON_RUN_AS_NODE: "1",
-      PORT,
+      PORT: String(PORT),
+      DOCKER_HOST: dockerHost() || process.env.DOCKER_HOST || "",
       OCTOBOT_ROOT: root,
       OCTOBOT_FILES: root.endsWith(".asar") ? root.replace(/\.asar$/, ".asar.unpacked") : root,
       OCTOBOT_DATA: data,
+      HOME: os.homedir(),
     },
-    stdio: "inherit",
+    stdio: ["ignore", log, log],
   });
   child.on("exit", (code) => {
     if (code && code !== 0) console.error("OctoBot server exited", code);
@@ -142,8 +175,11 @@ if (!gotLock) {
   app.quit();
 } else {
   app.on("second-instance", () => focusMainWindow());
-  app.whenReady().then(() => {
-    serverProc = startServer();
+  app.whenReady().then(async () => {
+    const resolved = await resolvePort();
+    PORT = String(resolved.port);
+    URL = process.env.LOCALBOT_URL || `http://127.0.0.1:${PORT}`;
+    if (!resolved.already) serverProc = startServer();
     create();
   });
   app.on("activate", () => focusMainWindow());
