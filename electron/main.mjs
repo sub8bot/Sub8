@@ -11,12 +11,9 @@ let PORT = process.env.PORT || "8787";
 let URL = process.env.LOCALBOT_URL || `http://127.0.0.1:${PORT}`;
 
 function dockerHost() {
-  const env = process.env.DOCKER_HOST || "";
-  if (process.platform === "win32") {
-    if (env && !/colima|unix:\/\//i.test(env)) return env;
-    return "npipe:////./pipe/docker_engine";
-  }
-  if (env) return env;
+  const env = String(process.env.DOCKER_HOST || "").trim();
+  if (process.platform === "win32") return "npipe:////./pipe/docker_engine";
+  if (env && !/colima/i.test(env) && !/^unix:\/\/[A-Za-z]:/.test(env)) return env;
   const socks = [path.join(os.homedir(), ".colima", "default", "docker.sock"), "/var/run/docker.sock"];
   for (const sock of socks) {
     if (fs.existsSync(sock)) return `unix://${sock}`;

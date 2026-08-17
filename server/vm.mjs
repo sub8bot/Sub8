@@ -8,20 +8,21 @@ import * as trace from "./trace.mjs";
 import { appRoot, fileRoot, dataDir } from "./paths.mjs";
 
 export function resolveDockerHost() {
-  const env = process.env.DOCKER_HOST || "";
-  // Windows never uses a Colima unix socket. HOME=C:\Users\... turns
-  // unix://$HOME/.colima/... into an invalid URL and docker refuses to start.
-  if (process.platform === "win32") {
-    if (env && !/colima|unix:\/\//i.test(env)) return env;
+  const env = String(process.env.DOCKER_HOST || "").trim();
+  const win = process.platform === "win32" || process.env.OS === "Windows_NT";
+  // Never hand Docker a Colima unix socket on Windows. HOME=C:\Users\x
+  // makes unix://$HOME/.colima/... an invalid URL.
+  if (win) {
+    if (env && /^npipe:|^tcp:\/\//i.test(env) && !/colima/i.test(env)) return env;
     return "npipe:////./pipe/docker_engine";
   }
-  if (env) return env;
+  if (env && !/^unix:\/\/[A-Za-z]:/.test(env)) return env;
   const home = process.env.HOME || os.homedir() || "";
   const socks = [home && path.join(home, ".colima", "default", "docker.sock"), "/var/run/docker.sock"].filter(Boolean);
   for (const sock of socks) {
     if (fsSync.existsSync(sock)) return `unix://${sock}`;
   }
-  return home ? `unix://${path.join(home, ".colima", "default", "docker.sock")}` : "unix:///var/run/docker.sock";
+  return "unix:///var/run/docker.sock";
 }
 
 export function dockerPlatform() {
@@ -32,7 +33,12 @@ const IMAGE = process.env.LOCALBOT_IMAGE || "linuxserver/webtop:ubuntu-xfce";
 const START_PORT = 13100;
 
 function dockerEnv() {
-  return { ...process.env, DOCKER_HOST: resolveDockerHost() };
+  const env = { ...process.env, DOCKER_HOST: resolveDockerHost() };
+  if (process.platform === "win32" || process.env.OS === "Windows_NT") {
+    delete env.DOCKER_HOST;
+    env.DOCKER_HOST = "npipe:////./pipe/docker_engine";
+  }
+  return env;
 }
 
 function run(cmd, args, opts = {}) {
@@ -522,6 +528,8 @@ export async function streamHealth(bot) {
 }
 
 export async function waitForDesktop(bot, { timeoutMs = 90_000, onLog = () => {}, shouldAbort } = {}) {
+  const dock = await dockerStatus();
+  if (!dock.ok) return { ok: false, reason: dock.hint };
   const start = Date.now();
   const gone = async () => Boolean(shouldAbort && (await shouldAbort()));
   const name = containerName(bot.id);
@@ -529,8 +537,12 @@ export async function waitForDesktop(bot, { timeoutMs = 90_000, onLog = () => {}
   const alive = inspect.ok && inspect.out.trim() === "true";
   if (!alive) {
     onLog("Starting computer…");
-    const info = await startVm(bot, onLog, shouldAbort);
-    bot.vm = { ...bot.vm, ...info, error: null };
+    try {
+      const info = await startVm(bot, onLog, shouldAbort);
+      bot.vm = { ...bot.vm, ...info, error: null };
+    } catch (err) {
+      return { ok: false, reason: err.message || "Could not start the computer." };
+    }
   }
   while (Date.now() - start < timeoutMs) {
     if (await gone()) return { ok: false, reason: "aborted" };
