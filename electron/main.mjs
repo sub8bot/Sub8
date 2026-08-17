@@ -81,7 +81,7 @@ function create() {
     height: 760,
     minWidth: 880,
     minHeight: 560,
-    show: false,
+    show: true,
     title: "OctoBot",
     backgroundColor: "#ffffff",
     titleBarStyle: "hiddenInset",
@@ -92,17 +92,13 @@ function create() {
   win.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
     callback(permission === "media" || permission === "microphone" || permission === "audioCapture");
   });
-  if (icon && process.platform === "darwin") {
-    app.dock?.setIcon(nativeImage.createFromPath(icon));
+  // Packaged Mac uses the icns (system rounding). setDockIcon(square PNG) makes a square tile.
+  if (!app.isPackaged && process.platform === "darwin") {
+    const rounded = path.join(here, "..", "docs", "brand", "octobot-icon-rounded.png");
+    if (fs.existsSync(rounded)) app.dock?.setIcon(nativeImage.createFromPath(rounded));
   }
-  win.once("ready-to-show", () => {
-    if (win.isDestroyed()) return;
-    win.show();
-    win.focus();
-  });
-  setTimeout(() => {
-    if (!win.isDestroyed() && !win.isVisible()) win.show();
-  }, 3000);
+  win.show();
+  win.focus();
   waitForServer().finally(() => {
     const load = () => {
       if (!win.isDestroyed()) win.loadURL(URL);
