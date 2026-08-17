@@ -355,7 +355,7 @@ export function isOctopusBody() {
 const OCTO = BODIES;
 
 /**
- * Procedural Sub8Bot — Smooth octopus body, emoji faces, looping motions.
+ * Procedural Sub8 — Smooth octopus body, emoji faces, looping motions.
  * Drop into any Three.js scene: `scene.add(new GrokBot())`.
  */
 export class GrokBot extends THREE.Group {

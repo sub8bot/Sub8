@@ -38,9 +38,9 @@ async function resolvePort() {
   return { port: 8787, already: false };
 }
 
-app.setName("Sub8Bot");
+app.setName("Sub8");
 app.setAboutPanelOptions({
-  applicationName: "Sub8Bot",
+  applicationName: "Sub8",
   applicationVersion: app.getVersion(),
   copyright: "Copyright © 2026 Daniel Farina",
 });
@@ -51,6 +51,7 @@ function migrateLegacyUserData() {
   if (fs.existsSync(path.join(dest, "bots.json"))) return;
   const home = os.homedir();
   const candidates = [
+    path.join(home, "Library", "Application Support", "Sub8Bot", "data"),
     path.join(home, "Library", "Application Support", "OctoBot", "data"),
     path.join(home, "Library", "Application Support", "octobot", "data"),
   ];
@@ -99,7 +100,7 @@ function startServer() {
     stdio: ["ignore", log, log],
   });
   child.on("exit", (code) => {
-    if (code && code !== 0) console.error("Sub8Bot server exited", code);
+    if (code && code !== 0) console.error("Sub8 server exited", code);
   });
   return child;
 }
@@ -136,7 +137,7 @@ function create() {
     minWidth: 880,
     minHeight: 560,
     show: true,
-    title: "Sub8Bot",
+    title: "Sub8",
     backgroundColor: "#ffffff",
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 16, y: 18 },

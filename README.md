@@ -1,34 +1,34 @@
 <p align="center">
-  <img src="docs/brand/octobot-logo-rounded.png" width="280" alt="Sub8Bot mascot">
+  <img src="docs/brand/octobot-logo-rounded.png" width="280" alt="Sub8 mascot">
 </p>
 
-<h1 align="center">Sub8Bot</h1>
+<h1 align="center">Sub8</h1>
 
 <p align="center">
   Local desktop assistants that live on their own Linux computers.<br>
   Chat with a Bot. Watch it click, type, and work — never on your Mac.
 </p>
 
-Sub8Bot is a desktop app for macOS, Windows, and Linux. Each Bot gets an isolated Linux desktop (Docker). You talk in the chat; the Bot uses the computer like a person — screenshot, then mouse and keyboard. Mid-task questions are answered while it keeps working.
+Sub8 is a desktop app for macOS, Windows, and Linux. Each Bot gets an isolated Linux desktop (Docker). You talk in the chat; the Bot uses the computer like a person — screenshot, then mouse and keyboard. Mid-task questions are answered while it keeps working.
 
 The mascot is the Smooth octopus you see in the rail: live Three.js, emoji faces, looping motions.
 
 <p align="center">
-  <img src="docs/brand/octobot-catalog.png" width="720" alt="Sub8Bot face catalog">
+  <img src="docs/brand/octobot-catalog.png" width="720" alt="Sub8 face catalog">
 </p>
 
 ## Install
 
-Private repo for now. Grab a build from [Releases](https://github.com/Sub8Bot/Sub8Bot/releases).
+Private repo for now. Grab a build from [Releases](https://github.com/sub8bot/Sub8Bot/releases).
 
 | Platform | Artifact |
 |---|---|
-| macOS (Apple Silicon) | `Sub8Bot-0.3.0-mac-arm64.dmg` — signed and notarized |
-| macOS (Intel) | `Sub8Bot-0.3.0-mac-x64.dmg` — signed and notarized |
-| Windows | `Sub8Bot-0.3.0-win-x64.zip` |
-| Linux | `Sub8Bot-0.3.0-linux-x86_64.AppImage` or `Sub8Bot-0.3.0-linux-x64.tar.gz` |
+| macOS (Apple Silicon) | `Sub8-0.3.0-mac-arm64.dmg` — signed and notarized |
+| macOS (Intel) | `Sub8-0.3.0-mac-x64.dmg` — signed and notarized |
+| Windows | `Sub8-0.3.0-win-x64.zip` |
+| Linux | `Sub8-0.3.0-linux-x86_64.AppImage` or `Sub8-0.3.0-linux-x64.tar.gz` |
 
-**macOS:** open the DMG, drag Sub8Bot to Applications, launch. Gatekeeper should accept it (Developer ID + notarized).
+**macOS:** open the DMG, drag Sub8 to Applications, launch. Gatekeeper should accept it (Developer ID + notarized).
 
 **Windows / Linux:** unzip or run the AppImage.
 

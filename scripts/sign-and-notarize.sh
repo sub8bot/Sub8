@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Developer ID-sign, notarize, and staple Sub8Bot.
+# Developer ID-sign, notarize, and staple Sub8.
 #
-#   scripts/sign-and-notarize.sh [path-to-Sub8Bot.app|Sub8Bot.dmg] [--sign-only]
+#   scripts/sign-and-notarize.sh [path-to-Sub8.app|Sub8.dmg] [--sign-only]
 #
 # Requires env (never commit these):
 #   SUB8BOT_SIGN_IDENTITY (or OCTOBOT_SIGN_IDENTITY)
@@ -10,7 +10,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TARGET="${1:-$ROOT/dist/mac-arm64/Sub8Bot.app}"
+TARGET="${1:-$ROOT/dist/mac-arm64/Sub8.app}"
 SIGN_ONLY=""
 for a in "$@"; do [ "$a" = "--sign-only" ] && SIGN_ONLY=1; done
 
@@ -62,7 +62,7 @@ fi
 SUBMIT="$TARGET"
 ZIP=""
 if [[ "$TARGET" == *.app ]]; then
-  ZIP="${TMPDIR:-/tmp}/Sub8Bot-notarize-$$.zip"
+  ZIP="${TMPDIR:-/tmp}/Sub8-notarize-$$.zip"
   rm -f "$ZIP"
   echo "==> Zipping for notarytool"
   ditto -c -k --keepParent "$TARGET" "$ZIP"

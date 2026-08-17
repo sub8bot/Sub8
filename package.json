@@ -1,16 +1,16 @@
 {
   "name": "sub8bot",
-  "productName": "Sub8Bot",
+  "productName": "Sub8",
   "version": "0.3.0",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
   "author": "Daniel Farina",
-  "description": "Sub8Bot — local desktop assistants that live on their own Linux computers.",
+  "description": "Sub8 — local desktop assistants that live on their own Linux computers.",
   "scripts": {
     "start": "node server/index.mjs",
     "app": "zsh start.sh",
-    "electron": "zsh scripts/macos-dev-app.sh >/dev/null && open -n -a .app/Sub8Bot.app --args \"$PWD\"",
+    "electron": "zsh scripts/macos-dev-app.sh >/dev/null && open -n -a .app/Sub8.app --args \"$PWD\"",
     "test": "node test/tunnels.mjs",
     "icons": "python3 scripts/make-icons.py && iconutil -c icns build/icon.iconset -o build/icon.icns",
     "logo": "node scripts/render-logo.mjs",
@@ -34,7 +34,7 @@
   },
   "build": {
     "appId": "app.sub8bot.desktop",
-    "productName": "Sub8Bot",
+    "productName": "Sub8",
     "copyright": "Copyright © 2026 Daniel Farina",
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "directories": {
@@ -80,8 +80,8 @@
         }
       ],
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "Sub8Bot uses the microphone so you can dictate messages.",
-        "NSSpeechRecognitionUsageDescription": "Sub8Bot turns your speech into text on this Mac."
+        "NSMicrophoneUsageDescription": "Sub8 uses the microphone so you can dictate messages.",
+        "NSSpeechRecognitionUsageDescription": "Sub8 turns your speech into text on this Mac."
       },
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
@@ -90,7 +90,7 @@
       "notarize": false
     },
     "dmg": {
-      "title": "Sub8Bot",
+      "title": "Sub8",
       "icon": "build/icon.icns",
       "sign": true
     },

@@ -1,6 +1,6 @@
-# Sub8Bot avatars
+# Sub8 avatars
 
-The Sub8Bot avatar is a live Three.js octopus (Smooth body) with emoji faces and looping motions. Preview every face and motion at `/tool.html`. Use this doc to drop the same thing into the main app.
+The Sub8 avatar is a live Three.js octopus (Smooth body) with emoji faces and looping motions. Preview every face and motion at `/tool.html`. Use this doc to drop the same thing into the main app.
 
 ## Files
 

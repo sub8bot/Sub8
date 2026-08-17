@@ -61,7 +61,7 @@ function mount() {
     <div class="page">
       <header class="top">
         <div>
-          <h1>Sub8Bot catalog</h1>
+          <h1>Sub8 catalog</h1>
           <p class="lede">Bodies, faces, and motions. Click a card to pick.</p>
         </div>
         <div class="count">${bodies.length} bodies · ${faces.length} faces · ${motions.length} motions</div>

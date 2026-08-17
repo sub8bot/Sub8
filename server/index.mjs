@@ -698,7 +698,7 @@ app.get("/", (_req, res) => {
 });
 
 app.listen(PORT, "127.0.0.1", async () => {
-  console.log(`Sub8Bot http://127.0.0.1:${PORT}`);
+  console.log(`Sub8 http://127.0.0.1:${PORT}`);
   try {
     const bots = await store.loadBots();
     const keep = bots.map((b) => b.vm?.container || vm.containerName(b.id));

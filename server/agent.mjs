@@ -256,7 +256,7 @@ async function loadSystemPrompt(bot) {
   const ident = `\nYou are the Bot named "${bot.name}". ${bot.description || ""}\n`;
   return `${adapter}\n${computer}\n${ident}${extra}${routines.promptBlock(bot)}\n${core}
 
-## Sub8Bot override (this wins)
+## Sub8 override (this wins)
 You already know the machine. Do not spend the first turns on \`pwd\`, \`whoami\`, \`ls /home\`, or hunting /workspace.
 After send_message, if the user asked for something on the desktop (research, Chrome, files they can see, clicks): call \`computer\` screenshot next, then click like a human.
 Use \`shell\` only for a concrete command you already know belongs on this computer (write a file under /config, run a known binary). Never explore the filesystem to "discover" where you are.
