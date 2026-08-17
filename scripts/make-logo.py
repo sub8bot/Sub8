@@ -8,9 +8,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "docs" / "brand" / "octobot-logo.png"  # transparent 3D cutout
 FALLBACK = ROOT / "docs" / "brand" / "octobot-icon-source.png"
 OUT_DIR = ROOT / "docs" / "brand"
-CORAL = (247, 76, 94, 255)
-# slightly deeper coral for the rim so the edge reads on any background
-RIM = (214, 48, 68, 255)
+# Complementary gold-yellow to the logo purple (#b06dd1)
+FILL = (245, 208, 74, 255)
+RIM = (214, 168, 28, 255)
 HI = 4096
 OUT = 2048
 # Apple-like corner, a hair tighter so the rim stays even
@@ -20,7 +20,7 @@ RIM_PX = 14  # ~3.5px at 1024, ~1.75px at 512 — stays crisp after downsample
 
 
 def fit(im, size, pad):
-    canvas = Image.new("RGBA", (size, size), CORAL)
+    canvas = Image.new("RGBA", (size, size), FILL)
     inner = int(size * (1 - 2 * pad))
     art = im.convert("RGBA")
     scale = min(inner / art.width, inner / art.height)
