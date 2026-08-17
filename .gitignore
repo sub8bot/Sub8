@@ -1,5 +1,6 @@
 node_modules
 .app
+scripts/.cache
 data/*.json
 data/screens
 data/conversations

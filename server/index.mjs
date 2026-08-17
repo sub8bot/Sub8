@@ -1,6 +1,8 @@
 import express from "express";
 import path from "node:path";
 import fs from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import * as store from "./store.mjs";
 import * as vm from "./vm.mjs";
@@ -66,6 +68,65 @@ app.get("/api/events", (req, res) => {
   req.on("close", () => {
     clearInterval(iv);
     clients.delete(res);
+  });
+});
+
+function whisperModel() {
+  const home = process.env.HOME || "";
+  const names = [
+    path.join(root, "scripts", ".cache", "ggml-base.en.bin"),
+    path.join(root, "scripts", ".cache", "ggml-tiny.en.bin"),
+    path.join(home, "vid2", "models", "ggml-base.en.bin"),
+    path.join(home, "Library", "Application Support", "com.danielfarina.grok-remote", "whisper-models", "ggml-base.bin"),
+    "/opt/homebrew/share/whisper-cpp/for-tests-ggml-tiny.bin",
+  ];
+  return names.find((p) => existsSync(p));
+}
+
+app.post("/api/dictate", (req, res) => {
+  const chunks = [];
+  req.on("data", (c) => chunks.push(c));
+  req.on("end", async () => {
+    const buf = Buffer.concat(chunks);
+    if (buf.length < 800) return res.status(400).json({ ok: false, error: "empty audio" });
+    const raw = path.join("/tmp", `octo-dictate-${Date.now()}`);
+    const src = `${raw}.bin`;
+    const wav = `${raw}.wav`;
+    try {
+      await fs.writeFile(src, buf);
+      const ff = spawnSync(
+        "ffmpeg",
+        ["-y", "-i", src, "-ac", "1", "-ar", "16000", wav],
+        { encoding: "utf8", timeout: 20_000 },
+      );
+      const use = existsSync(wav) ? wav : src;
+      if (!existsSync(use) || ff.status !== 0 && !existsSync(wav)) {
+        return res.status(422).json({ ok: false, error: ff.stderr?.slice(-200) || "couldn’t decode audio" });
+      }
+      const model = whisperModel();
+      const cli = "/opt/homebrew/bin/whisper-cli";
+      if (!model) {
+        return res.status(500).json({ ok: false, error: "No Whisper model on this Mac." });
+      }
+      const r = spawnSync(cli, ["-m", model, "-f", use, "-nt", "-np", "-l", "en"], {
+        encoding: "utf8",
+        timeout: 45_000,
+      });
+      const text = String(r.stdout || "")
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith("[") && !l.startsWith("whisper_"))
+        .join(" ")
+        .trim();
+      if (text) return res.json({ ok: true, text });
+      const err = String(r.stderr || "").split("\n").slice(-3).join(" ") || "no speech";
+      res.status(422).json({ ok: false, error: err, code: r.status });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    } finally {
+      fs.unlink(src).catch(() => {});
+      fs.unlink(wav).catch(() => {});
+    }
   });
 });
 
@@ -593,7 +654,10 @@ async function tickRoutines() {
       await store.patchBot(bot.id, (live) => {
         for (const id of pack.ids) {
           const r = (live.routines || []).find((x) => x.id === id);
-          if (r) r.lastRunAt = now;
+          if (r) {
+            r.lastRunAt = now;
+            r.runs = [...(Array.isArray(r.runs) ? r.runs : []), { ts: now }].slice(-24);
+          }
         }
       });
       const prompt = `Standing routine "${pack.name}" is due. Do this work now, then stop if nothing changed:\n${pack.instruction}`;

@@ -24,7 +24,7 @@ const state = {
   humanControl: false,
   railWake: null,
   ctx: null,
-  hasGrokAuth: false,
+  hasGrokAuth: null,
   grokAuthAsk: false,
   teach: null,
   teachFrames: [],
@@ -482,6 +482,10 @@ function iconMic() {
   return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>`;
 }
 
+function iconSend() {
+  return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>`;
+}
+
 function iconClock() {
   return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>`;
 }
@@ -699,7 +703,7 @@ function paintChatPane(bot) {
     chat.innerHTML = `<div class="empty">Create a Bot to get started.</div>`;
     return;
   }
-  if (!$("#thread") || !$(".composer-send") || !$(".chat-head") || $(".chat-stop") || document.querySelector("[data-act=picker]")) {
+  if (!$("#thread") || !$(".composer-mic") || !$(".chat-head") || $(".chat-stop") || document.querySelector("[data-act=picker]")) {
     chat.innerHTML = `
       <div class="chat-head">
         <span class="chat-head-name">${escapeHtml(bot.name)}</span>
@@ -713,7 +717,8 @@ function paintChatPane(bot) {
           <button type="button" class="composer-plus" data-act="plus-menu" title="Add">${iconPlus()}</button>
           <input name="q" placeholder="Message ${escapeHtml(bot.name)}" autocomplete="off" />
           <button type="button" class="composer-send composer-stop" data-act="stop-turn" hidden title="Stop">${iconStop()}</button>
-          <button type="submit" class="composer-send composer-go" title="Send">${iconMic()}</button>
+          <button type="button" class="composer-mic" data-act="dictate" title="Speak">${iconMic()}</button>
+          <button type="submit" class="composer-send composer-go" title="Send">${iconSend()}</button>
         </form>
         <input id="attach-file" type="file" multiple hidden />
       </div>
@@ -865,7 +870,7 @@ function paintCtxMenu() {
       ${item("ctx-copy", "copy", "Copy conversation ID")}
       ${item("ctx-hide", "hide", bot.hidden ? "Show in sidebar" : "Hide from sidebar")}
       <div class="ctx-sep"></div>
-      ${item("ctx-del", "del", "Delete", "danger")}
+      ${item("ctx-del", "del", "Delete", "ctx-danger")}
     </div>
     ${move}
     ${namePrompt}`;
@@ -1044,7 +1049,7 @@ function paintRoutineList(bot) {
           <span class="routine-clock">${iconClock()}</span>
           <div class="routine-copy">
             <b>${escapeHtml(r.name || "Routine")}</b>
-            <div class="muted">Every ${mins} minutes${on ? "" : ", paused"}</div>
+            <div class="muted">Every ${mins} minutes${on ? "" : ", paused"}${r.lastRunAt ? ` · last ${fmtWhen(r.lastRunAt)}` : ""}</div>
           </div>
         </div>
         <p class="routine-body">${escapeHtml(previewRoutine(r.instruction))}</p>
@@ -1056,6 +1061,18 @@ function paintRoutineList(bot) {
       </div>`;
     })
     .join("");
+}
+
+function fmtWhen(ts) {
+  const n = Number(ts);
+  if (!n) return "—";
+  const d = new Date(n);
+  const now = Date.now();
+  const ago = Math.max(0, now - n);
+  if (ago < 60_000) return "just now";
+  if (ago < 3600_000) return `${Math.round(ago / 60_000)} min ago`;
+  if (ago < 86400_000) return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return d.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
 function previewRoutine(text) {
@@ -1130,22 +1147,14 @@ function routineEditorHtml(bot) {
   const r = (bot.routines || []).find((x) => x.id === state.editingRoutineId);
   const isNew = !r;
   const mins = r ? Math.max(1, Math.round((r.intervalMs || 0) / 60000)) : 15;
-  const groups = [
-    ["x-inbox", "X inbox"],
-    ["email", "Email"],
-    ["flights", "Flights"],
-    ["calendar", "Calendar"],
-    ["files", "Files"],
-    ["general", "General"],
-  ];
-  const group = r?.groupKey || "general";
   const on = r?.enabled !== false;
+  const runs = Array.isArray(r?.runs) ? [...r.runs].reverse().slice(0, 12) : [];
   return `<div class="overlay">
     <div class="modal routine-modal" data-modal="1">
       <div class="sbody routine-editor">
         <button class="close" data-act="close-modal">×</button>
         <div class="routine-editor-head">
-          <h2>${isNew ? "New routine" : "Edit routine"}</h2>
+          <h2>${isNew ? "New routine" : "Main routine"}</h2>
           ${
             isNew
               ? ""
@@ -1155,7 +1164,7 @@ function routineEditorHtml(bot) {
         <div class="routine-grid">
           <label class="routine-field">
             <span class="muted">Name</span>
-            <input class="field" id="rn" value="${escapeHtml(r?.name || "")}" placeholder="X inbox" />
+            <input class="field" id="rn" value="${escapeHtml(r?.name || "")}" placeholder="Main routine" />
           </label>
           <label class="routine-field">
             <span class="muted">Every</span>
@@ -1165,22 +1174,22 @@ function routineEditorHtml(bot) {
             </div>
           </label>
         </div>
-        <div class="routine-field">
-          <span class="muted">Group — same group merges overlapping jobs</span>
-          <div class="seg wrap" id="rg-seg">
-            ${groups
-              .map(
-                ([id, label]) =>
-                  `<button type="button" class="seg-btn ${group === id ? "on" : ""}" data-act="routine-group" data-id="${id}">${escapeHtml(label)}</button>`,
-              )
-              .join("")}
-          </div>
-          <input type="hidden" id="rg" value="${escapeHtml(group)}" />
-        </div>
         <label class="routine-field routine-brief">
           <span class="muted">What it should do</span>
           <textarea class="field" id="ri" placeholder="Standing brief: who you are, what to check, how to reply, when to stop.">${escapeHtml(r?.instruction || "")}</textarea>
         </label>
+        ${
+          isNew
+            ? ""
+            : `<div class="routine-history">
+          <div class="muted">Trigger history</div>
+          ${
+            runs.length
+              ? `<ul>${runs.map((x) => `<li>${escapeHtml(fmtWhen(x.ts))}</li>`).join("")}</ul>`
+              : `<p class="muted">No runs logged yet. They appear here each time this routine fires.</p>`
+          }
+        </div>`
+        }
         <div class="routine-editor-foot">
           <button type="button" class="pill" data-act="close-modal">Cancel</button>
           <button type="button" class="pill primary" data-act="save-routine">${isNew ? "Create" : "Save"}</button>
@@ -1306,7 +1315,7 @@ function settingsHtml() {
           <div class="block"><h3>This Mac</h3>
             <div class="card">
               <div class="row"><div class="lbl">Timezone</div><span class="muted">${escapeHtml(state.timezone || "auto")}</span></div>
-              <div class="row"><div class="lbl">Version</div><span class="muted">OctoBot 0.1.0</span></div>
+              <div class="row"><div class="lbl">Version</div><span class="muted">OctoBot 0.2.0</span></div>
             </div>
           </div>`
             : sec === "usage"
@@ -1627,6 +1636,10 @@ function bindDelegated() {
       saveRoutine();
       return;
     }
+    if (act === "dictate") {
+      toggleDictate();
+      return;
+    }
     if (act === "send") $("#send")?.dispatchEvent(new Event("submit"));
     if (act === "ctx-pin") {
       const b = state.bots.find((x) => x.id === el.dataset.id);
@@ -1752,7 +1765,7 @@ function bindDelegated() {
         paintModal();
         render();
         if (provider === "grok-build") {
-          if (!state.hasGrokAuth) {
+          if (state.hasGrokAuth === false) {
             state.grokAuthAsk = true;
             paintGrokAuth();
           }
@@ -1840,7 +1853,7 @@ async function startGrokOAuth() {
       state.grokAuthAsk = false;
       paintGrokAuth();
     }
-    if (r.needHostLogin) {
+    if (r.needHostLogin && !state.hasGrokAuth) {
       state.grokAuthAsk = true;
       paintGrokAuth();
       const end = Date.now() + 180_000;
@@ -1977,6 +1990,110 @@ async function onAttachFiles(e) {
   render();
 }
 
+let dictateCtl = null;
+
+function setMicUI(on, err) {
+  const btn = $(".composer-mic");
+  const input = $("#send")?.q;
+  if (btn) {
+    btn.classList.toggle("on", on);
+    btn.title = on ? "Stop listening" : "Speak";
+  }
+  if (input && err) input.placeholder = err;
+  else if (input && state.selected) {
+    const bot = state.bots.find((b) => b.id === state.selected);
+    if (on) input.placeholder = "Listening… click the mic when you’re done";
+    else if (bot) input.placeholder = `Message ${bot.name}`;
+  }
+}
+
+function encodeWav(samples, rate) {
+  const n = samples.length;
+  const buf = new ArrayBuffer(44 + n * 2);
+  const v = new DataView(buf);
+  const w = (o, s) => {
+    for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i));
+  };
+  w(0, "RIFF");
+  v.setUint32(4, 36 + n * 2, true);
+  w(8, "WAVE");
+  w(12, "fmt ");
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true);
+  v.setUint32(28, rate * 2, true);
+  v.setUint16(32, 2, true);
+  v.setUint16(34, 16, true);
+  w(36, "data");
+  v.setUint32(40, n * 2, true);
+  let o = 44;
+  for (let i = 0; i < n; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    o += 2;
+  }
+  return buf;
+}
+
+async function toggleDictate() {
+  if (dictateCtl) {
+    dictateCtl.stop();
+    return;
+  }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+  } catch {
+    setMicUI(false, "Allow Microphone for OctoBot in System Settings → Privacy.");
+    return;
+  }
+  const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((t) => MediaRecorder.isTypeSupported(t)) || "";
+  const rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+  const chunks = [];
+  rec.ondataavailable = (e) => {
+    if (e.data && e.data.size) chunks.push(e.data);
+  };
+  let stopped = false;
+  const finish = () => {
+    if (stopped) return;
+    stopped = true;
+    dictateCtl = null;
+    if (rec.state !== "inactive") rec.stop();
+  };
+  rec.onstop = async () => {
+    stream.getTracks().forEach((t) => t.stop());
+    const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+    const input = $("#send")?.q;
+    if (blob.size < 2000) {
+      setMicUI(false, "That was too short. Click mic, talk, click mic again.");
+      return;
+    }
+    if (input) input.placeholder = "Transcribing…";
+    try {
+      const res = await fetch("/api/dictate", {
+        method: "POST",
+        headers: { "Content-Type": blob.type || "application/octet-stream" },
+        body: await blob.arrayBuffer(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.text && input) {
+        input.value = `${input.value}${input.value ? " " : ""}${data.text}`.trim();
+        input.focus();
+        setMicUI(false);
+      } else {
+        setMicUI(false, data.error || "Couldn’t transcribe that. Try again.");
+      }
+    } catch (err) {
+      setMicUI(false, err.message || "Dictate failed.");
+    }
+  };
+  rec.start(200);
+  dictateCtl = { stop: finish };
+  setMicUI(true);
+  setTimeout(() => dictateCtl?.stop(), 30_000);
+}
+
 async function onSend(e) {
   e.preventDefault();
   const input = e.target.q;
@@ -2032,7 +2149,6 @@ async function saveRoutine() {
     name: $("#rn")?.value || "Routine",
     instruction: $("#ri")?.value || "",
     interval_minutes: Number($("#rm")?.value || 15),
-    group_key: $("#rg")?.value || "general",
   };
   if (!body.instruction.trim()) return;
   if (state.editingRoutineId) {
@@ -2153,7 +2269,8 @@ function paintGrokAuth() {
     host.id = "grok-auth-host";
     document.body.appendChild(host);
   }
-  const need = wantsGrokBuild() && !state.hasGrokAuth && state.grokAuthAsk !== "later";
+  // null = unknown; never prompt until the server said we are signed out
+  const need = wantsGrokBuild() && state.hasGrokAuth === false && state.grokAuthAsk && state.grokAuthAsk !== "later";
   if (!need) {
     host.innerHTML = "";
     return;
@@ -2359,7 +2476,9 @@ function watchStream() {
   render();
   document.documentElement.dataset.appReady = "1";
   if (wantsGrokBuild()) {
-    if (!state.hasGrokAuth) {
+    if (state.hasGrokAuth) {
+      state.grokAuthAsk = false;
+    } else {
       state.grokAuthAsk = true;
       paintGrokAuth();
     }

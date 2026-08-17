@@ -98,7 +98,10 @@ const DONE_MS = 9_000;
 
 const RE = {
   scream: /\b(scream|aaah+|nooo+|help)\b/i,
-  angry: /\b(angry|furious|pissed|wtf|damn it|goddamn|rage)\b/i,
+  rage: /\b(rage|furious|i'?m fuming)\b/i,
+  angry: /\b(angry|pissed|wtf|damn it|goddamn)\b/i,
+  hot: /\b(so hot|i'?m boiling|sweating|on fire)\b/i,
+  cold: /\b(so cold|freezing|i'?m freezing|chilly|brr+)\b/i,
   frustrated:
     /\b(ugh+|argh+|frustrated|frustrating|annoying|this (sucks|is broken)|still broken|why (isn'?t|won'?t|can'?t)|i('m| am) (so )?(tired|done|fed up)|hate this|come on|seriously\??|fix (it|this)|doesn'?t work)\b/i,
   cry: /\b(cry(ing)?|tears|sobbing|heartbroken)\b/i,
@@ -121,7 +124,7 @@ const RE = {
 export function defaultAvatar(partial = {}) {
   const expression = EXPRESSIONS[partial.expression] ? partial.expression : "neutral";
   const animation = ANIMATIONS[partial.animation] ? partial.animation : "idle";
-  const body = BODIES[partial.body] ? partial.body : "mantle";
+  const body = BODIES[partial.body] ? partial.body : "rounder";
   return { expression, animation, body };
 }
 
@@ -145,7 +148,10 @@ export function inferMood(bot, { preview } = {}) {
 
   if (lastUser && userAge < REACT_MS) {
     if (RE.scream.test(text)) return pack("scream", reduce ? "none" : "shake");
+    if (RE.rage.test(text)) return pack("rage", reduce ? "none" : "shake");
     if (RE.angry.test(text)) return pack("angry", reduce ? "none" : "shake");
+    if (RE.hot.test(text)) return pack("hot", reduce ? "none" : "shiver");
+    if (RE.cold.test(text)) return pack("cold", reduce ? "none" : "shiver");
     if (RE.frustrated.test(text)) return pack("steam", reduce ? "none" : "nod");
     if (RE.cry.test(text)) return pack("cry", reduce ? "none" : "idle");
     if (RE.sad.test(text)) return pack("sad", reduce ? "none" : "idle");
@@ -242,7 +248,7 @@ function createView(item) {
   placeShinePoint(shine2, lookTune.shine2X, lookTune.shine2Y, lookTune.highlights >= 2 ? lookTune.key * 0.7 : 0);
 
   const look = lookForColor(item.color);
-  const body = item.body && BODIES[item.body] ? item.body : "mantle";
+  const body = item.body && BODIES[item.body] ? item.body : "rounder";
   const bot = new GrokBot({ radius: 1, color: look.body, eyeColor: look.eye, body });
   applyBodyLook(bot, look);
   scene.add(bot);
@@ -297,7 +303,7 @@ function applyView(view, item) {
     sizeCanvas(view.canvas, size);
   }
   const framing = item.framing || "icon";
-  const body = item.body && BODIES[item.body] ? item.body : "mantle";
+  const body = item.body && BODIES[item.body] ? item.body : "rounder";
   if (framing !== view.framing || body !== view.body) {
     view.framing = framing;
     view.body = body;
@@ -360,6 +366,8 @@ function lookForColor(hex) {
 
 function applyBodyLook(bot, look) {
   bot.bodyMaterial.color.set(look.body);
+  if (!bot._baseBodyColor) bot._baseBodyColor = new THREE.Color();
+  bot._baseBodyColor.set(look.body);
   bot.eyeMaterial.color.set(look.eye);
   if ("metalness" in bot.bodyMaterial) bot.bodyMaterial.metalness = 0;
   if ("sheenColor" in bot.bodyMaterial) bot.bodyMaterial.sheenColor.set(look.body);
@@ -415,7 +423,7 @@ export function faceList() {
   return Object.entries(EXPRESSIONS).map(([id, exp]) => ({ id, label: exp.label }));
 }
 
-const HAPPY_FACES = ["happy", "blush", "grin", "beam", "laugh", "joy", "party", "hug", "wink", "love", "hearts", "star", "yum"];
+const HAPPY_FACES = ["happy", "blush", "grin", "beam", "laugh", "joy", "wink", "love", "hearts", "star", "yum"];
 const HAPPY_ANIMS = ["bounce", "cheer", "pulse", "excited"];
 
 export function isSleepingMood(mood) {

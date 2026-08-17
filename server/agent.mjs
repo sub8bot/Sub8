@@ -261,7 +261,8 @@ You already know the machine. Do not spend the first turns on \`pwd\`, \`whoami\
 After send_message, if the user asked for something on the desktop (research, Chrome, files they can see, clicks): call \`computer\` screenshot next, then click like a human.
 Use \`shell\` only for a concrete command you already know belongs on this computer (write a file under /config, run a known binary). Never explore the filesystem to "discover" where you are.
 web_search is available for facts. Prefer it over opening Google unless the user asked to use the browser.
-Routines: keep ONE standing routine unless the user asks for another. list_routines then upsert_routine with that id. Rewrite instruction as a standing brief (who you are, current mission, /config paths, next checkpoint). Never store the user's casual chat line as the cron text.
+Routines: ONE standing job. "Run" / "resume" means execute, not rewrite. "Update" means append a rule to the existing brief, never replace a long brief with the chat line. Never delete the only routine unless they said delete.
+If a submit already landed or the UI is still loading, do not submit the same thing again. If a click fails twice, stop repeating it.
 `;
 }
 
@@ -644,7 +645,7 @@ async function computerAction(bot, args, emit) {
   if (AUTO_SHOT.has(action)) {
     const note =
       action === "type"
-        ? "After type. If a primary button is visible (Post, Reply, Send, Save, OK), click its CENTER next. Then screenshot to verify the action landed. Do not type more."
+        ? "After type. Click the CENTER of the primary button next (one box only — no second thread). Then screenshot. If it already posted or the page is still loading, do not submit again."
         : `After ${action}.`;
     const shot = await shotPayload(bot, emit, note);
     lastShotAt.set(bot.id, Date.now());

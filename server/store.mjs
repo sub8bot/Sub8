@@ -129,13 +129,14 @@ async function loadBotsUnlocked() {
       if (fileMsgs.length) b.messages = unionMessages(b.messages, fileMsgs);
       else if (b.messages.length) await saveConversation(b.id, b.messages);
       if (!b.avatar || typeof b.avatar !== "object") {
-        b.avatar = { expression: "neutral", animation: "idle", body: "mantle" };
+        b.avatar = { expression: "neutral", animation: "idle", body: "rounder" };
       } else {
         const ok = ["mantle","tall","chubby","slim","soft","rounder","short","long","curl","plush"];
+        const body = b.avatar.body === "mantle" || !ok.includes(b.avatar.body) ? "rounder" : b.avatar.body;
         b.avatar = {
           expression: b.avatar.expression || "neutral",
           animation: b.avatar.animation || "idle",
-          body: b.avatar.body && ok.includes(b.avatar.body) ? b.avatar.body : "mantle",
+          body,
         };
       }
     }
@@ -172,7 +173,7 @@ export function newBot(partial = {}) {
     avatar: {
       expression: partial.avatar?.expression || "neutral",
       animation: partial.avatar?.animation || "idle",
-      body: partial.avatar?.body || "mantle",
+      body: partial.avatar?.body || "rounder",
     },
     notificationsEnabled: false,
     createdAt: Date.now(),

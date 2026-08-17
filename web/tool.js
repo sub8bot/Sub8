@@ -3,7 +3,7 @@ import { AVATAR_COLORS as COLORS } from "./palette.js";
 
 const SAVE = "octobot-catalog";
 const state = {
-  body: "mantle",
+  body: "rounder",
   face: "neutral",
   motion: "idle",
   color: COLORS[0],
@@ -13,7 +13,8 @@ function loadState() {
   try {
     const saved = JSON.parse(localStorage.getItem(SAVE) || "null");
     if (!saved) return;
-    if (bodies.some((b) => b.id === saved.body)) state.body = saved.body;
+    if (saved.body === "mantle") state.body = "rounder";
+    else if (bodies.some((b) => b.id === saved.body)) state.body = saved.body;
     if (faces.some((f) => f.id === saved.face)) state.face = saved.face;
     if (motions.some((m) => m.id === saved.motion)) state.motion = saved.motion;
     if (COLORS.includes(saved.color)) state.color = saved.color;

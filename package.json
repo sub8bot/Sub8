@@ -1,7 +1,7 @@
 {
   "name": "octobot",
   "productName": "OctoBot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
@@ -79,6 +79,10 @@
           ]
         }
       ],
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "OctoBot uses the microphone so you can dictate messages.",
+        "NSSpeechRecognitionUsageDescription": "OctoBot turns your speech into text on this Mac."
+      },
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",

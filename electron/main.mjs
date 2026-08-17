@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, nativeImage } from "electron";
+import { app, BrowserWindow, session, shell, nativeImage } from "electron";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -88,6 +88,9 @@ function create() {
     trafficLightPosition: { x: 16, y: 18 },
     icon: icon || undefined,
     webPreferences: { sandbox: true },
+  });
+  win.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
+    callback(permission === "media" || permission === "microphone" || permission === "audioCapture");
   });
   if (icon && process.platform === "darwin") {
     app.dock?.setIcon(nativeImage.createFromPath(icon));

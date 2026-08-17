@@ -27,6 +27,10 @@ fi
   || /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string OctoBot" "$PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier app.octobot.desktop.dev" "$PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable Electron" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription OctoBot uses the microphone so you can dictate messages." "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string OctoBot uses the microphone so you can dictate messages." "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :NSSpeechRecognitionUsageDescription OctoBot turns your speech into text on this Mac." "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Add :NSSpeechRecognitionUsageDescription string OctoBot turns your speech into text on this Mac." "$PLIST"
 
 if [ -f "$ICON" ]; then
   cp -f "$ICON" "$DEST/Contents/Resources/electron.icns"
