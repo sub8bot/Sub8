@@ -339,10 +339,51 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
 
   if (harness.kind === "grok-build") {
     if (!bot.grokSessionId) bot.grokSessionId = bot.id;
-    const text = await runGrokBuild(harness, userText, signal, bot);
+    const desktop = looksLikeDesktopTask(userText);
+    const grokText = desktop
+      ? `${userText}\n\nUse the desktop this turn. To open Chrome: nohup /usr/local/bin/chrome-desktop 'https://…' >/tmp/chrome.log 2>&1 &\nThen look at the screen. Do not only send a text plan.`
+      : userText;
+    emit("tool", { name: "computer", args: { action: "screenshot" } });
+    const work = {
+      id: `tl${Date.now()}gb`,
+      role: "activity",
+      kind: "tool",
+      name: "computer",
+      action: "screenshot",
+      summary: "Working on the computer",
+      ts: Date.now(),
+    };
+    bot.messages.push(work);
+    emit("message", work);
+    const text = await runGrokBuild(harness, grokText, signal, bot);
     const msg = { id: `a${Date.now()}`, role: "assistant", content: text, ts: Date.now() };
     bot.messages.push(msg);
     emit("message", msg);
+    if (desktop && bot.vm?.status === "running") {
+      try {
+        await computerAction(bot, { action: "screenshot" }, emit);
+        const shotNote = {
+          id: `tl${Date.now()}sh`,
+          role: "activity",
+          kind: "tool",
+          name: "computer",
+          action: "screenshot",
+          summary: "Looked at the screen",
+          ts: Date.now(),
+        };
+        bot.messages.push(shotNote);
+        emit("message", shotNote);
+      } catch (err) {
+        const fail = {
+          id: `e${Date.now()}`,
+          role: "assistant",
+          content: `Computer action failed: ${err.message}`,
+          ts: Date.now(),
+        };
+        bot.messages.push(fail);
+        emit("message", fail);
+      }
+    }
     return bot;
   }
 
@@ -409,6 +450,15 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
           content: "Continue the same task until it is actually finished. Screenshot if you need to see the desktop. Do not stop at a plan.",
         });
         usedComputer = false;
+        continue;
+      }
+      if (!usedComputer && looksLikeDesktopTask(userText) && steps < maxSteps - 1) {
+        history.push({ role: "assistant", content: lastVisible });
+        history.push({
+          role: "user",
+          content:
+            "Do the desktop work now. Call computer action screenshot, then computer action open (text = URL) or click. Do not only describe the plan.",
+        });
         continue;
       }
       break;
@@ -507,6 +557,12 @@ function toolSummary(name, args = {}, result = "") {
 function isDone(text) {
   return /\b(done|finished|all set|that's it|thats it|completed|closed the loop|nothing else|task is complete)\b/i.test(
     text || ""
+  );
+}
+
+function looksLikeDesktopTask(text) {
+  return /\b(chrome|browser|click|desktop|computer|screenshot|flight|google|open |type |search|x\.com|twitter|post|tab)\b/i.test(
+    String(text || ""),
   );
 }
 
@@ -818,12 +874,12 @@ function runGrokBuild(harness, userText, signal, bot) {
         inner,
         ...grokArgs,
       ];
+      const dockerEnv = { ...process.env };
+      const host = vm.resolveDockerHost();
+      if (host) dockerEnv.DOCKER_HOST = host;
+      else delete dockerEnv.DOCKER_HOST;
       const child = spawn("docker", args, {
-        env: {
-          PATH: process.env.PATH,
-          DOCKER_HOST: vm.resolveDockerHost(),
-          HOME: process.env.HOME,
-        },
+        env: dockerEnv,
         stdio: ["ignore", "pipe", "pipe"],
       });
       let out = "";
