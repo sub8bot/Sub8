@@ -46,11 +46,18 @@ function copyDir(src, dest) {
 }
 
 const home = os.homedir();
-const oldData = path.join(home, "Library", "Application Support", "OctoBot", "data");
-const newData = path.join(home, "Library", "Application Support", "Sub8Bot", "data");
-if (fs.existsSync(path.join(oldData, "bots.json")) && !fs.existsSync(path.join(newData, "bots.json"))) {
-  copyDir(oldData, newData);
-  console.log(`copied ${oldData} -> ${newData}`);
+const newData = path.join(home, "Library", "Application Support", "Sub8", "data");
+const legacy = [
+  path.join(home, "Library", "Application Support", "Sub8Bot", "data"),
+  path.join(home, "Library", "Application Support", "OctoBot", "data"),
+];
+if (!fs.existsSync(path.join(newData, "bots.json"))) {
+  for (const oldData of legacy) {
+    if (!fs.existsSync(path.join(oldData, "bots.json"))) continue;
+    copyDir(oldData, newData);
+    console.log(`copied ${oldData} -> ${newData}`);
+    break;
+  }
 }
 
 const files = [path.resolve("data/bots.json"), path.join(newData, "bots.json")];
