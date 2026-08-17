@@ -1,7 +1,5 @@
 <p align="center">
-
-![Sub8 mascot](docs/brand/octobot-logo-rounded-512.png)
-
+  <img src="/sub8bot/Sub8/raw/master/logo.png" width="280" alt="Sub8 mascot">
 </p>
 
 <h1 align="center">Sub8</h1>
@@ -16,9 +14,7 @@ Sub8 is a desktop app for macOS, Windows, and Linux. Each Bot gets an isolated L
 The mascot is the Smooth octopus you see in the rail: live Three.js, emoji faces, looping motions.
 
 <p align="center">
-
-![Sub8 face catalog](docs/brand/octobot-catalog.png)
-
+  <img src="/sub8bot/Sub8/raw/master/docs/brand/octobot-catalog.png" width="720" alt="Sub8 face catalog">
 </p>
 
 ## Install
