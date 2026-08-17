@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/brand/octobot-logo-rounded.png" width="280" alt="Sub8 mascot">
+  <img src="docs/brand/octobot-logo-rounded-512.png" width="280" alt="Sub8 mascot">
 </p>
 
 <h1 align="center">Sub8</h1>
