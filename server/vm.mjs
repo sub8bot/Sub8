@@ -11,6 +11,12 @@ function isWindows() {
   return process.platform === "win32" || process.env.OS === "Windows_NT";
 }
 
+export function dockerBin() {
+  // Docker Desktop ships an extensionless `docker` sh-wrapper next to docker.exe.
+  // Node's spawn on Windows can pick that file and fail to exec.
+  return isWindows() ? "docker.exe" : "docker";
+}
+
 export function resolveDockerHost() {
   const env = String(process.env.DOCKER_HOST || "").trim();
   // Windows Docker Desktop uses context "desktop-linux"
@@ -53,6 +59,7 @@ function run(cmd, args, opts = {}) {
     const child = spawn(cmd, args, {
       env: dockerEnv(),
       stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
       ...opts,
     });
     let out = "";
@@ -64,7 +71,7 @@ function run(cmd, args, opts = {}) {
 }
 
 export function docker(args, opts) {
-  return run("docker", args, opts);
+  return run(dockerBin(), args, opts);
 }
 
 let dockerStatusCache = { at: 0, value: null };
@@ -114,12 +121,18 @@ export function containerName(botId) {
 const grokLoginJobs = new Map();
 let hostLoginChild = null;
 
-function dockerSpawn(args) {
-  return spawn("docker", args, { env: dockerEnv(), stdio: ["ignore", "pipe", "pipe"] });
+export function dockerSpawn(args, opts = {}) {
+  return spawn(dockerBin(), args, {
+    env: dockerEnv(),
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+    ...opts,
+  });
 }
 
 export function hostGrokAuthPath() {
-  return path.join(process.env.HOME || "", ".grok", "auth.json");
+  const home = process.env.HOME || process.env.USERPROFILE || os.homedir() || "";
+  return path.join(home, ".grok", "auth.json");
 }
 
 export async function hostHasGrokAuth() {
@@ -431,6 +444,18 @@ export async function installOctoClick(container) {
     "-lc",
     "install -m 755 /tmp/octo-click.sh /usr/local/bin/octo-click",
   ]);
+}
+
+export async function writeFileToContainer(container, dest, text) {
+  const tmp = path.join(os.tmpdir(), `sub8-vm-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
+  await fs.writeFile(tmp, String(text ?? ""), "utf8");
+  try {
+    const cp = await docker(["cp", tmp, `${container}:${dest}`]);
+    if (!cp.ok) throw new Error(cp.out || `copy ${dest} failed`);
+    await docker(["exec", "-u", "root", container, "bash", "-lc", `chown abc:abc ${JSON.stringify(dest)} 2>/dev/null || true`]);
+  } finally {
+    await fs.unlink(tmp).catch(() => {});
+  }
 }
 
 export async function installAgentsMd(container, extra = "") {
