@@ -130,7 +130,10 @@ app.post("/api/dictate", (req, res) => {
   });
 });
 
-app.get("/api/health", (_req, res) => res.json({ ok: true }));
+app.get("/api/health", async (_req, res) => {
+  const docker = await vm.dockerStatus();
+  res.json({ ok: true, docker });
+});
 
 app.get("/api/ready", async (_req, res) => {
   try {
@@ -164,6 +167,7 @@ app.get("/api/settings", async (_req, res) => {
     hasEnvKey: Boolean(process.env.XAI_API_KEY),
     hasGrokAuth: await vm.hostHasGrokAuth(),
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    docker: await vm.dockerStatus(),
   });
 });
 
@@ -325,7 +329,7 @@ app.get("/api/bots/:id/stream-health", async (req, res) => {
     } catch {
       shot = null;
     }
-    res.json({ ...health, shot, vm: bot.vm });
+    res.json({ ...health, shot, vm: bot.vm, docker: await vm.dockerStatus() });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

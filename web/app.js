@@ -26,6 +26,7 @@ const state = {
   ctx: null,
   hasGrokAuth: null,
   grokAuthAsk: false,
+  docker: null,
   teach: null,
   teachFrames: [],
   attachments: [],
@@ -89,7 +90,11 @@ function attachLiveFrame(bot) {
     if (!wrap.dataset.empty) {
       wrap.dataset.empty = "1";
       wrap.innerHTML = `<div style="display:grid;place-items:center;height:100%;color:#6b7280;font-size:13px;padding:16px;text-align:center">${
-        bot?.vm?.status === "starting" ? "Starting Sub8's computer…" : bot?.vm?.error || "Computer not assigned yet"
+        dockerMissing()
+          ? dockerMissingHtml()
+          : bot?.vm?.status === "starting"
+            ? "Starting Sub8's computer…"
+            : bot?.vm?.error || "Computer not assigned yet"
       }</div>`;
       liveFrameKey = null;
     }
@@ -98,6 +103,15 @@ function attachLiveFrame(bot) {
   const key = `${bot.id}:${bot.vm.novncPort}`;
   if (liveFrameKey === key && wrap.querySelector("iframe")) return;
   mountLiveFrame(bot);
+}
+
+function dockerMissing() {
+  return state.docker && state.docker.ok === false;
+}
+
+function dockerMissingHtml() {
+  const hint = state.docker?.hint || "Sub8 needs Docker so each Bot can have a computer.";
+  return `<div class="banner warn" style="margin:0;text-align:left">${escapeHtml(hint)}</div>`;
 }
 
 function streamUrl(bot) {
@@ -1330,6 +1344,13 @@ function settingsHtml() {
               : `<h2>Computer</h2>
           <div class="block">
             <div class="card">
+              <div class="row"><div><div class="lbl">Docker</div><div class="sub">${
+                dockerMissing()
+                  ? escapeHtml(state.docker?.hint || "Required to run computers.")
+                  : state.docker?.engine
+                    ? `Running · ${escapeHtml(state.docker.engine)}`
+                    : "Required. Each Bot’s computer is a Linux desktop in Docker."
+              }</div></div><span class="muted">${dockerMissing() ? "Not ready" : "Ready"}</span></div>
               <div class="row"><div><div class="lbl">This Bot's desktop</div><div class="sub">${
                 state.bots.find((b) => b.id === state.selected)?.vm?.status === "running"
                   ? `Running · stream port ${state.bots.find((b) => b.id === state.selected)?.vm?.novncPort || "—"}`
@@ -2265,6 +2286,14 @@ function reconnectStream() {
 
 async function resumeVm() {
   if (!state.selected) return;
+  if (dockerMissing()) {
+    const bot = state.bots.find((b) => b.id === state.selected);
+    if (bot) {
+      bot.vm = { ...(bot.vm || {}), status: "error", error: state.docker.hint };
+      paintLivePane(bot);
+    }
+    return;
+  }
   await api(`/api/bots/${state.selected}/vm`, { method: "POST", body: { action: "start" } });
   await refresh();
   liveFrameKey = null;
@@ -2287,6 +2316,7 @@ async function refreshSettings() {
   state.settings = r.settings;
   state.timezone = r.timezone;
   state.hasGrokAuth = Boolean(r.hasGrokAuth);
+  if (r.docker) state.docker = r.docker;
   applyTheme();
 }
 
@@ -2471,6 +2501,10 @@ function watchStream() {
   const bot = state.bots.find((b) => b.id === state.selected);
   if (!bot?.id || state.botEdit) return;
   if (!state.showComputer && state.deskSize !== "full") return;
+  if (dockerMissing()) {
+    attachLiveFrame(bot);
+    return;
+  }
   const label = $("#screen-label");
   if (label) label.textContent = `${bot.name}'s screen`;
   const vm = bot.vm || {};
@@ -2486,6 +2520,11 @@ function watchStream() {
   }
   api(`/api/bots/${bot.id}/stream-health`)
     .then((h) => {
+      if (h.docker) {
+        const was = dockerMissing();
+        state.docker = h.docker;
+        if (was !== dockerMissing()) attachLiveFrame(bot);
+      }
       if (h.ok && $("#screen-wrap iframe")) return;
       if (!h.running && !startingVm) {
         startingVm = true;
