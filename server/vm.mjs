@@ -14,7 +14,19 @@ function isWindows() {
 export function dockerBin() {
   // Docker Desktop ships an extensionless `docker` sh-wrapper next to docker.exe.
   // Node's spawn on Windows can pick that file and fail to exec.
-  return isWindows() ? "docker.exe" : "docker";
+  if (isWindows()) return "docker.exe";
+  const home = process.env.HOME || os.homedir() || "";
+  const candidates = [
+    process.env.DOCKER_BIN,
+    "/opt/homebrew/bin/docker",
+    "/usr/local/bin/docker",
+    path.join(home, ".docker", "bin", "docker"),
+    "/usr/bin/docker",
+  ].filter(Boolean);
+  for (const p of candidates) {
+    if (fsSync.existsSync(p)) return p;
+  }
+  return "docker";
 }
 
 export function resolveDockerHost() {
@@ -51,6 +63,9 @@ function dockerEnv() {
   }
   const host = resolveDockerHost();
   if (host) env.DOCKER_HOST = host;
+  const extras = ["/opt/homebrew/bin", "/usr/local/bin", path.join(env.HOME || os.homedir() || "", ".docker", "bin")];
+  const prefix = extras.filter((p) => fsSync.existsSync(p)).join(path.delimiter);
+  if (prefix) env.PATH = `${prefix}${path.delimiter}${env.PATH || "/usr/bin:/bin"}`;
   return env;
 }
 
