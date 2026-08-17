@@ -24,7 +24,7 @@ shopt -s nullglob
 for app in dist/mac-arm64/Sub8.app dist/mac/Sub8.app dist/mac-x64/Sub8.app; do
   [ -d "$app" ] && bash scripts/sign-and-notarize.sh "$app"
 done
-for dmg in dist/Sub8-"$VERSION"-mac-*.dmg dist/Sub8-"$VERSION".dmg; do
+for dmg in dist/Sub8-mac-*.dmg dist/Sub8-"$VERSION"-mac-*.dmg dist/Sub8-"$VERSION".dmg; do
   [ -f "$dmg" ] && bash scripts/sign-and-notarize.sh "$dmg"
 done
 
@@ -37,7 +37,7 @@ npx electron-builder --linux AppImage tar.gz --x64
 echo "==> Checksums"
 (
   cd dist
-  shasum -a 256 Sub8-"$VERSION"-* > "Sub8-${VERSION}.sha256" || true
+  shasum -a 256 Sub8-mac-* Sub8-win-* Sub8-linux-* Sub8-"$VERSION"-* > "Sub8-${VERSION}.sha256" 2>/dev/null || true
 )
-ls -lh dist/Sub8-"$VERSION"-* || true
+ls -lh dist/Sub8-mac-* dist/Sub8-win-* dist/Sub8-linux-* dist/Sub8-"$VERSION"-* 2>/dev/null || true
 echo "==> Release artifacts ready in dist/"
