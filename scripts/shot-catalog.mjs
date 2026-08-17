@@ -20,7 +20,7 @@ page.on("console", (msg) => {
   if (msg.type() === "error") console.error("console", msg.text());
 });
 
-await page.goto("http://127.0.0.1:8787/tool.html?v=straight-eyes", {
+await page.goto("http://127.0.0.1:8787/tool.html?v=cute-eyes", {
   waitUntil: "domcontentloaded",
   timeout: 15000,
 });

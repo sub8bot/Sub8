@@ -340,7 +340,7 @@ function lookForColor(hex) {
   try {
     const tint = new THREE.Color(hex);
     const luma = 0.2126 * tint.r + 0.7152 * tint.g + 0.0722 * tint.b;
-    const dark = luma < 0.28;
+    const dark = luma < 0.16;
     const body = tint.clone();
     if (!dark) body.offsetHSL(0, lookTune.punch, 0.05);
     else body.offsetHSL(0, lookTune.punch * 0.5, 0.04);
