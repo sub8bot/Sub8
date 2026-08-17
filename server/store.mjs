@@ -230,15 +230,15 @@ export async function upsertBot(bot) {
       } else if (!bot.avatar && prev.avatar) {
         bot.avatar = prev.avatar;
       }
-      // Keep the newer routine text if a worker still holds an old snapshot.
+      // Incoming list is authoritative for which routines exist (so Delete sticks).
+      // Same-id rows keep the newer updatedAt so a stale turn cannot wipe an edit.
       const incoming = Array.isArray(bot.routines) ? bot.routines : [];
-      const existing = Array.isArray(prev.routines) ? prev.routines : [];
-      const byId = new Map(incoming.map((r) => [r.id, r]));
-      for (const r of existing) {
-        const cur = byId.get(r.id);
-        if (!cur || (r.updatedAt || 0) > (cur.updatedAt || 0)) byId.set(r.id, r);
-      }
-      bot.routines = [...byId.values()];
+      const existing = new Map((prev.routines || []).map((r) => [r.id, r]));
+      bot.routines = incoming.map((r) => {
+        const was = existing.get(r.id);
+        if (was && (was.updatedAt || 0) > (r.updatedAt || 0)) return was;
+        return r;
+      });
       bots[i] = bot;
     } else bots.push(bot);
     bot.updatedAt = Date.now();
