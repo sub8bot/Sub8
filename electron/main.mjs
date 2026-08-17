@@ -11,9 +11,13 @@ let PORT = process.env.PORT || "8787";
 let URL = process.env.LOCALBOT_URL || `http://127.0.0.1:${PORT}`;
 
 function dockerHost() {
-  const sock = path.join(os.homedir(), ".colima", "default", "docker.sock");
-  if (fs.existsSync(sock)) return `unix://${sock}`;
-  return process.env.DOCKER_HOST || "";
+  if (process.env.DOCKER_HOST) return process.env.DOCKER_HOST;
+  if (process.platform === "win32") return "npipe:////./pipe/docker_engine";
+  const socks = [path.join(os.homedir(), ".colima", "default", "docker.sock"), "/var/run/docker.sock"];
+  for (const sock of socks) {
+    if (fs.existsSync(sock)) return `unix://${sock}`;
+  }
+  return "";
 }
 
 function portFree(port) {

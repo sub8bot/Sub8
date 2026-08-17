@@ -1,11 +1,28 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { requireVm, assertVmShell } from "./isolation.mjs";
 import * as trace from "./trace.mjs";
 import { appRoot, fileRoot, dataDir } from "./paths.mjs";
 
-const DOCKER_HOST = process.env.DOCKER_HOST || `unix://${process.env.HOME}/.colima/default/docker.sock`;
+export function resolveDockerHost() {
+  if (process.env.DOCKER_HOST) return process.env.DOCKER_HOST;
+  if (process.platform === "win32") return "npipe:////./pipe/docker_engine";
+  const home = process.env.HOME || os.homedir() || "";
+  const socks = [home && path.join(home, ".colima", "default", "docker.sock"), "/var/run/docker.sock"].filter(Boolean);
+  for (const sock of socks) {
+    if (fsSync.existsSync(sock)) return `unix://${sock}`;
+  }
+  return home ? `unix://${path.join(home, ".colima", "default", "docker.sock")}` : "unix:///var/run/docker.sock";
+}
+
+export function dockerPlatform() {
+  return process.arch === "arm64" ? "linux/arm64" : "linux/amd64";
+}
+
+const DOCKER_HOST = resolveDockerHost();
 const IMAGE = process.env.LOCALBOT_IMAGE || "linuxserver/webtop:ubuntu-xfce";
 const START_PORT = 13100;
 
@@ -191,7 +208,7 @@ export async function ensureImage(onLog = () => {}) {
   const inspect = await docker(["image", "inspect", IMAGE]);
   if (inspect.ok) return;
   onLog(`Pulling desktop image ${IMAGE}…`);
-  const pull = await docker(["pull", "--platform", "linux/arm64", IMAGE]);
+  const pull = await docker(["pull", "--platform", dockerPlatform(), IMAGE]);
   if (!pull.ok) throw new Error(`docker pull failed: ${pull.out.slice(-800)}`);
 }
 
@@ -227,6 +244,8 @@ export async function startVm(bot, onLog = () => {}, shouldAbort = async () => f
   const runr = await docker([
     "run",
     "-d",
+    "--platform",
+    dockerPlatform(),
     "--name",
     name,
     "--hostname",

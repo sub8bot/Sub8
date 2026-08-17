@@ -808,7 +808,7 @@ function runGrokBuild(harness, userText, signal, bot) {
       const child = spawn("docker", args, {
         env: {
           PATH: process.env.PATH,
-          DOCKER_HOST: process.env.DOCKER_HOST || `unix://${process.env.HOME}/.colima/default/docker.sock`,
+          DOCKER_HOST: vm.resolveDockerHost(),
           HOME: process.env.HOME,
         },
         stdio: ["ignore", "pipe", "pipe"],
