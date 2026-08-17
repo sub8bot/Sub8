@@ -29,7 +29,7 @@ export const defaultSettings = {
   autoUpdateWhenIdleOptIn: false,
   updateTrack: "stable",
   harness: {
-    provider: "spacexai",
+    provider: "grok-build",
     model: "grok-4.6",
     baseUrl: "https://api.x.ai/v1",
     apiKeyEnv: "XAI_API_KEY",
@@ -62,7 +62,7 @@ export async function saveConversation(id, messages) {
 }
 
 function normalizeHarness(h = {}) {
-  const provider = h.provider === "custom" || h.provider === "grok-build" ? h.provider : "spacexai";
+  const provider = h.provider === "custom" || h.provider === "spacexai" ? h.provider : "grok-build";
   return {
     ...defaultSettings.harness,
     ...h,
@@ -127,11 +127,12 @@ async function loadBotsUnlocked() {
       if (fileMsgs.length) b.messages = unionMessages(b.messages, fileMsgs);
       else if (b.messages.length) await saveConversation(b.id, b.messages);
       if (!b.avatar || typeof b.avatar !== "object") {
-        b.avatar = { expression: "neutral", animation: "idle" };
+        b.avatar = { expression: "neutral", animation: "idle", body: "smooth" };
       } else {
         b.avatar = {
           expression: b.avatar.expression || "neutral",
           animation: b.avatar.animation || "idle",
+          body: "smooth",
         };
       }
     }
@@ -171,6 +172,7 @@ export function newBot(partial = {}) {
     avatar: {
       expression: partial.avatar?.expression || "neutral",
       animation: partial.avatar?.animation || "idle",
+      body: "smooth",
     },
     notificationsEnabled: false,
     createdAt: Date.now(),
@@ -219,6 +221,15 @@ export async function upsertBot(bot) {
       } else if (!bot.avatar && prev.avatar) {
         bot.avatar = prev.avatar;
       }
+      // Keep the newer routine text if a worker still holds an old snapshot.
+      const incoming = Array.isArray(bot.routines) ? bot.routines : [];
+      const existing = Array.isArray(prev.routines) ? prev.routines : [];
+      const byId = new Map(incoming.map((r) => [r.id, r]));
+      for (const r of existing) {
+        const cur = byId.get(r.id);
+        if (!cur || (r.updatedAt || 0) > (cur.updatedAt || 0)) byId.set(r.id, r);
+      }
+      bot.routines = [...byId.values()];
       bots[i] = bot;
     } else bots.push(bot);
     bot.updatedAt = Date.now();

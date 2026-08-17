@@ -87,7 +87,7 @@ Color is separate: `bot.color` (hex). Light bodies get **black** eyes and mouths
 | Situation | Face | Motion |
 |---|---|---|
 | VM error | `scared` | `shake` |
-| User said something angry / sad / confused / loving / wow / happy / sleepy | matching face | matching motion |
+| User said something angry / sad / cry / confused / think / love / kiss / joy / wow / yawn / sleepy / dizzy / sick | matching face | matching motion |
 | Bot busy, using the desktop | saved face | `look` |
 | Bot busy, talking | saved face | `talk` |
 | Just finished a reply | `happy` if saved was `neutral` | `nod` |

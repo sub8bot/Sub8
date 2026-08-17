@@ -94,6 +94,11 @@ function attachLiveFrame(bot) {
   mountLiveFrame(bot);
 }
 
+function streamUrl(bot) {
+  const t = Date.now();
+  return `http://127.0.0.1:${bot.vm.novncPort}/?autoconnect=1&reconnect=1&reconnect_delay=1500&resize=scale&t=${t}`;
+}
+
 function mountLiveFrame(bot) {
   const wrap = $("#screen-wrap");
   if (!wrap || !bot?.vm?.novncPort) return;
@@ -101,15 +106,32 @@ function mountLiveFrame(bot) {
   liveFrameKey = key;
   delete wrap.dataset.empty;
   const t = Date.now();
-  wrap.innerHTML = `<img class="screen-still" alt="" src="/api/bots/${bot.id}/screen?t=${t}" /><iframe data-key="${key}" src="http://127.0.0.1:${bot.vm.novncPort}/?autoconnect=1&reconnect=1&resize=scale&t=${t}" allow="clipboard-read; clipboard-write"></iframe>`;
+  wrap.innerHTML = `<img class="screen-still" alt="" src="/api/bots/${bot.id}/screen?t=${t}" /><iframe data-key="${key}" src="${streamUrl(bot)}" allow="clipboard-read; clipboard-write"></iframe>`;
   const iframe = wrap.querySelector("iframe");
+  const still = wrap.querySelector(".screen-still");
   const label = $("#screen-label");
   iframe?.addEventListener("load", () => {
     if (label) label.textContent = `${bot.name}'s screen`;
+    setTimeout(() => {
+      if (still?.parentNode === wrap) still.classList.add("hidden");
+    }, 1400);
   });
-  iframe?.addEventListener("error", () => {
-    if (label) label.textContent = `${bot.name}'s screen`;
-  });
+  iframe?.addEventListener("error", () => scheduleStreamRetry(bot, 1600));
+  // Selkies drops the previous viewer when a new one attaches. Kick once after open.
+  if (!wrap.dataset.kicked) {
+    wrap.dataset.kicked = "1";
+    scheduleStreamRetry(bot, 2200);
+  }
+}
+
+let streamRetry = 0;
+function scheduleStreamRetry(bot, ms) {
+  clearTimeout(streamRetry);
+  streamRetry = setTimeout(() => {
+    if (state.selected !== bot.id || !bot.vm?.novncPort) return;
+    liveFrameKey = null;
+    mountLiveFrame(bot);
+  }, ms);
 }
 
 function rememberSelected(id) {
@@ -193,7 +215,10 @@ function paintChat(bot) {
     if (m.kind === "think" || m.kind === "tool" || m.role === "activity") {
       const batch = [];
       while (i < rows.length && (rows[i].kind === "think" || rows[i].kind === "tool" || rows[i].role === "activity")) {
-        batch.push(rows[i]);
+        const next = rows[i];
+        const gap = (Number(next.ts) || 0) - (Number(batch.at(-1)?.ts) || Number(next.ts) || 0);
+        if (batch.length && (gap > 45_000 || batch.length >= 24)) break;
+        batch.push(next);
         i += 1;
       }
       html.push(renderActivity(batch, Boolean(bot.busy && i >= rows.length)));
@@ -244,9 +269,8 @@ function renderActivity(batch, openLast) {
   }
   if (thoughts.length) {
     const body = thoughts.map((t) => t.content).filter(Boolean).at(-1) || "";
-    const label = thoughts.length > 1 ? `Thought ×${thoughts.length}` : "Thought";
     parts.push(`<details class="thought"${openLast ? " open" : ""}>
-      <summary>${label}</summary>
+      <summary>Thought</summary>
       <div class="thought-body">${formatChatText(body)}</div>
     </details>`);
   }
@@ -439,7 +463,7 @@ function iconClock() {
 
 function paintTitle(bot) {
   const model = state.settings?.harness?.model || "grok-4.6";
-  const provider = state.settings?.harness?.provider || "spacexai";
+  const provider = state.settings?.harness?.provider || "grok-build";
   const bar = $("#titlebar");
   const collapsed = !state.showComputer && !state.botEdit && state.deskSize !== "full";
   const stamp = `${bot?.id || ""}|${state.botEdit ? "1" : "0"}|${state.deskSize}|${collapsed ? "1" : "0"}`;
@@ -456,7 +480,7 @@ function paintTitle(bot) {
     <div class="botname">${
       bot
         ? `<button class="botname-btn" data-act="bot-settings" title="Bot settings">
-            <span class="avatar sm" data-avatar="${bot.id}" data-avatar-slot="title" data-avatar-size="32" data-avatar-framing="icon"></span>
+            <span class="avatar sm" data-avatar="${bot.id}" data-avatar-slot="title" data-avatar-size="32" data-avatar-framing="body"></span>
             <span class="bot-label">${escapeHtml(bot.name)}</span>
           </button>`
         : "OctoBot"
@@ -499,7 +523,7 @@ function paintRail(bot) {
       node.dataset.id = b.id;
       node.innerHTML = `
         <button class="avatar" data-act="select" data-id="${b.id}">
-          <span class="avatar-3d" data-avatar="${b.id}" data-avatar-slot="rail" data-avatar-size="42" data-avatar-framing="icon"></span>
+          <span class="avatar-3d" data-avatar="${b.id}" data-avatar-slot="rail" data-avatar-size="56" data-avatar-framing="body"></span>
         </button>
         <button class="rail-edit" data-act="edit-bot" data-id="${b.id}" title="Edit">✎</button>`;
       host.appendChild(node);
@@ -623,7 +647,7 @@ function pickerHtml() {
         (b) =>
           `<div class="pick ${b.id === state.selected ? "on" : ""}">
             <button class="pick-main" data-act="select" data-id="${b.id}">
-              <span class="avatar sm" data-avatar="${b.id}" data-avatar-slot="pick" data-avatar-size="36" data-avatar-framing="icon"></span>
+              <span class="avatar sm" data-avatar="${b.id}" data-avatar-slot="pick" data-avatar-size="40" data-avatar-framing="body"></span>
               ${escapeHtml(b.name)}
             </button>
             <button class="pill" data-act="edit-bot" data-id="${b.id}">Edit</button>
@@ -723,7 +747,7 @@ function paintBotEditor(bot) {
       <button class="toggle ${bot.notificationsEnabled ? "on" : ""}" data-act="bot-notify"><i></i></button>
     </div>
     <label class="muted">Face</label>
-    <div class="chips" id="face-chips">
+    <div class="chips chips-scroll" id="face-chips">
       ${faceList()
         .map(
           (f) =>
@@ -732,7 +756,7 @@ function paintBotEditor(bot) {
         .join("")}
     </div>
     <label class="muted">Motion</label>
-    <div class="chips" id="anim-chips">
+    <div class="chips chips-scroll" id="anim-chips">
       ${animList()
         .map(
           (a) =>
@@ -833,7 +857,7 @@ function advancedHtml(bot) {
           ${row("Grok Build session", bot.grokSessionId || bot.id)}
           ${row("Bot", bot.name)}
           ${row("Model", h.model || "grok-4.6")}
-          ${row("Harness", h.provider || "spacexai")}
+          ${row("Harness", h.provider || "grok-build")}
           ${row("API base", h.baseUrl || "https://api.x.ai/v1")}
           ${row("History file", s.conversationFile || "")}
           ${row("Bots file", s.botsFile || "")}
@@ -857,27 +881,60 @@ function routineEditorHtml(bot) {
   const r = (bot.routines || []).find((x) => x.id === state.editingRoutineId);
   const isNew = !r;
   const mins = r ? Math.max(1, Math.round((r.intervalMs || 0) / 60000)) : 15;
-  const groups = ["x-inbox", "email", "flights", "calendar", "files", "general"];
+  const groups = [
+    ["x-inbox", "X inbox"],
+    ["email", "Email"],
+    ["flights", "Flights"],
+    ["calendar", "Calendar"],
+    ["files", "Files"],
+    ["general", "General"],
+  ];
+  const group = r?.groupKey || "general";
+  const on = r?.enabled !== false;
   return `<div class="overlay">
-    <div class="modal" style="height:auto;max-height:88%;width:min(520px,92%)" data-modal="1">
-      <div class="sbody" style="width:100%">
+    <div class="modal routine-modal" data-modal="1">
+      <div class="sbody routine-editor">
         <button class="close" data-act="close-modal">×</button>
-        <h2>${isNew ? "New routine" : "Edit routine"}</h2>
-        <div class="botset">
-          <label class="muted">Name</label>
-          <input class="field" id="rn" value="${escapeHtml(r?.name || "")}" placeholder="X inbox" />
-          <label class="muted">What it should do</label>
-          <textarea class="field" id="ri" placeholder="Check notifications and DMs on X">${escapeHtml(r?.instruction || "")}</textarea>
-          <label class="muted">Every N minutes</label>
-          <input class="field" id="rm" type="number" min="1" value="${mins}" />
-          <label class="muted">Group (same group merges overlapping jobs)</label>
-          <select class="field" id="rg">
+        <div class="routine-editor-head">
+          <h2>${isNew ? "New routine" : "Edit routine"}</h2>
+          ${
+            isNew
+              ? ""
+              : `<button type="button" class="toggle ${on ? "on" : ""}" id="re-tog" data-act="routine-enabled" title="Enabled"><i></i></button>`
+          }
+        </div>
+        <div class="routine-grid">
+          <label class="routine-field">
+            <span class="muted">Name</span>
+            <input class="field" id="rn" value="${escapeHtml(r?.name || "")}" placeholder="X inbox" />
+          </label>
+          <label class="routine-field">
+            <span class="muted">Every</span>
+            <div class="routine-mins">
+              <input class="field" id="rm" type="number" min="1" value="${mins}" />
+              <span class="muted">minutes</span>
+            </div>
+          </label>
+        </div>
+        <div class="routine-field">
+          <span class="muted">Group — same group merges overlapping jobs</span>
+          <div class="seg wrap" id="rg-seg">
             ${groups
-              .map((g) => `<option value="${g}" ${ (r?.groupKey || "general") === g ? "selected" : ""}>${g}</option>`)
+              .map(
+                ([id, label]) =>
+                  `<button type="button" class="seg-btn ${group === id ? "on" : ""}" data-act="routine-group" data-id="${id}">${escapeHtml(label)}</button>`,
+              )
               .join("")}
-          </select>
-          ${isNew ? "" : `<label class="muted"><input type="checkbox" id="re" ${r.enabled !== false ? "checked" : ""}/> Enabled</label>`}
-          <button class="pill" data-act="save-routine">${isNew ? "Create" : "Save"}</button>
+          </div>
+          <input type="hidden" id="rg" value="${escapeHtml(group)}" />
+        </div>
+        <label class="routine-field routine-brief">
+          <span class="muted">What it should do</span>
+          <textarea class="field" id="ri" placeholder="Standing brief: who you are, what to check, how to reply, when to stop.">${escapeHtml(r?.instruction || "")}</textarea>
+        </label>
+        <div class="routine-editor-foot">
+          <button type="button" class="pill" data-act="close-modal">Cancel</button>
+          <button type="button" class="pill primary" data-act="save-routine">${isNew ? "Create" : "Save"}</button>
         </div>
       </div>
     </div>
@@ -888,7 +945,7 @@ function botSettingsHtml(bot) {
   return `<aside class="pane" style="background:#fff">
     <div class="section-h"><button class="iconbtn" data-act="bot-settings">‹</button> Settings</div>
     <div class="botset">
-      <div style="display:grid;place-items:center;padding:12px 0">${hexIcon(bot.color, letter(bot))}</div>
+      <div class="avatar-preview sm" data-avatar="${bot.id}" data-avatar-slot="legacy-settings" data-avatar-size="128" data-avatar-framing="body" data-preview="1"></div>
       <label class="muted">Name</label>
       <input class="field" id="bn" value="${escapeHtml(bot.name)}" />
       <label class="muted">Title</label>
@@ -911,7 +968,7 @@ function createBotHtml() {
         <div class="botset">
           <div class="avatar-preview sm" data-avatar="create" data-avatar-slot="create" data-avatar-size="128" data-avatar-framing="body" data-preview="1"></div>
           <label class="muted">Face</label>
-          <div class="chips">
+          <div class="chips chips-scroll">
             ${faceList()
               .map(
                 (f) =>
@@ -930,17 +987,25 @@ function createBotHtml() {
   </div>`;
 }
 
+function seg(key, value, options) {
+  return `<div class="seg" role="tablist">${options
+    .map(
+      ([id, label]) =>
+        `<button type="button" class="seg-btn ${value === id ? "on" : ""}" data-act="set-pref" data-set="${key}" data-id="${id}">${escapeHtml(label)}</button>`,
+    )
+    .join("")}</div>`;
+}
+
 function harnessHtml(h) {
   return `<h2>Harness</h2>
     <p class="muted" style="margin-top:-8px">Which model stack this app talks to.</p>
     <div class="block">
       <div class="card">
-        <div class="row"><div><div class="lbl">Harness</div><div class="sub">Both harnesses drive your computer the OctoBot way: screenshot, then mouse/keyboard. Grok Build also keeps a resumed grok session on that desktop. Never on this Mac.</div></div>
-          <select class="pill" data-harness="provider">
-            <option value="spacexai" ${h.provider === "spacexai" || !h.provider ? "selected" : ""}>SpaceXAI (api.x.ai)</option>
-            <option value="grok-build" ${h.provider === "grok-build" ? "selected" : ""}>Grok Build (local CLI)</option>
-            <option value="custom" ${h.provider === "custom" ? "selected" : ""}>Custom API key / base URL</option>
-          </select>
+        <div class="row"><div><div class="lbl">Sign-in</div><div class="sub">Grok Build uses OAuth on this Mac. SpaceXAI uses an API key.</div></div>
+          <div class="seg" role="tablist">
+            <button type="button" class="seg-btn ${h.provider !== "spacexai" && h.provider !== "custom" ? "on" : ""}" data-act="set-harness" data-id="grok-build">Grok Build (OAuth)</button>
+            <button type="button" class="seg-btn ${h.provider === "spacexai" ? "on" : ""}" data-act="set-harness" data-id="spacexai">SpaceXAI (API key)</button>
+          </div>
         </div>
         <div class="row"><div class="lbl">Model</div>
           <input class="field" style="max-width:220px" data-harness-text="model" value="${escapeHtml(h.model || "grok-4.6")}" />
@@ -997,11 +1062,11 @@ function settingsHtml() {
           </div>
           <div class="block"><h3>Appearance</h3>
             <div class="card row"><div><div class="lbl">Theme</div></div>
-              <select class="pill" data-set="themePreference">
-                <option value="system" ${s.themePreference === "system" ? "selected" : ""}>Follow System</option>
-                <option value="light" ${s.themePreference === "light" ? "selected" : ""}>Light</option>
-                <option value="dark" ${s.themePreference === "dark" ? "selected" : ""}>Dark</option>
-              </select>
+              ${seg("themePreference", s.themePreference || "system", [
+                ["system", "System"],
+                ["light", "Light"],
+                ["dark", "Dark"],
+              ])}
             </div>
           </div>
           <div class="block"><h3>System</h3>
@@ -1014,11 +1079,11 @@ function settingsHtml() {
               <div class="row"><div><div class="lbl">Timezone</div></div>
                 <span class="pill">Auto-detect (${state.timezone})</span></div>
               <div class="row"><div><div class="lbl">Execution on Local Computer</div><div class="sub">Let the assistant open files and run tasks on your computer. Auto-review still checks everything first.</div></div>
-                <select class="pill" data-set="localExecPermission">
-                  <option value="always" ${s.localExecPermission === "always" ? "selected" : ""}>Always allow</option>
-                  <option value="ask" ${s.localExecPermission === "ask" ? "selected" : ""}>Ask every time</option>
-                  <option value="never" ${s.localExecPermission === "never" ? "selected" : ""}>Never allow</option>
-                </select>
+                ${seg("localExecPermission", s.localExecPermission || "ask", [
+                  ["always", "Always allow"],
+                  ["ask", "Ask every time"],
+                  ["never", "Never allow"],
+                ])}
               </div>
               <div class="row"><div><div class="lbl">Auto-review</div><div class="sub">OctoBot checks each action before it runs and asks you first when needed.</div></div>
                 <button class="toggle ${s.autoReviewEnabled ? "on" : ""}" data-tog="autoReviewEnabled"><i></i></button>
@@ -1325,11 +1390,35 @@ function bindDelegated() {
       toggleRoutine(el.dataset.id);
       return;
     }
+    if (act === "routine-group") {
+      const hidden = $("#rg");
+      if (hidden) hidden.value = el.dataset.id;
+      document.querySelectorAll("#rg-seg .seg-btn").forEach((b) => b.classList.toggle("on", b === el));
+      return;
+    }
+    if (act === "routine-enabled") {
+      el.classList.toggle("on");
+      return;
+    }
     if (act === "save-routine") {
       saveRoutine();
       return;
     }
     if (act === "send") $("#send")?.dispatchEvent(new Event("submit"));
+    if (act === "set-pref") {
+      api("/api/settings", { method: "PUT", body: { [el.dataset.set]: el.dataset.id } }).then(refreshSettings);
+      return;
+    }
+    if (act === "set-harness") {
+      const provider = el.dataset.id;
+      const harness = { ...(state.settings?.harness || {}), provider };
+      if (provider === "spacexai") {
+        harness.baseUrl = "https://api.x.ai/v1";
+        harness.apiKeyEnv = "XAI_API_KEY";
+      }
+      api("/api/settings", { method: "PUT", body: { harness } }).then(refreshSettings);
+      return;
+    }
     if (act === "test-harness") {
       testHarness();
       return;
@@ -1576,7 +1665,7 @@ async function saveRoutine() {
   };
   if (!body.instruction.trim()) return;
   if (state.editingRoutineId) {
-    body.enabled = Boolean($("#re")?.checked);
+    body.enabled = $("#re-tog") ? $("#re-tog").classList.contains("on") : true;
     await api(`/api/bots/${bot.id}/routines/${state.editingRoutineId}`, { method: "PATCH", body });
   } else {
     await api(`/api/bots/${bot.id}/routines`, { method: "POST", body });
@@ -1762,13 +1851,7 @@ function listen() {
         opened = true;
         return;
       }
-      refresh()
-        .then(() => {
-          liveFrameKey = null;
-          const bot = state.bots.find((b) => b.id === state.selected);
-          if (bot) mountLiveFrame(bot);
-        })
-        .catch(() => {});
+      refresh().catch(() => {});
     };
   };
   attach();
@@ -1795,8 +1878,7 @@ function watchStream() {
   api(`/api/bots/${bot.id}/stream-health`)
     .then((h) => {
       if (h.ok && $("#screen-wrap iframe")) return;
-      liveFrameKey = null;
-      if (bot.vm?.novncPort) mountLiveFrame(bot);
+      if (bot.vm?.novncPort) scheduleStreamRetry(bot, 400);
       else if (!startingVm && vm.status !== "starting") {
         startingVm = true;
         resumeVm()
@@ -1807,8 +1889,7 @@ function watchStream() {
       }
     })
     .catch(() => {
-      liveFrameKey = null;
-      if (bot.vm?.novncPort) mountLiveFrame(bot);
+      if (bot.vm?.novncPort) scheduleStreamRetry(bot, 1200);
     });
 }
 
@@ -1823,4 +1904,8 @@ function watchStream() {
     resumeVm().catch(() => {});
   }
   setInterval(watchStream, 8_000);
+  window.addEventListener("focus", () => {
+    const bot = state.bots.find((b) => b.id === state.selected);
+    if (bot?.vm?.novncPort) scheduleStreamRetry(bot, 700);
+  });
 })();

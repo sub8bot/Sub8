@@ -84,9 +84,9 @@ const DEFAULTS = {
   color: 0xe8eaee,
   eyeColor: 0x0a0a0a,
   eyeTilt: -22,
-  eyeWidth: 0.2,
-  eyeHeight: 0.48,
-  eyeSpacing: 0.4,
+  eyeWidth: 0.22,
+  eyeHeight: 0.52,
+  eyeSpacing: 0.38,
   eyeElevation: 0.1,
   eyeFlatten: 0.2,
   mouthWidth: 0.078,
@@ -117,85 +117,97 @@ function face(label, extra = {}) {
 }
 
 export const EXPRESSIONS = {
-  neutral: face('😐 Neutral', { eye: 'round', mouth: 'none' }),
-  slight: face('🙂 Slight', { tilt: -16, eye: 'dot', mouth: 'small', feel: 'happy' }),
-  happy: face('😊 Happy', { tilt: -14, spacing: 0.32, elevation: 0.08, eye: 'crescent', mouth: 'smile', blush: true, feel: 'happy' }),
-  blush: face('☺️ Blush', { tilt: -10, spacing: 0.36, elevation: 0.06, eye: 'crescent', mouth: 'small', blush: true, feel: 'happy' }),
-  grin: face('😁 Grin', { tilt: -12, spacing: 0.36, elevation: 0.07, eye: 'crescent', mouth: 'teeth', feel: 'happy' }),
-  beam: face('😄 Beam', { tilt: -8, spacing: 0.4, elevation: 0.1, eye: 'round', mouth: 'open', feel: 'happy' }),
-  laugh: face('😆 Laugh', { tilt: -6, spacing: 0.36, elevation: 0.05, eye: 'crescent', mouth: 'open', feel: 'happy' }),
-  joy: face('😂 Joy', { tilt: -4, spacing: 0.36, elevation: 0.04, eye: 'crescent', mouth: 'open', tears: 2, feel: 'happy' }),
-  rofl: face('🤣 ROFL', { tilt: 10, spacing: 0.36, elevation: 0.03, eye: 'crescent', mouth: 'open', feel: 'happy' }),
-  party: face('🥳 Party', { tilt: -14, spacing: 0.34, elevation: 0.1, eye: 'round', mouth: 'teeth', feel: 'happy' }),
-  hug: face('🤗 Hug', { tilt: -8, spacing: 0.38, elevation: 0.08, eye: 'crescent', mouth: 'open', feel: 'happy' }),
+  neutral: face('😐 Neutral', { mouth: 'dash' }),
+  slight: face('🙂 Slight', { tilt: -16, eyeY: 0.9, mouth: 'small', feel: 'happy' }),
+  happy: face('😊 Happy', { tilt: -14, spacing: 0.33, elevation: 0.08, eyeY: 0.64, eyeX: 1.1, mouth: 'smile', blush: true, feel: 'happy' }),
+  blush: face('☺️ Blush', { tilt: -10, spacing: 0.32, elevation: 0.06, eyeY: 0.46, eyeX: 1.16, mouth: 'smile', blush: true, feel: 'happy' }),
+  grin: face('😁 Grin', { tilt: -12, spacing: 0.32, elevation: 0.07, eyeY: 0.42, eyeX: 1.18, mouth: 'grin', feel: 'happy' }),
+  beam: face('😄 Beam', { tilt: -8, spacing: 0.35, elevation: 0.1, eyeY: 0.78, eyeX: 1.08, mouth: 'grin', feel: 'happy' }),
+  laugh: face('😆 Laugh', { tilt: -6, spacing: 0.3, elevation: 0.05, eyeY: 0.24, eyeX: 1.32, mouth: 'grin', feel: 'happy' }),
+  joy: face('😂 Joy', { tilt: -4, spacing: 0.3, elevation: 0.04, eyeY: 0.2, eyeX: 1.32, mouth: 'grin', tears: 2, feel: 'happy' }),
+  rofl: face('🤣 ROFL', { tilt: 18, spacing: 0.28, elevation: 0.02, eyeY: 0.16, eyeX: 1.36, mouth: 'grin', feel: 'happy' }),
+  party: face('🥳 Party', { tilt: -18, spacing: 0.34, elevation: 0.1, eyeY: 0.72, mouth: 'grin', feel: 'happy' }),
+  hug: face('🤗 Hug', { tilt: -8, spacing: 0.38, elevation: 0.08, eyeY: 0.6, mouth: 'smile', feel: 'happy' }),
 
-  wink: face('😉 Wink', { tilt: -18, spacing: 0.33, elevation: 0.09, lEye: 'line', rEye: 'round', mouth: 'smile', feel: 'wink' }),
-  smirk: face('😏 Smirk', { tilt: -28, spacing: 0.32, elevation: 0.1, lTilt: -0.08, rTilt: 0.2, eye: 'stadium', eyeY: 0.78, mouth: 'smirk', feel: 'smirk' }),
+  wink: face('😉 Wink', { tilt: -18, spacing: 0.33, elevation: 0.09, winkL: true, mouth: 'smile', feel: 'wink' }),
+  smirk: face('😏 Smirk', { tilt: -28, spacing: 0.32, elevation: 0.1, lTilt: -0.1, rTilt: 0.22, eyeY: 0.78, mouth: 'smirk', feel: 'smirk' }),
   love: face('😍 Love', { tilt: -6, spacing: 0.42, elevation: 0.1, eye: 'heart', mouth: 'smile', feel: 'love' }),
-  hearts: face('🥰 Hearts', { tilt: -10, spacing: 0.38, elevation: 0.08, eye: 'crescent', mouth: 'smile', blush: true, feel: 'love' }),
-  kiss: face('😘 Kiss', { tilt: -20, spacing: 0.32, elevation: 0.09, lEye: 'line', rEye: 'round', mouth: 'kiss', blush: true, feel: 'wink' }),
-  kissing: face('😗 Kissing', { tilt: -6, spacing: 0.32, elevation: 0.09, eye: 'round', mouth: 'kiss', feel: 'neutral' }),
-  star: face('🤩 Star', { tilt: 0, spacing: 0.46, elevation: 0.13, eye: 'star', mouth: 'open', feel: 'wow' }),
+  hearts: face('🥰 Hearts', { tilt: -10, spacing: 0.34, elevation: 0.08, eyeY: 0.52, eyeX: 1.12, mouth: 'smile', blush: true, feel: 'love' }),
+  kiss: face('😘 Kiss', { tilt: -20, spacing: 0.32, elevation: 0.09, winkL: true, mouth: 'kiss', blush: true, feel: 'wink' }),
+  kissing: face('😗 Kissing', { tilt: -6, spacing: 0.34, elevation: 0.08, eyeY: 0.86, mouth: 'kiss', feel: 'neutral' }),
+  star: face('🤩 Star', { tilt: 0, spacing: 0.44, elevation: 0.13, eye: 'star', mouth: 'grin', feel: 'wow' }),
 
-  yum: face('😋 Yum', { tilt: -10, spacing: 0.3, elevation: 0.07, eye: 'crescent', mouth: 'tongue', feel: 'happy' }),
-  tongue: face('😛 Tongue', { tilt: -6, spacing: 0.34, elevation: 0.1, eye: 'round', mouth: 'tongue', feel: 'happy' }),
-  winkTongue: face('😜 Wink tongue', { tilt: -16, spacing: 0.32, elevation: 0.09, lEye: 'line', rEye: 'round', mouth: 'tongue', feel: 'wink' }),
+  yum: face('😋 Yum', { tilt: -10, spacing: 0.32, elevation: 0.07, eyeY: 0.3, eyeX: 1.26, mouth: 'tongue', feel: 'happy' }),
+  tongue: face('😛 Tongue', { tilt: -4, spacing: 0.34, elevation: 0.1, mouth: 'tongue', feel: 'happy' }),
+  winkTongue: face('😜 Wink tongue', { tilt: -16, spacing: 0.32, elevation: 0.09, winkL: true, mouth: 'tongue', feel: 'wink' }),
   zany: face('🤪 Zany', {
-    tilt: 10,
+    tilt: 12,
     spacing: 0.42,
     elevation: 0.13,
-    lTilt: 0.28,
-    rTilt: -0.38,
-    lEye: 'wide',
-    rEye: 'crescent',
+    lTilt: 0.32,
+    rTilt: -0.42,
+    lEyeY: 0.34,
+    lEyeX: 1.55,
+    rEyeY: 1.12,
+    rEyeX: 0.88,
     mouth: 'tongue',
     feel: 'zany',
   }),
-  squintTongue: face('😝 Squint tongue', { tilt: -2, spacing: 0.36, elevation: 0.04, eye: 'crescent', mouth: 'tongue', feel: 'happy' }),
+  squintTongue: face('😝 Squint tongue', { tilt: -2, spacing: 0.3, elevation: 0.04, eyeY: 0.18, eyeX: 1.32, mouth: 'tongue', feel: 'happy' }),
 
-  think: face('🤔 Think', { tilt: 4, spacing: 0.36, elevation: 0.12, lTilt: 0.42, rTilt: 0.06, eye: 'round', mouth: 'small', feel: 'confused' }),
-  raised: face('🤨 Raised', { tilt: -16, spacing: 0.34, elevation: 0.11, lTilt: 0.5, rTilt: -0.04, eye: 'stadium', mouth: 'dash', feel: 'deadpan' }),
-  unamused: face('😒 Unamused', { tilt: -20, spacing: 0.32, elevation: 0.07, lTilt: 0.1, eye: 'stadium', eyeY: 0.62, mouth: 'dash', feel: 'deadpan' }),
-  expressionless: face('😑 Flat', { tilt: -22, spacing: 0.34, elevation: 0.07, eye: 'line', mouth: 'dash', blink: false, feel: 'deadpan' }),
-  deadpan: face('😐 Deadpan', { tilt: -22, spacing: 0.34, elevation: 0.08, eye: 'round', mouth: 'dash', feel: 'deadpan' }),
-  nomouth: face('😶 No mouth', { tilt: -22, spacing: 0.34, elevation: 0.1, eye: 'round', mouth: 'none', feel: 'neutral' }),
-  eyeroll: face('🙄 Eye roll', { tilt: 8, spacing: 0.34, elevation: 0.18, eye: 'wide', mouth: 'dash', feel: 'eyeroll' }),
-  grimace: face('😬 Grimace', { tilt: 2, spacing: 0.32, elevation: 0.09, eye: 'wide', mouth: 'teeth', feel: 'scared' }),
-  shush: face('🤫 Shush', { tilt: -12, spacing: 0.32, elevation: 0.09, lEye: 'round', rEye: 'line', mouth: 'dash', feel: 'wink' }),
-  oops: face('🤭 Oops', { tilt: -8, spacing: 0.32, elevation: 0.08, eye: 'crescent', mouth: 'oh', feel: 'happy' }),
-  cool: face('😎 Cool', { tilt: -24, spacing: 0.3, elevation: 0.08, eye: 'line', mouth: 'smirk', feel: 'smirk' }),
+  think: face('🤔 Think', { tilt: 6, spacing: 0.36, elevation: 0.14, lTilt: 0.48, rTilt: 0.08, mouth: 'dash', feel: 'confused' }),
+  raised: face('🤨 Raised', { tilt: -16, spacing: 0.34, elevation: 0.11, lTilt: 0.55, rTilt: -0.06, mouth: 'dash', feel: 'deadpan' }),
+  unamused: face('😒 Unamused', { tilt: -18, spacing: 0.32, elevation: 0.07, lTilt: 0.16, eyeY: 0.58, mouth: 'dash', feel: 'deadpan' }),
+  expressionless: face('😑 Flat', { tilt: -22, spacing: 0.34, elevation: 0.07, eyeY: 0.3, eyeX: 1.28, mouth: 'dash', blink: false, feel: 'deadpan' }),
+  deadpan: face('😐 Deadpan', { tilt: -22, spacing: 0.34, elevation: 0.08, eyeY: 0.72, eyeX: 1.14, mouth: 'dash', feel: 'deadpan' }),
+  nomouth: face('😶 No mouth'),
+  eyeroll: face('🙄 Eye roll', { tilt: 10, spacing: 0.36, elevation: 0.24, eyeY: 0.48, eyeX: 1.22, mouth: 'dash', feel: 'eyeroll' }),
+  grimace: face('😬 Grimace', { tilt: 4, spacing: 0.34, elevation: 0.1, eyeY: 0.7, eyeX: 1.2, mouth: 'grimace', feel: 'scared' }),
+  shush: face('🤫 Shush', { tilt: -12, spacing: 0.32, elevation: 0.09, winkR: true, mouth: 'dash', feel: 'wink' }),
+  oops: face('🤭 Oops', { tilt: -8, spacing: 0.32, elevation: 0.08, eyeY: 0.54, mouth: 'oh', feel: 'happy' }),
+  cool: face('😎 Cool', { tilt: -26, spacing: 0.32, elevation: 0.08, eyeY: 0.2, eyeX: 1.5, mouth: 'smirk', feel: 'smirk' }),
 
-  sleepy: face('😪 Sleepy', { tilt: -6, spacing: 0.32, elevation: 0.04, eye: 'line', mouth: 'dash', tears: 1, blink: false, feel: 'sleepy' }),
-  sleep: face('😴 Sleep', { tilt: 14, spacing: 0.3, elevation: 0.02, eye: 'line', mouth: 'dash', blink: false, feel: 'sleepy' }),
-  yawn: face('🥱 Yawn', { tilt: 12, spacing: 0.32, elevation: 0.03, eye: 'line', mouth: 'oh', blink: false, feel: 'sleepy' }),
-  relieved: face('😌 Relieved', { tilt: -10, spacing: 0.3, elevation: 0.06, eye: 'crescent', mouth: 'small', feel: 'sleepy' }),
-  drool: face('🤤 Drool', { tilt: 10, spacing: 0.32, elevation: 0.04, eye: 'line', mouth: 'tongue', blink: false, feel: 'sleepy' }),
+  sleepy: face('😪 Sleepy', { tilt: -8, spacing: 0.32, elevation: 0.04, eyeY: 0.2, eyeX: 1.22, mouth: 'dash', tears: 1, blink: false, feel: 'sleepy' }),
+  sleep: face('😴 Sleep', { tilt: 16, spacing: 0.3, elevation: 0.02, eyeY: 0.1, eyeX: 1.32, mouth: 'dash', blink: false, feel: 'sleepy' }),
+  yawn: face('🥱 Yawn', { tilt: 14, spacing: 0.32, elevation: 0.03, eyeY: 0.14, eyeX: 1.28, mouth: 'oh', blink: false, feel: 'sleepy' }),
+  relieved: face('😌 Relieved', { tilt: -10, spacing: 0.32, elevation: 0.06, eyeY: 0.34, eyeX: 1.18, mouth: 'small', feel: 'sleepy' }),
+  drool: face('🤤 Drool', { tilt: 16, spacing: 0.32, elevation: 0.03, eyeY: 0.22, eyeX: 1.24, mouth: 'tongue', blink: false, feel: 'sleepy' }),
 
-  sad: face('😢 Sad', { tilt: 14, spacing: 0.32, elevation: 0.07, lTilt: 0.1, rTilt: -0.1, eye: 'round', mouth: 'frown', tears: 1, feel: 'sad' }),
-  pensive: face('😔 Pensive', { tilt: 18, spacing: 0.3, elevation: 0.04, eye: 'line', mouth: 'dash', feel: 'sad' }),
-  disappointed: face('😞 Down', { tilt: 14, spacing: 0.32, elevation: 0.05, eye: 'round', mouth: 'frown', feel: 'sad' }),
-  cry: face('😭 Cry', { tilt: 12, spacing: 0.36, elevation: 0.04, eye: 'crescent', mouth: 'open', tears: 2, feel: 'sad' }),
-  weary: face('😩 Weary', { tilt: 10, spacing: 0.3, elevation: 0.05, lTilt: 0.2, rTilt: -0.2, eye: 'crescent', mouth: 'oh', feel: 'sad' }),
-  pleading: face('🥺 Plead', { tilt: 6, spacing: 0.48, elevation: 0.13, eye: 'wide', mouth: 'small', blush: true, feel: 'sad' }),
-  worried: face('😟 Worry', { tilt: 10, spacing: 0.36, elevation: 0.1, lTilt: 0.16, rTilt: -0.16, eye: 'round', mouth: 'frown', feel: 'sad' }),
-  confused: face('😕 Confused', { tilt: -6, spacing: 0.36, elevation: 0.1, lTilt: 0.35, rTilt: -0.05, eye: 'round', mouth: 'frown', feel: 'confused' }),
+  sad: face('😢 Sad', { tilt: 16, spacing: 0.3, elevation: 0.06, lTilt: 0.14, rTilt: -0.14, eyeY: 0.86, mouth: 'frown', tears: 1, feel: 'sad' }),
+  pensive: face('😔 Pensive', { tilt: 18, spacing: 0.3, elevation: 0.04, lTilt: 0.12, rTilt: -0.12, eyeY: 0.5, mouth: 'dash', feel: 'sad' }),
+  disappointed: face('😞 Down', { tilt: 14, spacing: 0.32, elevation: 0.05, eyeY: 0.76, mouth: 'frown', feel: 'sad' }),
+  cry: face('😭 Cry', { tilt: 12, spacing: 0.3, elevation: 0.04, eyeY: 0.22, eyeX: 1.26, mouth: 'oh', tears: 2, feel: 'sad' }),
+  weary: face('😩 Weary', { tilt: 10, spacing: 0.32, elevation: 0.05, lTilt: 0.22, rTilt: -0.22, eyeY: 0.38, eyeX: 1.22, mouth: 'oh', feel: 'sad' }),
+  pleading: face('🥺 Plead', { tilt: 6, spacing: 0.44, elevation: 0.15, eyeY: 0.88, eyeX: 1.5, mouth: 'small', blush: true, feel: 'sad' }),
+  worried: face('😟 Worry', { tilt: 10, spacing: 0.36, elevation: 0.1, lTilt: 0.18, rTilt: -0.18, eyeY: 0.92, mouth: 'frown', feel: 'sad' }),
+  confused: face('😕 Confused', { tilt: -6, spacing: 0.4, elevation: 0.2, eyeY: 0.7, lTilt: 0.38, rTilt: -0.06, mouth: 'frown', feel: 'confused' }),
 
-  wow: face('😮 Wow', { tilt: 0, spacing: 0.46, elevation: 0.14, eye: 'wide', mouth: 'oh', blink: false, feel: 'wow' }),
-  hushed: face('😯 Hushed', { tilt: 2, spacing: 0.36, elevation: 0.12, eye: 'wide', mouth: 'oh', blink: false, feel: 'wow' }),
-  flushed: face('😳 Flush', { tilt: 4, spacing: 0.42, elevation: 0.14, eye: 'wide', mouth: 'oh', blush: true, blink: false, feel: 'wow' }),
-  gasp: face('😲 Gasp', { tilt: -2, spacing: 0.4, elevation: 0.16, eye: 'wide', mouth: 'oh', blink: false, feel: 'wow' }),
+  wow: face('😮 Wow', { tilt: 0, spacing: 0.4, elevation: 0.14, eyeY: 0.55, eyeX: 1.55, mouth: 'oh', blink: false, feel: 'wow' }),
+  hushed: face('😯 Hushed', { tilt: 2, spacing: 0.36, elevation: 0.12, eyeY: 0.68, eyeX: 1.28, mouth: 'oh', blink: false, feel: 'wow' }),
+  flushed: face('😳 Flush', { tilt: 4, spacing: 0.4, elevation: 0.14, eyeY: 0.74, eyeX: 1.42, mouth: 'oh', blush: true, blink: false, feel: 'wow' }),
+  gasp: face('😲 Gasp', { tilt: -4, spacing: 0.42, elevation: 0.17, eyeY: 0.46, eyeX: 1.62, mouth: 'oh', blink: false, feel: 'wow' }),
   dizzy: face('😵 Dizzy', { tilt: 6, spacing: 0.4, elevation: 0.12, eye: 'x', mouth: 'oh', blink: false, feel: 'wow' }),
-  woozy: face('🥴 Woozy', { tilt: 10, spacing: 0.38, elevation: 0.1, lTilt: 0.32, rTilt: 0.12, eye: 'spiral', mouth: 'wavy', feel: 'zany' }),
-  nauseous: face('🤢 Sick', { tilt: 14, spacing: 0.3, elevation: 0.04, eye: 'crescent', mouth: 'wavy', feel: 'sad' }),
-  hot: face('🥵 Hot', { tilt: 4, spacing: 0.34, elevation: 0.1, eye: 'wide', mouth: 'tongue', feel: 'wow' }),
-  cold: face('🥶 Cold', { tilt: 8, spacing: 0.4, elevation: 0.12, eye: 'wide', mouth: 'teeth', feel: 'scared' }),
+  woozy: face('🥴 Woozy', {
+    tilt: 12,
+    spacing: 0.4,
+    elevation: 0.1,
+    lTilt: 0.36,
+    rTilt: 0.16,
+    lEyeY: 0.42,
+    rEyeY: 1.02,
+    mouth: 'wavy',
+    feel: 'zany',
+  }),
+  nauseous: face('🤢 Sick', { tilt: 16, spacing: 0.3, elevation: 0.03, eyeY: 0.4, mouth: 'wavy', feel: 'sad' }),
+  hot: face('🥵 Hot', { tilt: 4, spacing: 0.34, elevation: 0.1, eyeY: 0.56, eyeX: 1.28, mouth: 'tongue', feel: 'wow' }),
+  cold: face('🥶 Cold', { tilt: 8, spacing: 0.4, elevation: 0.12, eyeY: 0.72, eyeX: 1.22, mouth: 'grimace', feel: 'scared' }),
 
-  scared: face('😨 Scared', { tilt: 6, spacing: 0.46, elevation: 0.16, lTilt: -0.12, rTilt: 0.12, eye: 'wide', mouth: 'oh', blink: false, feel: 'scared' }),
-  scream: face('😱 Scream', { tilt: 4, spacing: 0.5, elevation: 0.18, eye: 'wide', mouth: 'oh', blink: false, feel: 'scared' }),
+  scared: face('😨 Scared', { tilt: 6, spacing: 0.46, elevation: 0.16, lTilt: -0.14, rTilt: 0.14, eyeY: 0.76, eyeX: 1.32, mouth: 'oh', blink: false, feel: 'scared' }),
+  scream: face('😱 Scream', { tilt: 4, spacing: 0.5, elevation: 0.18, eyeY: 0.58, eyeX: 1.58, mouth: 'oh', blink: false, feel: 'scared' }),
 
-  angry: face('😠 Angry', { tilt: 0, spacing: 0.36, elevation: 0.1, lTilt: 0.42, rTilt: -0.42, eye: 'stadium', mouth: 'frown', feel: 'angry' }),
-  rage: face('😡 Rage', { tilt: 4, spacing: 0.34, elevation: 0.1, lTilt: 0.52, rTilt: -0.52, eye: 'stadium', mouth: 'frown', feel: 'angry' }),
-  steam: face('😤 Steam', { tilt: 2, spacing: 0.36, elevation: 0.08, lTilt: 0.38, rTilt: -0.38, eye: 'crescent', mouth: 'dash', feel: 'angry' }),
+  angry: face('😠 Angry', { tilt: 0, spacing: 0.3, elevation: 0.1, lTilt: 0.44, rTilt: -0.44, eyeY: 0.9, eyeX: 1.1, mouth: 'frown', feel: 'angry' }),
+  rage: face('😡 Rage', { tilt: 4, spacing: 0.28, elevation: 0.1, lTilt: 0.56, rTilt: -0.56, eyeY: 0.8, eyeX: 1.16, mouth: 'frown', feel: 'angry' }),
+  steam: face('😤 Steam', { tilt: 2, spacing: 0.3, elevation: 0.08, lTilt: 0.4, rTilt: -0.4, eyeY: 0.46, eyeX: 1.18, mouth: 'dash', feel: 'angry' }),
 };
 
 export const ANIMATIONS = {
@@ -696,6 +708,7 @@ export class GrokBot extends THREE.Group {
       const angle = (i / count) * Math.PI * 2;
       const sx = Math.sin(angle);
       const cz = Math.cos(angle);
+      if (cz > 0.82) continue;
       let kind = 'back';
       if (Math.abs(sx) > spec.flareAt) kind = 'flare';
       else if (cz > spec.hangAt) kind = 'hang';
@@ -816,10 +829,8 @@ export class GrokBot extends THREE.Group {
       grimace: this.mouthGrimace,
       tongue: this.mouthTongue,
       kiss: this.mouthKiss,
-      open: this.mouthOpenFill,
       small: this.mouthSmall,
       wavy: this.mouthWavy,
-      teeth: this.mouthTeeth,
     };
     const active = map[this._mouthShape] || null;
     this.mouth = active || this.mouthDash;
@@ -829,8 +840,6 @@ export class GrokBot extends THREE.Group {
       mesh.visible = on;
       if (!on) continue;
       if (key === 'oh' || key === 'kiss') mesh.scale.set(s * 1.35, s * 1.35, this._flatten * s * 1.5);
-      else if (key === 'open') mesh.scale.set(s * 1.4, s * 0.88, this._flatten * s * 1.25);
-      else if (key === 'teeth') mesh.scale.set(s * 1.05, s, this._flatten * s);
       else if (key === 'dash' || key === 'grimace') mesh.scale.set(s, s, this._flatten * s);
       else if (key === 'tongue') mesh.scale.set(s * 0.9, s * 1.15, this._flatten * s);
       else mesh.scale.set(s, s, s);
@@ -838,14 +847,6 @@ export class GrokBot extends THREE.Group {
     if (this._mouthShape === 'tongue' && s > 0.02) {
       this.mouthSmile.visible = true;
       this.mouthSmile.scale.set(s * 0.85, s * 0.85, s * 0.85);
-    }
-    if (this._mouthShape === 'open' && s > 0.02) {
-      this.mouthGrin.visible = true;
-      this.mouthGrin.scale.set(s * 1.05, s * 1.05, s);
-    }
-    if (this._mouthShape === 'teeth' && s > 0.02) {
-      this.mouthGrin.visible = true;
-      this.mouthGrin.scale.set(s * 1.02, s * 0.9, s);
     }
   }
 
@@ -1143,7 +1144,7 @@ export class GrokBot extends THREE.Group {
       else if (phase < 0.48) look = THREE.MathUtils.lerp(0.28, -0.22, (phase - 0.35) / 0.13);
       else if (phase < 0.78) look = -0.22;
       else look = THREE.MathUtils.lerp(-0.22, 0.22, (phase - 0.78) / 0.22);
-      this.eyes.rotation.x = 0.22;
+      this.eyes.rotation.x = 0.38;
       this.eyes.rotation.y = look;
       this.rotation.x += -0.04;
     }
@@ -1313,12 +1314,12 @@ export class GrokBot extends THREE.Group {
       const s = this._mouth;
       this.mouthDash.scale.set(s * (1 + hold * 0.22), s * (1 - hold * 0.28), this._flatten * s);
     }
-    if (this._feel === 'confused' && this.mouthDash.visible) {
+    if (this._feel === 'confused' && this.mouthFrown.visible) {
       const glance = this._confusedGlance ?? 0;
       const s = this._mouth;
-      this.mouthDash.scale.set(s * 0.82, s, this._flatten * s);
-      this._seatMouthMesh(this.mouthDash, -0.2, 'dash');
-      this.mouthDash.rotateOnAxis(_normal, glance * 0.42);
+      this._seatMouthMesh(this.mouthFrown, -0.32, 'curve');
+      this.mouthFrown.scale.set(s * 0.92, s * 0.72, s);
+      this.mouthFrown.rotateOnAxis(_normal, glance * 0.18);
     }
     if (this._feel === 'sad' && this.mouthFrown.visible) {
       const sink = 1 - (this._sadSigh ?? 0);

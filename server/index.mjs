@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import * as store from "./store.mjs";
 import * as vm from "./vm.mjs";
 import * as routines from "./routines.mjs";
-import { runTurn, publicBot, pingHarness, webSearch, orchestratorReply } from "./agent.mjs";
+import { runTurn, publicBot, pingHarness, webSearch, orchestratorReply, isChatQuestion } from "./agent.mjs";
 import { appRoot, dataDir } from "./paths.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -74,7 +74,9 @@ app.get("/api/ready", async (_req, res) => {
   try {
     const settings = await store.loadSettings();
     const h = settings.harness || {};
-    const harnessOk = h.provider === "spacexai" && (h.model || "grok-4.6") === "grok-4.6";
+    const harnessOk =
+      ((h.provider || "grok-build") === "grok-build" || h.provider === "spacexai" || h.provider === "custom") &&
+      (h.model || "grok-4.6") === "grok-4.6";
     const bots = await store.loadBots();
     const bot = bots[0] || null;
     const stream = bot ? await vm.streamHealth(bot) : { ok: false, error: "no bot" };
@@ -356,8 +358,9 @@ app.post("/api/bots/:id/messages", async (req, res) => {
       b.messages.push(userMsg);
     });
     broadcast("message", { botId: bot.id, ...userMsg });
-    live.nudges.push(userMsg.content);
-    res.json({ ok: true, nudged: true });
+    const question = isChatQuestion(userMsg.content);
+    if (!question) live.nudges.push(userMsg.content);
+    res.json({ ok: true, nudged: !question });
     talkWhileWorking(bot.id, userMsg.content).catch((err) => console.error("orchestrator", err));
     return;
   }

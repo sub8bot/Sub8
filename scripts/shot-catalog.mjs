@@ -20,7 +20,7 @@ page.on("console", (msg) => {
   if (msg.type() === "error") console.error("console", msg.text());
 });
 
-await page.goto("http://127.0.0.1:8787/tool.html?v=pastel-1", {
+await page.goto("http://127.0.0.1:8787/tool.html?v=no-front-leg", {
   waitUntil: "domcontentloaded",
   timeout: 15000,
 });

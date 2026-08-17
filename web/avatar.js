@@ -13,15 +13,25 @@ const REACT_MS = 28_000;
 const DONE_MS = 9_000;
 
 const RE = {
+  scream: /\b(scream|aaah+|nooo+|help)\b/i,
+  angry: /\b(angry|furious|pissed|wtf|damn it|goddamn|rage)\b/i,
   frustrated:
     /\b(ugh+|argh+|frustrated|frustrating|annoying|this (sucks|is broken)|still broken|why (isn'?t|won'?t|can'?t)|i('m| am) (so )?(tired|done|fed up)|hate this|come on|seriously\??|fix (it|this)|doesn'?t work)\b/i,
-  angry: /\b(angry|furious|pissed|wtf|damn it|goddamn|rage)\b/i,
+  cry: /\b(cry(ing)?|tears|sobbing|heartbroken)\b/i,
   sad: /\b(sad|upset|disappointed|sorry|depressed|miserable)\b/i,
+  pleading: /\b(please+|i'?m begging|pretty please)\b/i,
   confused: /\b(confused|huh\??|i don'?t (get|understand)|wait what|how (do|does|come)|what does that)\b/i,
+  think: /\b(hmm+|let me think|not sure|maybe)\b/i,
   love: /\b(love (you|this|it)|you'?re the best|thank(s| you)|awesome job|perfect)\b/i,
+  kiss: /\b(kiss|xoxo|mwah)\b/i,
+  joy: /\b(lmao|rofl|i'?m dying|can'?t stop laughing)\b/i,
   happy: /\b(yay+|woo+|nice|great|awesome|amazing|lol|haha|hehe|good (job|work))\b/i,
+  star: /\b(mind blown|unreal|legendary|goat)\b/i,
   wow: /\b(whoa+|wow+|omg|no way|incredible)\b/i,
+  yawn: /\b(yawn|so boring)\b/i,
   sleepy: /\b(tired|sleepy|good night|zzz+|bored)\b/i,
+  dizzy: /\b(dizzy|woozy|i'?m lost)\b/i,
+  sick: /\b(nauseous|i feel sick|gonna throw up)\b/i,
 };
 
 export function defaultAvatar(partial = {}) {
@@ -49,14 +59,24 @@ export function inferMood(bot, { preview } = {}) {
   }
 
   if (lastUser && userAge < REACT_MS) {
+    if (RE.scream.test(text)) return pack("scream", reduce ? "none" : "shake");
     if (RE.angry.test(text)) return pack("angry", reduce ? "none" : "shake");
-    if (RE.frustrated.test(text)) return pack("sad", reduce ? "none" : "nod");
+    if (RE.frustrated.test(text)) return pack("steam", reduce ? "none" : "nod");
+    if (RE.cry.test(text)) return pack("cry", reduce ? "none" : "idle");
     if (RE.sad.test(text)) return pack("sad", reduce ? "none" : "idle");
+    if (RE.pleading.test(text)) return pack("pleading", reduce ? "none" : "sway");
     if (RE.confused.test(text)) return pack("confused", reduce ? "none" : "look");
-    if (RE.love.test(text)) return pack("love", reduce ? "none" : "bounce");
+    if (RE.think.test(text)) return pack("think", reduce ? "none" : "peek");
+    if (RE.love.test(text)) return pack("love", reduce ? "none" : "pulse");
+    if (RE.kiss.test(text)) return pack("kiss", reduce ? "none" : "idle");
+    if (RE.joy.test(text)) return pack("joy", reduce ? "none" : "cheer");
+    if (RE.star.test(text)) return pack("star", reduce ? "none" : "excited");
     if (RE.wow.test(text)) return pack("wow", reduce ? "none" : "excited");
-    if (RE.happy.test(text)) return pack("happy", reduce ? "none" : "bounce");
+    if (RE.yawn.test(text)) return pack("yawn", reduce ? "none" : "stretch");
     if (RE.sleepy.test(text)) return pack("sleepy", reduce ? "none" : "sleep");
+    if (RE.dizzy.test(text)) return pack("dizzy", reduce ? "none" : "wiggle");
+    if (RE.sick.test(text)) return pack("nauseous", reduce ? "none" : "shiver");
+    if (RE.happy.test(text)) return pack("happy", reduce ? "none" : "bounce");
   }
 
   if (bot?.busy || bot?.vm?.status === "starting") {
@@ -172,18 +192,17 @@ function createView(item) {
 
 function frameCamera(camera, framing, body) {
   if (framing === "body") {
-    camera.position.set(0.04, 0.08, 6.2);
+    camera.position.set(0, 0.1, 7.15);
     camera.lookAt(0, -0.08, 0);
     return;
   }
   if (framing === "face") {
-    camera.position.set(0.08, 0.05, 3.32);
-    camera.lookAt(0, 0.02, 0);
+    camera.position.set(0.04, 0.08, 4.6);
+    camera.lookAt(0, -0.04, 0);
     return;
   }
-  // icon: head reads clearly, tentacles still show in the circle
-  camera.position.set(0.05, 0.38, 4.28);
-  camera.lookAt(0, -0.28, 0);
+  camera.position.set(0.03, 0.18, 5.85);
+  camera.lookAt(0, -0.12, 0);
 }
 
 function applyView(view, item) {
