@@ -1,7 +1,7 @@
 {
   "name": "sub8bot",
   "productName": "Sub8",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
@@ -21,6 +21,7 @@
     "release": "bash scripts/release.sh"
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "express": "^5.1.0",
     "openai": "^5.12.2",
     "three": "^0.184.0",
@@ -37,6 +38,11 @@
     "productName": "Sub8",
     "copyright": "Copyright © 2026 Daniel Farina",
     "artifactName": "${productName}-${os}-${arch}.${ext}",
+    "publish": {
+      "provider": "github",
+      "owner": "sub8bot",
+      "repo": "Sub8"
+    },
     "directories": {
       "output": "dist",
       "buildResources": "build"

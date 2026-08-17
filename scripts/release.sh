@@ -39,5 +39,6 @@ echo "==> Checksums"
   cd dist
   shasum -a 256 Sub8-mac-* Sub8-win-* Sub8-linux-* Sub8-"$VERSION"-* > "Sub8-${VERSION}.sha256" 2>/dev/null || true
 )
-ls -lh dist/Sub8-mac-* dist/Sub8-win-* dist/Sub8-linux-* dist/Sub8-"$VERSION"-* 2>/dev/null || true
+ls -lh dist/Sub8-mac-* dist/Sub8-win-* dist/Sub8-linux-* dist/Sub8-"$VERSION"-* dist/latest*.yml 2>/dev/null || true
 echo "==> Release artifacts ready in dist/"
+echo "Upload latest.yml (Windows) and latest-mac.yml (Mac) with the GitHub release so in-app updates work."
