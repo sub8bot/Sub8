@@ -7,14 +7,19 @@ import { requireVm, assertVmShell } from "./isolation.mjs";
 import * as trace from "./trace.mjs";
 import { appRoot, fileRoot, dataDir } from "./paths.mjs";
 
+function isWindows() {
+  return process.platform === "win32" || process.env.OS === "Windows_NT";
+}
+
 export function resolveDockerHost() {
   const env = String(process.env.DOCKER_HOST || "").trim();
-  const win = process.platform === "win32" || process.env.OS === "Windows_NT";
-  // Never hand Docker a Colima unix socket on Windows. HOME=C:\Users\x
-  // makes unix://$HOME/.colima/... an invalid URL.
-  if (win) {
-    if (env && /^npipe:|^tcp:\/\//i.test(env) && !/colima/i.test(env)) return env;
-    return "npipe:////./pipe/docker_engine";
+  // Windows Docker Desktop uses context "desktop-linux"
+  // (npipe:////./pipe/dockerDesktopLinuxEngine). Forcing docker_engine
+  // or a Colima unix:// path makes docker pull return HTTP 500.
+  if (isWindows()) {
+    if (env && /colima|unix:\/\//i.test(env)) return "";
+    if (env && /^npipe:\/\/\/\.\/\/pipe\/dockerDesktop/i.test(env)) return env;
+    return "";
   }
   if (env && !/^unix:\/\/[A-Za-z]:/.test(env)) return env;
   const home = process.env.HOME || os.homedir() || "";
@@ -33,11 +38,13 @@ const IMAGE = process.env.LOCALBOT_IMAGE || "linuxserver/webtop:ubuntu-xfce";
 const START_PORT = 13100;
 
 function dockerEnv() {
-  const env = { ...process.env, DOCKER_HOST: resolveDockerHost() };
-  if (process.platform === "win32" || process.env.OS === "Windows_NT") {
-    delete env.DOCKER_HOST;
-    env.DOCKER_HOST = "npipe:////./pipe/docker_engine";
+  const env = { ...process.env };
+  if (isWindows()) {
+    if (/colima|unix:\/\//i.test(env.DOCKER_HOST || "")) delete env.DOCKER_HOST;
+    return env;
   }
+  const host = resolveDockerHost();
+  if (host) env.DOCKER_HOST = host;
   return env;
 }
 

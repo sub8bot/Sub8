@@ -701,6 +701,20 @@ app.get("/", (_req, res) => {
   res.sendFile(path.join(root, "web", "index.html"));
 });
 
+async function ensureDesktops() {
+  const dock = await vm.dockerStatus();
+  if (!dock.ok) return dock;
+  const bots = await store.loadBots();
+  for (const bot of bots) {
+    if (deletedIds.has(bot.id) || isHumanControl(bot.id)) continue;
+    const starting = bot.vm?.status === "starting";
+    const stuckStart = starting && !bot.vm?.container;
+    if (bot.vm?.status === "running" || (starting && !stuckStart)) continue;
+    provision(bot.id).catch((err) => console.error("ensure desktop", bot.id, err));
+  }
+  return dock;
+}
+
 app.listen(PORT, "127.0.0.1", async () => {
   console.log(`Sub8 http://127.0.0.1:${PORT}`);
   try {
@@ -711,4 +725,8 @@ app.listen(PORT, "127.0.0.1", async () => {
   } catch (err) {
     console.error("startup sweep", err);
   }
+  ensureDesktops().catch((err) => console.error("ensureDesktops", err));
+  setInterval(() => {
+    ensureDesktops().catch((err) => console.error("ensureDesktops", err));
+  }, 12_000);
 });

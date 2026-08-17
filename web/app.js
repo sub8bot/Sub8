@@ -110,8 +110,33 @@ function dockerMissing() {
 }
 
 function dockerMissingHtml() {
-  const hint = state.docker?.hint || "Sub8 needs Docker so each Bot can have a computer.";
-  return `<div class="banner warn" style="margin:0;text-align:left">${escapeHtml(hint)}</div>`;
+  const hint = state.docker?.hint || "Please start Docker. Sub8 needs it so each Bot can have a computer.";
+  return `<div class="banner warn" style="margin:0;text-align:left"><strong>Docker is not running.</strong> ${escapeHtml(hint)}</div>`;
+}
+
+function paintDockerGate() {
+  let host = $("#docker-gate");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "docker-gate";
+    document.body.appendChild(host);
+  }
+  if (!dockerMissing()) {
+    host.innerHTML = "";
+    host.hidden = true;
+    return;
+  }
+  host.hidden = false;
+  host.innerHTML = `<div class="overlay docker-gate-overlay">
+    <div class="modal" style="max-width:440px">
+      <div class="sbody" style="width:100%">
+        <h2>Start Docker</h2>
+        <p>Sub8 cannot start a computer until Docker is running on this machine.</p>
+        <p class="muted">${escapeHtml(state.docker?.hint || "")}</p>
+        <p class="muted">Open Docker Desktop (Windows/Mac) or start the Docker daemon (Linux), then this screen will go away and the computer will start on its own.</p>
+      </div>
+    </div>
+  </div>`;
 }
 
 function streamUrl(bot) {
@@ -1337,7 +1362,7 @@ function settingsHtml() {
           <div class="block"><h3>This Mac</h3>
             <div class="card">
               <div class="row"><div class="lbl">Timezone</div><span class="muted">${escapeHtml(state.timezone || "auto")}</span></div>
-              <div class="row"><div class="lbl">Version</div><span class="muted">Sub8 0.3.2</span></div>
+              <div class="row"><div class="lbl">Version</div><span class="muted">Sub8 0.3.3</span></div>
             </div>
           </div>`
             : sec === "usage"
@@ -2319,6 +2344,7 @@ async function refreshSettings() {
   state.hasGrokAuth = Boolean(r.hasGrokAuth);
   if (r.docker) state.docker = r.docker;
   applyTheme();
+  paintDockerGate();
 }
 
 function wantsGrokBuild() {
@@ -2582,6 +2608,28 @@ function watchStream() {
     resumeVm().catch(() => {});
   }
   setInterval(watchStream, 8_000);
+  setInterval(() => {
+    api("/api/health")
+      .then((h) => {
+        if (!h?.docker) return;
+        const was = dockerMissing();
+        state.docker = h.docker;
+        if (was === dockerMissing()) {
+          if (!was) return;
+          paintDockerGate();
+          return;
+        }
+        paintDockerGate();
+        if (!dockerMissing()) {
+          const bot = state.bots.find((b) => b.id === state.selected);
+          if (bot) resumeVm().catch(() => {});
+        } else {
+          const bot = state.bots.find((b) => b.id === state.selected);
+          if (bot) attachLiveFrame(bot);
+        }
+      })
+      .catch(() => {});
+  }, 5_000);
   window.addEventListener("focus", () => {
     const bot = state.bots.find((b) => b.id === state.selected);
     if (bot?.vm?.novncPort) scheduleStreamRetry(bot, 700);
