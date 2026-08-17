@@ -536,13 +536,15 @@ app.patch("/api/bots/:id/routines/:rid", async (req, res) => {
 });
 
 app.delete("/api/bots/:id/routines/:rid", async (req, res) => {
-  const bot = await store.getBot(req.params.id);
-  if (!bot) return res.status(404).json({ error: "not found" });
-  const before = (bot.routines || []).length;
-  bot.routines = (bot.routines || []).filter((x) => x.id !== req.params.rid);
-  if (bot.routines.length === before) return res.status(404).json({ error: "routine not found" });
-  await store.upsertBot(bot);
-  broadcast("bot", toClient(bot));
+  let missing = false;
+  const live = await store.patchBot(req.params.id, (bot) => {
+    const next = (bot.routines || []).filter((x) => x.id !== req.params.rid);
+    if (next.length === (bot.routines || []).length) missing = true;
+    else bot.routines = next;
+  });
+  if (!live) return res.status(404).json({ error: "not found" });
+  if (missing) return res.status(404).json({ error: "routine not found" });
+  broadcast("bot", toClient(live));
   res.json({ ok: true });
 });
 

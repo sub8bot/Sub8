@@ -68,7 +68,7 @@ const TOOLS = [
     function: {
       name: "upsert_routine",
       description:
-        "Create or UPDATE the standing routine. Default: rewrite the existing General/primary routine (pass id from list_routines). Only set force_new true if the user asked for a second job. instruction must be a standing brief (identity, mission, /config paths, next checkpoint), never the user's raw chat message.",
+        "Create or UPDATE a standing routine only when the user asked to keep doing a job on a clock (every N minutes, hourly, daily). instruction must be a standing brief (what to watch, cadence, next checkpoint), never 'check again' or the raw chat line. Default: update the existing routine (pass id from list_routines). Only set force_new true if they asked for a second job.",
       parameters: {
         type: "object",
         properties: {
@@ -261,7 +261,7 @@ You already know the machine. Do not spend the first turns on \`pwd\`, \`whoami\
 After send_message, if the user asked for something on the desktop (research, Chrome, files they can see, clicks): call \`computer\` screenshot next, then click like a human.
 Use \`shell\` only for a concrete command you already know belongs on this computer (write a file under /config, run a known binary). Never explore the filesystem to "discover" where you are.
 web_search is available for facts. Prefer it over opening Google unless the user asked to use the browser.
-Routines: ONE standing job. "Run" / "resume" means execute, not rewrite. "Update" means append a rule to the existing brief, never replace a long brief with the chat line. Never delete the only routine unless they said delete.
+Routines: ONE standing job, and only when the user asked to keep doing something on a clock (every N minutes, hourly, daily). "Check again", "try again", "resume", and one-shot desktop work are NOT routines — do the work now, do not upsert. "Run" / "resume" means execute, not rewrite. Never replace a long brief with the chat line. Never delete the only routine unless they said delete.
 If a submit already landed or the UI is still loading, do not submit the same thing again. If a click fails twice, stop repeating it.
 `;
 }
@@ -288,11 +288,11 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
   if (!Array.isArray(bot.routines)) bot.routines = [];
   if (!hidden && routines.looksLikeSchedule(userText)) {
     const parsed = routines.parseSchedule(userText);
-    const { routine, merged } = routines.upsertRoutine(bot, {
+    const { routine, merged, rejected } = routines.upsertRoutine(bot, {
       instruction: userText,
       intervalMs: parsed.intervalMs,
     });
-    await Promise.resolve(emit("routine", { routine, merged }));
+    if (routine) await Promise.resolve(emit("routine", { routine, merged, rejected }));
   }
 
   const harness = resolveClient(settings);

@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import * as store from "../server/store.mjs";
 import * as vm from "../server/vm.mjs";
 import { requireVm, assertVmShell, isHostPath } from "../server/isolation.mjs";
+import * as routines from "../server/routines.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 process.chdir(root);
@@ -46,6 +47,28 @@ test("shell blocks host paths", () => {
 
 test("shell allows VM commands", () => {
   assert.doesNotThrow(() => assertVmShell("ls /config"));
+});
+
+test("check again is not a 15-minute routine", () => {
+  assert.equal(routines.parseSchedule("check again"), null);
+  assert.equal(routines.looksLikeSchedule("check again"), false);
+  assert.equal(routines.looksLikeSchedule("check back"), false);
+  assert.equal(routines.looksLikeSchedule("every time I click"), false);
+  assert.equal(routines.looksLikeSchedule("what is the routine"), false);
+});
+
+test("explicit cadence still becomes a routine", () => {
+  assert.equal(routines.parseSchedule("do this every 15 minutes")?.intervalMs, 15 * 60_000);
+  assert.equal(routines.looksLikeSchedule("check flights daily"), true);
+  assert.equal(routines.looksLikeSchedule("watch X inbox every 7 minutes"), true);
+});
+
+test("upsert refuses a check-again one-liner", () => {
+  const botA = { routines: [] };
+  const r = routines.upsertRoutine(botA, { instruction: "check again" });
+  assert.equal(r.routine, null);
+  assert.match(r.rejected, /standing job/);
+  assert.equal(botA.routines.length, 0);
 });
 
 let bot;
