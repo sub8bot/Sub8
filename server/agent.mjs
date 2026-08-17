@@ -20,6 +20,7 @@ const COMPUTER_ACTIONS = [
   "wait",
   "clipboard_read",
   "clipboard_write",
+  "open",
 ];
 
 const TOOLS = [
@@ -45,7 +46,7 @@ const TOOLS = [
           y: { type: "number" },
           x2: { type: "number", description: "Drag end x" },
           y2: { type: "number", description: "Drag end y" },
-          text: { type: "string" },
+          text: { type: "string", description: "Typed text, or a URL for action=open" },
           keys: { type: "string" },
           dy: { type: "number" },
           dx: { type: "number" },
@@ -485,6 +486,7 @@ function toolSummary(name, args = {}, result = "") {
     if (a === "wait") return "Waited";
     if (a === "clipboard_read") return "Read the clipboard";
     if (a === "clipboard_write") return "Copied to the clipboard";
+    if (a === "open") return args.text ? `Opened ${String(args.text).slice(0, 48)}` : "Opened Chrome";
     return "Used the computer";
   }
   if (name === "web_search") {
@@ -525,6 +527,10 @@ function emitThink(bot, emit, text, { hidden } = {}) {
   };
   bot.messages.push(thought);
   emit("message", thought);
+}
+
+function waitForPaint() {
+  return new Promise((r) => setTimeout(r, 1800));
 }
 
 async function shotPayload(bot, emit, note = "") {
@@ -616,6 +622,13 @@ async function computerAction(bot, args, emit) {
   }
   if (action === "screenshot") {
     const shot = await shotPayload(bot, emit);
+    lastShotAt.set(bot.id, Date.now());
+    return shot;
+  }
+  if (action === "open") {
+    const opened = await vm.openChrome(bot, args.text || args.keys || "");
+    await waitForPaint();
+    const shot = await shotPayload(bot, emit, opened.text);
     lastShotAt.set(bot.id, Date.now());
     return shot;
   }

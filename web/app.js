@@ -1362,7 +1362,7 @@ function settingsHtml() {
           <div class="block"><h3>This Mac</h3>
             <div class="card">
               <div class="row"><div class="lbl">Timezone</div><span class="muted">${escapeHtml(state.timezone || "auto")}</span></div>
-              <div class="row"><div class="lbl">Version</div><span class="muted">Sub8 0.3.4</span></div>
+              <div class="row"><div class="lbl">Version</div><span class="muted">Sub8 0.3.5</span></div>
             </div>
           </div>`
             : sec === "usage"
