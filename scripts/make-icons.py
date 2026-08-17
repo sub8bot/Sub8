@@ -5,11 +5,13 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "docs" / "brand" / "octobot-icon-source.png"
+SOURCE = ROOT / "docs" / "brand" / "octobot-logo.png"
+FALLBACK = ROOT / "docs" / "brand" / "octobot-icon-source.png"
 BUILD = ROOT / "build"
 ICONSET = BUILD / "icon.iconset"
 PREVIEWS = ROOT / "docs" / "brand"
-CORAL = (247, 76, 94, 255)
+# Same gold-yellow as the GitHub / README logo tile
+FILL = (245, 208, 74, 255)
 
 
 def rounded_mask(size, radius):
@@ -19,12 +21,21 @@ def rounded_mask(size, radius):
     return m
 
 
-def fit_square(im, size, pad=0.07):
-    """Scale the art onto a coral square with a little margin for the macOS mask."""
-    canvas = Image.new("RGBA", (size, size), CORAL)
+def tight(im):
+    art = im.convert("RGBA")
+    solid = art.split()[-1].point(lambda a: 255 if a > 24 else 0)
+    box = solid.getbbox()
+    return art.crop(box) if box else art
+
+
+def fit_square(im, size, pad=0.055):
+    """Scale the octopus onto the yellow tile (same as GitHub logo)."""
+    canvas = Image.new("RGBA", (size, size), FILL)
     inner = int(size * (1 - 2 * pad))
-    art = im.copy().convert("RGBA")
-    art.thumbnail((inner, inner), Image.Resampling.LANCZOS)
+    art = tight(im)
+    scale = min(inner / art.width, inner / art.height)
+    nw, nh = max(1, int(art.width * scale)), max(1, int(art.height * scale))
+    art = art.resize((nw, nh), Image.Resampling.LANCZOS)
     x = (size - art.width) // 2
     y = (size - art.height) // 2
     canvas.alpha_composite(art, (x, y))
@@ -98,8 +109,9 @@ def write_previews(icon):
 def main():
     BUILD.mkdir(parents=True, exist_ok=True)
     PREVIEWS.mkdir(parents=True, exist_ok=True)
-    src = Image.open(SOURCE).convert("RGBA")
-    icon = fit_square(src, 1024, pad=0.06)
+    src_path = SOURCE if SOURCE.exists() else FALLBACK
+    src = Image.open(src_path).convert("RGBA")
+    icon = fit_square(src, 1024, pad=0.055)
     write_iconset(icon, src)
     write_ico(icon)
     write_previews(icon)
