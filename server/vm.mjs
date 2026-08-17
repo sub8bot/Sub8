@@ -251,6 +251,12 @@ export function grokOAuthStatus(container) {
 }
 
 async function portFree(port) {
+  const published = await docker(["ps", "--format", "{{.Ports}}"]);
+  if (published.ok && new RegExp(`[:.]${port}->`).test(published.out || "")) return false;
+  if (isWindows()) {
+    const r = await run("cmd.exe", ["/c", `netstat -ano | findstr :${port}`]);
+    return !r.ok || !String(r.out || "").trim();
+  }
   const r = await run("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN"]);
   return !r.ok || !r.out;
 }
