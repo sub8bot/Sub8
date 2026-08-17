@@ -1,4 +1,5 @@
-import { animList, defaultAvatar, faceList, inferMood, syncAvatars } from "./avatar.js";
+import { animList, bodyList, defaultAvatar, faceList, inferMood, isSleepingMood, randomWakeMood, syncAvatars } from "./avatar.js";
+import { AVATAR_COLORS } from "./palette.js";
 
 const $ = (sel, el = document) => el.querySelector(sel);
 
@@ -20,6 +21,11 @@ const state = {
   createFace: "neutral",
   paneWidth: Number(localStorage.getItem("paneWidth")) || 420,
   plusMenu: false,
+  humanControl: false,
+  railWake: null,
+  ctx: null,
+  hasGrokAuth: false,
+  grokAuthAsk: false,
   teach: null,
   teachFrames: [],
   attachments: [],
@@ -122,6 +128,7 @@ function mountLiveFrame(bot) {
     wrap.dataset.kicked = "1";
     scheduleStreamRetry(bot, 2200);
   }
+  paintControlChrome();
 }
 
 let streamRetry = 0;
@@ -311,6 +318,8 @@ function render() {
   paintLivePane(bot);
   paintModal();
   paintTeach(bot);
+  paintCtxMenu();
+  paintGrokAuth();
   syncEditorChips(bot);
   refreshAvatars();
 }
@@ -321,10 +330,13 @@ function refreshAvatars() {
     const bot = state.bots.find((b) => b.id === id);
     if (!bot && id !== "create") return [];
     const preview = el.dataset.preview === "1";
+    const wake = state.railWake;
     const mood =
       id === "create"
         ? defaultAvatar({ expression: state.createFace, animation: "idle" })
-        : inferMood(bot, { preview });
+        : wake && wake.id === id && (el.dataset.avatarSlot || "") === "rail" && Date.now() < wake.until
+          ? wake.mood
+          : inferMood(bot, { preview });
     const slot = el.dataset.avatarSlot || "default";
     const framing =
       el.dataset.avatarFraming || (slot === "editor" || slot === "create" ? "body" : "icon");
@@ -334,8 +346,9 @@ function refreshAvatars() {
         id,
         slot,
         size: Number(el.dataset.avatarSize || 36),
-        color: bot?.color,
+        color: bot?.color || AVATAR_COLORS[0],
         framing,
+        body: defaultAvatar(bot?.avatar).body,
         mood,
       },
     ];
@@ -425,6 +438,18 @@ function bindSplit() {
   });
 }
 
+function iconClose() {
+  return `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>`;
+}
+
+function iconHarness() {
+  return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></svg>`;
+}
+
+function iconUsage() {
+  return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="10" width="4" height="10" rx="1"/><rect x="10" y="6" width="4" height="14" rx="1"/><rect x="17" y="3" width="4" height="17" rx="1"/></svg>`;
+}
+
 function iconGear() {
   return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9c.3.7 1 1.2 1.7 1.3H21a2 2 0 1 1 0 4h-.2a1.7 1.7 0 0 0-1.4 1.7z"/></svg>`;
 }
@@ -500,6 +525,39 @@ function paintTitle(bot) {
     </div>`;
 }
 
+function sidebarSections() {
+  return Array.isArray(state.settings?.sidebarSections) ? state.settings.sidebarSections : [];
+}
+
+function railLayout() {
+  const vis = state.bots.filter((b) => !b.hidden);
+  const pinned = vis.filter((b) => b.pinned);
+  const rest = vis.filter((b) => !b.pinned);
+  const sections = sidebarSections();
+  const known = new Set(sections.map((s) => s.id));
+  const groups = sections.map((s) => ({
+    id: s.id,
+    name: s.name,
+    bots: rest.filter((b) => b.section === s.id),
+  }));
+  const loose = rest.filter((b) => !b.section || !known.has(b.section));
+  groups.push({ id: "", name: groups.length ? "Unassigned" : "", bots: loose });
+  return { pinned, groups };
+}
+
+function ensureRailNode(b) {
+  const node = document.createElement("div");
+  node.className = "rail-bot";
+  node.dataset.id = b.id;
+  node.draggable = true;
+  node.innerHTML = `
+    <button class="avatar" data-act="select" data-id="${b.id}">
+      <span class="avatar-3d" data-avatar="${b.id}" data-avatar-slot="rail" data-avatar-size="56" data-avatar-framing="body"></span>
+      <i class="rail-unread" hidden></i>
+    </button>`;
+  return node;
+}
+
 function paintRail(bot) {
   const rail = $("#rail");
   if (!rail.dataset.ready) {
@@ -511,29 +569,128 @@ function paintRail(bot) {
     rail.dataset.ready = "1";
   }
   const host = $("#rail-bots");
-  const ids = new Set(state.bots.map((b) => b.id));
-  for (const node of [...host.children]) {
-    if (!ids.has(node.dataset.id)) node.remove();
+  const { pinned, groups } = railLayout();
+  const keep = new Set(state.bots.map((b) => b.id));
+  const nodes = new Map();
+  for (const node of [...host.querySelectorAll(".rail-bot")]) {
+    if (!keep.has(node.dataset.id) || state.bots.find((b) => b.id === node.dataset.id)?.hidden) node.remove();
+    else nodes.set(node.dataset.id, node);
   }
-  for (const b of state.bots) {
-    let node = host.querySelector(`[data-id="${CSS.escape(b.id)}"]`);
-    if (!node) {
-      node = document.createElement("div");
-      node.className = "rail-bot";
-      node.dataset.id = b.id;
-      node.innerHTML = `
-        <button class="avatar" data-act="select" data-id="${b.id}">
-          <span class="avatar-3d" data-avatar="${b.id}" data-avatar-slot="rail" data-avatar-size="56" data-avatar-framing="body"></span>
-        </button>
-        <button class="rail-edit" data-act="edit-bot" data-id="${b.id}" title="Edit">✎</button>`;
-      host.appendChild(node);
-    }
+  host.innerHTML = "";
+  const addBot = (b) => {
+    let node = nodes.get(b.id) || ensureRailNode(b);
+    node.querySelector(".rail-edit")?.remove();
+    node.draggable = true;
     const btn = node.querySelector(".avatar");
+    btn.draggable = true;
     btn.classList.toggle("active", b.id === bot?.id);
     btn.classList.toggle("busy", Boolean(b.busy || b.vm?.status === "starting"));
+    btn.classList.toggle("pinned", Boolean(b.pinned));
+    const unread = node.querySelector(".rail-unread");
+    if (unread) unread.hidden = !b.unread;
     btn.title = b.name;
-    node.querySelector(".rail-edit").title = `Edit ${b.name}`;
+    host.appendChild(node);
+  };
+  if (pinned.length) {
+    host.appendChild(sectionTag("pinned", "Pinned"));
+    for (const b of pinned) addBot(b);
   }
+  for (const g of groups) {
+    if (g.name || g.bots.length) {
+      host.appendChild(sectionTag(g.id, g.name || "Unassigned"));
+    }
+    for (const b of g.bots) addBot(b);
+  }
+  bindRailHover(host);
+  bindRailDnD(host);
+}
+
+function sectionTag(id, name) {
+  const tag = document.createElement("div");
+  tag.className = "rail-sec";
+  tag.dataset.sec = id || "";
+  tag.title = name;
+  tag.innerHTML = `<span>${escapeHtml(name)}</span>`;
+  return tag;
+}
+
+function bindRailHover(host) {
+  if (host.dataset.hover) return;
+  host.dataset.hover = "1";
+  host.addEventListener("pointerenter", (e) => {
+    const row = e.target.closest(".rail-bot");
+    if (!row || !host.contains(row)) return;
+    const bot = state.bots.find((b) => b.id === row.dataset.id);
+    if (!bot) return;
+    const mood = inferMood(bot);
+    if (!isSleepingMood(mood)) return;
+    state.railWake = { id: bot.id, mood: randomWakeMood(), until: Date.now() + 8_000 };
+    refreshAvatars();
+  }, true);
+  host.addEventListener("pointerleave", (e) => {
+    const row = e.target.closest(".rail-bot");
+    if (!row || e.relatedTarget?.closest?.(".rail-bot") === row) return;
+    if (state.railWake?.id === row.dataset.id) {
+      state.railWake.until = Date.now() + 1_200;
+      setTimeout(() => refreshAvatars(), 1_250);
+    }
+  }, true);
+}
+
+function bindRailDnD(host) {
+  if (host.dataset.dnd) return;
+  host.dataset.dnd = "1";
+  host.addEventListener("dragstart", (e) => {
+    const row = e.target.closest(".rail-bot");
+    if (!row) return;
+    e.dataTransfer.setData("text/octobot-id", row.dataset.id);
+    e.dataTransfer.setData("text/plain", row.dataset.id);
+    e.dataTransfer.effectAllowed = "move";
+    row.classList.add("dragging");
+  });
+  host.addEventListener("dragend", (e) => {
+    e.target.closest(".rail-bot")?.classList.remove("dragging");
+    host.querySelectorAll(".drag-over").forEach((n) => n.classList.remove("drag-over"));
+  });
+  host.addEventListener("dragover", (e) => {
+    if (![...e.dataTransfer.types].includes("text/octobot-id") && ![...e.dataTransfer.types].includes("text/plain")) {
+      /* keep allowing */
+    }
+    e.preventDefault();
+    host.querySelectorAll(".drag-over").forEach((n) => n.classList.remove("drag-over"));
+    const sec = e.target.closest(".rail-sec");
+    const bot = e.target.closest(".rail-bot");
+    (sec || bot)?.classList.add("drag-over");
+  });
+  host.addEventListener("drop", (e) => {
+    e.preventDefault();
+    host.querySelectorAll(".drag-over").forEach((n) => n.classList.remove("drag-over"));
+    const id = e.dataTransfer.getData("text/octobot-id") || e.dataTransfer.getData("text/plain");
+    if (!id) return;
+    const secEl = e.target.closest(".rail-sec");
+    const onto = e.target.closest(".rail-bot");
+    let section = "";
+    let pinned = false;
+    if (secEl) {
+      const sid = secEl.dataset.sec || "";
+      if (sid === "pinned") pinned = true;
+      else section = sid;
+    } else if (onto) {
+      const other = state.bots.find((b) => b.id === onto.dataset.id);
+      if (other?.pinned) pinned = true;
+      else section = other?.section || "";
+    }
+    moveBotTo(id, { section, pinned });
+  });
+}
+
+function moveBotTo(id, { section = "", pinned = false } = {}) {
+  const b = state.bots.find((x) => x.id === id);
+  if (!b) return;
+  b.section = section;
+  b.pinned = pinned;
+  api(`/api/bots/${id}`, { method: "PATCH", body: { section, pinned } });
+  render();
 }
 
 function paintChatPane(bot) {
@@ -638,6 +795,83 @@ function paintTeach(bot) {
     <p class="teach-foot">You are driving ${escapeHtml(bot.name)}’s computer.</p>`;
 }
 
+function ctxIcon(kind) {
+  const svg = (d) =>
+    `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+  if (kind === "pin") return svg(`<path d="M12 17v5M8 3h8l-1 7h3l-6 7-6-7h3z"/>`);
+  if (kind === "folder") return svg(`<path d="M3 7h6l2 2h10v10H3z"/>`);
+  if (kind === "unread") return svg(`<path d="M18 8a6 6 0 1 1-12 0 6 6 0 0 1 12 0z"/><path d="M12 14v7"/>`);
+  if (kind === "edit") return svg(`<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>`);
+  if (kind === "dup") return svg(`<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V6a2 2 0 0 1 2-2h10"/>`);
+  if (kind === "copy") return svg(`<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5h10"/>`);
+  if (kind === "hide") return svg(`<path d="M3 3l18 18M10.6 10.6A3 3 0 0 0 13.4 13.4M9.9 5.1A10 10 0 0 1 21 12c-1 1.8-2.4 3.3-4.1 4.4M6.1 6.1C4.4 7.2 3 8.7 2 12c1.6 2.8 4.4 5 8 6.1"/>`);
+  if (kind === "del") return svg(`<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>`);
+  if (kind === "plus") return svg(`<path d="M12 5v14M5 12h14"/><path d="M4 7h6l2 2"/>`);
+  return "";
+}
+
+function paintCtxMenu() {
+  let host = $("#ctx-host");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "ctx-host";
+    document.body.appendChild(host);
+  }
+  const ctx = state.ctx;
+  if (!ctx) {
+    host.innerHTML = "";
+    return;
+  }
+  const bot = state.bots.find((b) => b.id === ctx.botId);
+  if (!bot) {
+    host.innerHTML = "";
+    return;
+  }
+  const sections = sidebarSections();
+  const left = Math.min(ctx.x, window.innerWidth - 240);
+  const top = Math.min(ctx.y, window.innerHeight - 340);
+  const item = (act, icon, label, extra = "") =>
+    `<button type="button" class="ctx-item ${extra}" data-act="${act}" data-id="${bot.id}">${ctxIcon(icon)}<span>${label}</span></button>`;
+  let move = "";
+  if (ctx.sub === "move") {
+    move = `<div class="ctx-sub" style="top:${top}px;left:${left + 228}px">
+      <button type="button" class="ctx-item" data-act="ctx-new-section" data-id="${bot.id}">${ctxIcon("plus")}<span>New section</span></button>
+      <div class="ctx-sep"></div>
+      <button type="button" class="ctx-item ${!bot.section ? "on" : ""}" data-act="ctx-move" data-id="${bot.id}" data-sec="">${ctxIcon("folder")}<span>Unassigned</span></button>
+      ${sections
+        .map(
+          (s) =>
+            `<button type="button" class="ctx-item ${bot.section === s.id ? "on" : ""}" data-act="ctx-move" data-id="${bot.id}" data-sec="${escapeHtml(s.id)}">${ctxIcon("folder")}<span>${escapeHtml(s.name)}</span></button>`,
+        )
+        .join("")}
+    </div>`;
+  }
+  let namePrompt = "";
+  if (ctx.naming) {
+    namePrompt = `<div class="ctx-prompt" style="top:${top}px;left:${left + 228}px">
+      <input id="ctx-sec-name" class="field" placeholder="Section name" />
+      <button type="button" class="pill primary" data-act="ctx-create-section" data-id="${bot.id}">Create</button>
+    </div>`;
+  }
+  host.innerHTML = `
+    <div class="ctx-menu" style="top:${top}px;left:${left}px">
+      ${item("ctx-pin", "pin", bot.pinned ? "Unpin" : "Pin")}
+      <button type="button" class="ctx-item has-sub" data-act="ctx-move-open" data-id="${bot.id}">${ctxIcon("folder")}<span>Move to</span><span class="ctx-caret">›</span></button>
+      ${item("ctx-unread", "unread", bot.unread ? "Mark as Read" : "Mark as Unread")}
+      <div class="ctx-sep"></div>
+      ${item("ctx-edit", "edit", "Edit Profile")}
+      ${item("ctx-dup", "dup", "Duplicate")}
+      <div class="ctx-sep"></div>
+      ${item("ctx-copy", "copy", "Copy conversation ID")}
+      ${item("ctx-hide", "hide", bot.hidden ? "Show in sidebar" : "Hide from sidebar")}
+      <div class="ctx-sep"></div>
+      ${item("ctx-del", "del", "Delete", "danger")}
+    </div>
+    ${move}
+    ${namePrompt}`;
+  if (ctx.naming) setTimeout(() => $("#ctx-sec-name")?.focus(), 20);
+}
+
 function pickerHtml() {
   return `<div class="picker">
     <input id="pickq" placeholder="Search or create Bots" />
@@ -651,6 +885,7 @@ function pickerHtml() {
               ${escapeHtml(b.name)}
             </button>
             <button class="pill" data-act="edit-bot" data-id="${b.id}">Edit</button>
+            ${b.hidden ? `<button class="pill" data-act="ctx-hide" data-id="${b.id}">Show</button>` : ""}
           </div>`
       )
       .join("")}
@@ -723,11 +958,8 @@ function paintBotEditor(bot) {
     return;
   }
   host.dataset.bot = bot.id;
-  const colors = [
-    "#b06dd1", "#9b6dd1", "#c56dd1", "#7d6dd1", "#d16db8", "#8b6de0",
-    "#be7adf", "#a56de0", "#d17dc9", "#9966cc", "#c98ae0", "#7c6cf0",
-  ];
-  const color = bot.color || "#b06dd1";
+  const colors = AVATAR_COLORS;
+  const color = bot.color || AVATAR_COLORS[0];
   const avatar = defaultAvatar(bot.avatar);
   host.innerHTML = `
     <div class="avatar-studio">
@@ -745,6 +977,15 @@ function paintBotEditor(bot) {
         <div class="sub">Get notified when this Bot finishes or needs input</div>
       </div>
       <button class="toggle ${bot.notificationsEnabled ? "on" : ""}" data-act="bot-notify"><i></i></button>
+    </div>
+    <label class="muted">Body</label>
+    <div class="chips chips-scroll" id="body-chips">
+      ${bodyList()
+        .map(
+          (b) =>
+            `<button type="button" class="chip ${b.id === avatar.body ? "on" : ""}" data-act="avatar-body" data-id="${b.id}">${escapeHtml(b.label)}</button>`
+        )
+        .join("")}
     </div>
     <label class="muted">Face</label>
     <div class="chips chips-scroll" id="face-chips">
@@ -767,7 +1008,7 @@ function paintBotEditor(bot) {
     <label class="muted">Instructions</label>
     <textarea class="field" id="bi" placeholder="Standing rules this Bot always follows">${escapeHtml(bot.instructions || "")}</textarea>
     <label class="muted">Color</label>
-    <div class="muted" style="margin:0 0 6px">Dark colors flip eyes and mouth to white.</div>
+    <div class="muted" style="margin:0 0 6px">Light colors use dark eyes and mouth.</div>
     <div class="swatches">
       ${colors
         .map(
@@ -806,7 +1047,7 @@ function paintRoutineList(bot) {
             <div class="muted">Every ${mins} minutes${on ? "" : ", paused"}</div>
           </div>
         </div>
-        <p class="routine-body">${escapeHtml(r.instruction || "")}</p>
+        <p class="routine-body">${escapeHtml(previewRoutine(r.instruction))}</p>
         <div class="routine-actions">
           <button class="pill" data-act="toggle-routine" data-id="${r.id}">${on ? "Pause" : "Resume"}</button>
           <button class="pill" data-act="edit-routine" data-id="${r.id}">Edit</button>
@@ -815,6 +1056,14 @@ function paintRoutineList(bot) {
       </div>`;
     })
     .join("");
+}
+
+function previewRoutine(text) {
+  const t = String(text || "").trim();
+  if (!t) return "";
+  const first = t.split(/\n/).find((l) => l.trim()) || t;
+  if (t.length <= 180) return first;
+  return `${first.slice(0, 160).trim()}…`;
 }
 
 function paintModal() {
@@ -829,7 +1078,7 @@ function paintModal() {
   }
   const active = document.activeElement;
   const typing = host.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active?.tagName || "");
-  if (host.dataset.key === key && host.innerHTML && typing) return;
+  if (host.dataset.key === key && host.innerHTML && (typing || state.modal === "routine")) return;
   host.dataset.key = key;
   if (state.modal === "create") host.innerHTML = createBotHtml();
   else if (state.modal === "settings") host.innerHTML = settingsHtml();
@@ -997,42 +1246,30 @@ function seg(key, value, options) {
 }
 
 function harnessHtml(h) {
+  const grok = h.provider !== "spacexai" && h.provider !== "custom";
   return `<h2>Harness</h2>
-    <p class="muted" style="margin-top:-8px">Which model stack this app talks to.</p>
+    <p class="muted" style="margin-top:-8px">How every Bot talks to a model.</p>
     <div class="block">
       <div class="card">
-        <div class="row"><div><div class="lbl">Sign-in</div><div class="sub">Grok Build uses OAuth on this Mac. SpaceXAI uses an API key.</div></div>
+        <div class="row"><div><div class="lbl">Provider</div><div class="sub">Grok Build is the default (OAuth on this Mac). SpaceXAI uses an API key.</div></div>
           <div class="seg" role="tablist">
-            <button type="button" class="seg-btn ${h.provider !== "spacexai" && h.provider !== "custom" ? "on" : ""}" data-act="set-harness" data-id="grok-build">Grok Build (OAuth)</button>
-            <button type="button" class="seg-btn ${h.provider === "spacexai" ? "on" : ""}" data-act="set-harness" data-id="spacexai">SpaceXAI (API key)</button>
+            <button type="button" class="seg-btn ${grok ? "on" : ""}" data-act="set-harness" data-id="grok-build">Grok Build</button>
+            <button type="button" class="seg-btn ${h.provider === "spacexai" ? "on" : ""}" data-act="set-harness" data-id="spacexai">SpaceXAI</button>
           </div>
         </div>
         <div class="row"><div class="lbl">Model</div>
           <input class="field" style="max-width:220px" data-harness-text="model" value="${escapeHtml(h.model || "grok-4.6")}" />
         </div>
-        <div class="row"><div class="lbl">Base URL</div>
-          <input class="field" style="max-width:280px" data-harness-text="baseUrl" value="${escapeHtml(h.baseUrl || "https://api.x.ai/v1")}" />
-        </div>
-        <div class="row"><div><div class="lbl">API key</div><div class="sub">Leave blank to use XAI_API_KEY from the environment.</div></div>
-          <input class="field" style="max-width:220px" type="password" data-harness-text="apiKey" placeholder="••••" />
-        </div>
-        <div class="row"><div class="lbl">Grok Build command</div>
-          <input class="field" style="max-width:220px" data-harness-text="grokBuildCommand" value="${escapeHtml(h.grokBuildCommand || "grok")}" />
-        </div>
         ${
-          h.provider === "grok-build"
-            ? `<div class="row"><div><div class="lbl">Grok Build sign-in</div><div class="sub">One OAuth on this Mac. That session is copied into every computer. No API key.</div></div>
-          <button class="pill" data-act="grok-oauth" type="button">Sign in with OAuth</button></div>`
-            : ""
+          grok
+            ? ""
+            : `<div class="row"><div><div class="lbl">API key</div><div class="sub">Leave blank to use XAI_API_KEY from the environment.</div></div>
+          <input class="field" style="max-width:220px" type="password" data-harness-text="apiKey" placeholder="••••" /></div>`
         }
         <div class="row"><div><div class="lbl">Connection</div><div class="sub" id="harness-ping">${
-          h.provider === "grok-build"
-            ? `Grok Build: ${escapeHtml(h.grokBuildCommand || "grok")} inside the VM`
-            : h.provider === "custom"
-              ? `Custom: ${escapeHtml(h.model || "grok-4.6")} via ${escapeHtml(h.baseUrl || "https://api.x.ai/v1")}`
-              : "SpaceXAI default: grok-4.6 via api.x.ai"
+          grok ? "Grok Build uses this Mac’s Grok login automatically." : "SpaceXAI · api.x.ai"
         }</div></div>
-          <button class="pill" data-act="test-harness" type="button">Test connection</button>
+          <button class="pill" data-act="test-harness" type="button">Test</button>
         </div>
       </div>
     </div>`;
@@ -1045,23 +1282,20 @@ function settingsHtml() {
   return `<div class="overlay">
     <div class="modal" data-modal="1">
       <nav class="snav">
-        <button class="${sec === "general" ? "active" : ""}" data-act="sec" data-id="general">${iconGear()} General</button>
-        <button class="${sec === "harness" ? "active" : ""}" data-act="sec" data-id="harness">⬡ Harness</button>
-        <button class="${sec === "usage" ? "active" : ""}" data-act="sec" data-id="usage">▮ Usage & Billing</button>
-        <button class="${sec === "updates" ? "active" : ""}" data-act="sec" data-id="updates">↓ Updates</button>
+        <button type="button" class="${sec === "general" ? "active" : ""}" data-act="sec" data-id="general">${iconGear()} <span>General</span></button>
+        <button type="button" class="${sec === "harness" ? "active" : ""}" data-act="sec" data-id="harness">${iconHarness()} <span>Harness</span></button>
+        <button type="button" class="${sec === "usage" ? "active" : ""}" data-act="sec" data-id="usage">${iconUsage()} <span>Usage</span></button>
+        <button type="button" class="${sec === "updates" ? "active" : ""}" data-act="sec" data-id="updates">${iconMonitor()} <span>Computer</span></button>
       </nav>
       <div class="sbody">
-        <button class="close" data-act="close-modal">×</button>
+        <button type="button" class="close" data-act="close-modal" title="Close" aria-label="Close">${iconClose()}</button>
         ${
           sec === "harness"
             ? harnessHtml(h)
             : sec === "general"
             ? `<h2>General</h2>
-          <div class="block"><h3>Account</h3>
-            <div class="card row"><div class="acct"><div class="me"></div><div><div class="who">OctoBot</div><div class="mail">signed in on this Mac</div></div></div></div>
-          </div>
           <div class="block"><h3>Appearance</h3>
-            <div class="card row"><div><div class="lbl">Theme</div></div>
+            <div class="card row"><div><div class="lbl">Theme</div><div class="sub">Applies to this window.</div></div>
               ${seg("themePreference", s.themePreference || "system", [
                 ["system", "System"],
                 ["light", "Light"],
@@ -1069,49 +1303,18 @@ function settingsHtml() {
               ])}
             </div>
           </div>
-          <div class="block"><h3>System</h3>
-            <div class="card row"><div><div class="lbl">Use hardware acceleration</div></div>
-              <button class="toggle ${s.hardwareAccelerationEnabled ? "on" : ""}" data-tog="hardwareAccelerationEnabled"><i></i></button>
-            </div>
-          </div>
-          <div class="block"><h3>Bot</h3>
+          <div class="block"><h3>This Mac</h3>
             <div class="card">
-              <div class="row"><div><div class="lbl">Timezone</div></div>
-                <span class="pill">Auto-detect (${state.timezone})</span></div>
-              <div class="row"><div><div class="lbl">Execution on Local Computer</div><div class="sub">Let the assistant open files and run tasks on your computer. Auto-review still checks everything first.</div></div>
-                ${seg("localExecPermission", s.localExecPermission || "ask", [
-                  ["always", "Always allow"],
-                  ["ask", "Ask every time"],
-                  ["never", "Never allow"],
-                ])}
-              </div>
-              <div class="row"><div><div class="lbl">Auto-review</div><div class="sub">OctoBot checks each action before it runs and asks you first when needed.</div></div>
-                <button class="toggle ${s.autoReviewEnabled ? "on" : ""}" data-tog="autoReviewEnabled"><i></i></button>
-              </div>
+              <div class="row"><div class="lbl">Timezone</div><span class="muted">${escapeHtml(state.timezone || "auto")}</span></div>
+              <div class="row"><div class="lbl">Version</div><span class="muted">OctoBot 0.1.0</span></div>
             </div>
           </div>`
             : sec === "usage"
-              ? `<h2>Usage</h2><div class="card"><div class="lbl">Included usage</div><div class="muted">Usage follows your SpaceXAI / custom provider plan.</div></div>`
-              : `<h2>Updates</h2>
-          <div class="block"><h3>Updates</h3>
+              ? `<h2>Usage</h2><div class="card"><div class="lbl">Plan</div><div class="muted">Usage follows your Grok Build or xAI account. Nothing is billed inside OctoBot.</div></div>`
+              : `<h2>Computer</h2>
+          <div class="block">
             <div class="card">
-              <div class="row"><div><div class="lbl">Update Track</div><div class="sub">Stable is the safe default.</div></div>
-                <select class="pill" data-set="updateTrack">
-                  <option value="stable" ${s.updateTrack === "stable" ? "selected" : ""}>stable</option>
-                  <option value="nightly" ${s.updateTrack === "nightly" ? "selected" : ""}>nightly</option>
-                  <option value="dogfood" ${s.updateTrack === "dogfood" ? "selected" : ""}>dogfood</option>
-                </select>
-              </div>
-              <div class="row"><div><div class="lbl">Version 0.1.0</div><div class="sub">OctoBot · you're on this machine</div></div>
-                <button class="pill">Check for Updates</button></div>
-            </div>
-          </div>
-          <div class="block"><h3>OctoBot's Computer</h3>
-            <div class="card">
-              <div class="lbl">Update OctoBot's Computer</div>
-              <div class="sub">Updates the computer your assistants share. Your files and logins stay.</div>
-              <div class="banner">Your computer is a local Linux VM on this Mac</div>
-              <div class="row"><div><div class="lbl">Reset OctoBot's Computer</div><div class="sub">Start fresh if the computer gets stuck.</div></div>
+              <div class="row"><div><div class="lbl">Reset this Bot's computer</div><div class="sub">Wipes the Linux desktop for the Bot you're viewing. Files and logins on that computer go away.</div></div>
                 <button class="danger" data-act="reset-vm">Reset</button></div>
             </div>
           </div>`
@@ -1130,6 +1333,7 @@ function markChips(sel, id) {
 function syncEditorChips(bot) {
   if (!state.botEdit || !bot) return;
   const avatar = defaultAvatar(bot.avatar);
+  markChips("[data-act=avatar-body]", avatar.body);
   markChips("[data-act=avatar-face]", avatar.expression);
   markChips("[data-act=avatar-anim]", avatar.animation);
 }
@@ -1194,7 +1398,18 @@ function bindDelegated() {
     }
     render();
   });
+  document.addEventListener("contextmenu", (e) => {
+    const rail = e.target.closest(".rail-bot");
+    if (!rail) return;
+    e.preventDefault();
+    state.ctx = { botId: rail.dataset.id, x: e.clientX, y: e.clientY, sub: null, naming: false };
+    paintCtxMenu();
+  });
   document.addEventListener("click", (e) => {
+    if (state.ctx && !e.target.closest("#ctx-host, .ctx-menu, .ctx-sub, .ctx-prompt")) {
+      state.ctx = null;
+      paintCtxMenu();
+    }
     if (state.plusMenu && !e.target.closest(".plus-menu, [data-act=plus-menu]")) {
       state.plusMenu = false;
     }
@@ -1232,6 +1447,7 @@ function bindDelegated() {
       state.deskSize = "full";
       state.teach = "ready";
       state.teachFrames = [];
+      setHumanControl(true);
     }
     if (act === "start-teach") {
       state.teach = "recording";
@@ -1275,6 +1491,12 @@ function bindDelegated() {
       state.picker = false;
       state.botEdit = false;
       state.confirmDeleteId = null;
+      state.humanControl = false;
+      const picked = state.bots.find((b) => b.id === el.dataset.id);
+      if (picked?.unread) {
+        picked.unread = false;
+        api(`/api/bots/${picked.id}`, { method: "PATCH", body: { unread: false } });
+      }
       loadBotHistory(el.dataset.id);
     }
     if (act === "create") {
@@ -1330,12 +1552,13 @@ function bindDelegated() {
         refreshAvatars();
       }
     }
-    if (act === "avatar-face" || act === "avatar-anim") {
+    if (act === "avatar-body" || act === "avatar-face" || act === "avatar-anim") {
       const bot = state.bots.find((b) => b.id === state.selected);
       if (bot) {
+        const field = act === "avatar-body" ? "body" : act === "avatar-face" ? "expression" : "animation";
         bot.avatar = defaultAvatar({
           ...(bot.avatar || {}),
-          [act === "avatar-face" ? "expression" : "animation"]: el.dataset.id,
+          [field]: el.dataset.id,
         });
         api(`/api/bots/${bot.id}`, { method: "PATCH", body: { avatar: bot.avatar } });
         syncEditorChips(bot);
@@ -1405,8 +1628,114 @@ function bindDelegated() {
       return;
     }
     if (act === "send") $("#send")?.dispatchEvent(new Event("submit"));
+    if (act === "ctx-pin") {
+      const b = state.bots.find((x) => x.id === el.dataset.id);
+      if (b) {
+        b.pinned = !b.pinned;
+        api(`/api/bots/${b.id}`, { method: "PATCH", body: { pinned: b.pinned } });
+      }
+      state.ctx = null;
+      render();
+      return;
+    }
+    if (act === "ctx-move-open") {
+      if (state.ctx) state.ctx = { ...state.ctx, sub: state.ctx.sub === "move" ? null : "move", naming: false };
+      paintCtxMenu();
+      return;
+    }
+    if (act === "ctx-new-section") {
+      if (state.ctx) state.ctx = { ...state.ctx, naming: true, sub: "move" };
+      paintCtxMenu();
+      return;
+    }
+    if (act === "ctx-create-section") {
+      const name = ($("#ctx-sec-name")?.value || "").trim();
+      if (!name) return;
+      const id = `sec_${Date.now().toString(36)}`;
+      const sections = [...sidebarSections(), { id, name }];
+      state.settings = { ...(state.settings || {}), sidebarSections: sections };
+      const b = state.bots.find((x) => x.id === el.dataset.id);
+      if (b) {
+        b.section = id;
+        api(`/api/bots/${b.id}`, { method: "PATCH", body: { section: id } });
+      }
+      api("/api/settings", { method: "PUT", body: { sidebarSections: sections } }).then(refreshSettings);
+      state.ctx = null;
+      render();
+      return;
+    }
+    if (act === "ctx-move") {
+      const sec = el.dataset.sec || "";
+      const b = state.bots.find((x) => x.id === el.dataset.id);
+      if (b) {
+        b.section = sec;
+        api(`/api/bots/${b.id}`, { method: "PATCH", body: { section: sec } });
+      }
+      state.ctx = null;
+      render();
+      return;
+    }
+    if (act === "ctx-unread") {
+      const b = state.bots.find((x) => x.id === el.dataset.id);
+      if (b) {
+        b.unread = !b.unread;
+        api(`/api/bots/${b.id}`, { method: "PATCH", body: { unread: b.unread } });
+      }
+      state.ctx = null;
+      render();
+      return;
+    }
+    if (act === "ctx-edit") {
+      rememberSelected(el.dataset.id);
+      state.botEdit = true;
+      state.showComputer = true;
+      state.ctx = null;
+      render();
+      return;
+    }
+    if (act === "ctx-dup") {
+      api(`/api/bots/${el.dataset.id}/duplicate`, { method: "POST" }).then((copy) => {
+        if (copy?.id) rememberSelected(copy.id);
+        state.ctx = null;
+        return refresh();
+      });
+      return;
+    }
+    if (act === "ctx-copy") {
+      navigator.clipboard?.writeText(el.dataset.id || "");
+      state.ctx = null;
+      paintCtxMenu();
+      return;
+    }
+    if (act === "ctx-hide") {
+      const b = state.bots.find((x) => x.id === el.dataset.id);
+      if (b) {
+        b.hidden = !b.hidden;
+        api(`/api/bots/${b.id}`, { method: "PATCH", body: { hidden: b.hidden } });
+        if (b.hidden && state.selected === b.id) {
+          const next = state.bots.find((x) => !x.hidden && x.id !== b.id);
+          rememberSelected(next?.id || null);
+        }
+      }
+      state.ctx = null;
+      render();
+      return;
+    }
+    if (act === "ctx-del") {
+      const id = el.dataset.id;
+      state.ctx = null;
+      paintCtxMenu();
+      if (id && confirm("Delete this Bot and its computer?")) deleteBot(id);
+      return;
+    }
     if (act === "set-pref") {
-      api("/api/settings", { method: "PUT", body: { [el.dataset.set]: el.dataset.id } }).then(refreshSettings);
+      state.settings = { ...(state.settings || {}), [el.dataset.set]: el.dataset.id };
+      applyTheme();
+      paintModal();
+      api("/api/settings", { method: "PUT", body: { [el.dataset.set]: el.dataset.id } }).then(async () => {
+        await refreshSettings();
+        applyTheme();
+      });
       return;
     }
     if (act === "set-harness") {
@@ -1416,7 +1745,28 @@ function bindDelegated() {
         harness.baseUrl = "https://api.x.ai/v1";
         harness.apiKeyEnv = "XAI_API_KEY";
       }
-      api("/api/settings", { method: "PUT", body: { harness } }).then(refreshSettings);
+      state.settings = { ...(state.settings || {}), harness };
+      paintModal();
+      api("/api/settings", { method: "PUT", body: { harness } }).then(async () => {
+        await refreshSettings();
+        paintModal();
+        render();
+        if (provider === "grok-build") {
+          if (!state.hasGrokAuth) {
+            state.grokAuthAsk = true;
+            paintGrokAuth();
+          }
+          startGrokOAuth();
+        }
+      });
+      return;
+    }
+    if (act === "take-control") {
+      setHumanControl(true);
+      return;
+    }
+    if (act === "release-control") {
+      setHumanControl(false);
       return;
     }
     if (act === "test-harness") {
@@ -1424,6 +1774,17 @@ function bindDelegated() {
       return;
     }
     if (act === "grok-oauth") {
+      startGrokOAuth();
+      return;
+    }
+    if (act === "grok-auth-later") {
+      state.grokAuthAsk = "later";
+      paintGrokAuth();
+      return;
+    }
+    if (act === "grok-auth-now") {
+      state.grokAuthAsk = "pending";
+      paintGrokAuth();
       startGrokOAuth();
       return;
     }
@@ -1474,14 +1835,24 @@ async function startGrokOAuth() {
   try {
     const r = await api("/api/harness/grok-login", { method: "POST", body: { botId: state.selected } });
     if (note) note.textContent = r.message || (r.reused ? "Reused this Mac’s Grok session." : "Sign-in started.");
+    if (r.reused && !r.needHostLogin) {
+      state.hasGrokAuth = true;
+      state.grokAuthAsk = false;
+      paintGrokAuth();
+    }
     if (r.needHostLogin) {
+      state.grokAuthAsk = true;
+      paintGrokAuth();
       const end = Date.now() + 180_000;
       const poll = async () => {
         if (Date.now() > end) return;
         try {
           const again = await api("/api/harness/grok-login", { method: "POST", body: { botId: state.selected } });
-          if (again.reused && note) {
-            note.textContent = again.message || "Signed in.";
+          if (again.reused && !again.needHostLogin) {
+            if (note) note.textContent = again.message || "Signed in.";
+            state.hasGrokAuth = true;
+            state.grokAuthAsk = false;
+            paintGrokAuth();
             return;
           }
         } catch {
@@ -1766,6 +2137,84 @@ async function refreshSettings() {
   const r = await api("/api/settings");
   state.settings = r.settings;
   state.timezone = r.timezone;
+  state.hasGrokAuth = Boolean(r.hasGrokAuth);
+  applyTheme();
+}
+
+function wantsGrokBuild() {
+  const p = state.settings?.harness?.provider;
+  return p !== "spacexai" && p !== "custom";
+}
+
+function paintGrokAuth() {
+  let host = $("#grok-auth-host");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "grok-auth-host";
+    document.body.appendChild(host);
+  }
+  const need = wantsGrokBuild() && !state.hasGrokAuth && state.grokAuthAsk !== "later";
+  if (!need) {
+    host.innerHTML = "";
+    return;
+  }
+  const pending = state.grokAuthAsk === "pending";
+  host.innerHTML = `<div class="overlay grok-auth-overlay" data-act="grok-auth-later">
+    <div class="modal grok-auth-modal">
+      <div class="sbody" style="width:100%">
+        <button type="button" class="close" data-act="grok-auth-later" title="Close">${iconClose()}</button>
+        <h2>Sign in to Grok</h2>
+        <p class="muted">${
+          pending
+            ? "Finish sign-in in your Mac browser. This sheet closes when Grok is ready."
+            : "Grok Build needs a login on this Mac. Sign in once in your browser — that session is copied into every Bot computer."
+        }</p>
+        <div class="routine-editor-foot">
+          <button type="button" class="pill" data-act="grok-auth-later">Later</button>
+          <button type="button" class="pill primary" data-act="grok-auth-now">${pending ? "Open login again" : "Sign in with Grok"}</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function applyTheme() {
+  const t = state.settings?.themePreference || "system";
+  const root = document.documentElement;
+  root.dataset.theme = t;
+  root.style.colorScheme = t === "system" ? "light dark" : t;
+}
+
+async function setHumanControl(on) {
+  const id = state.selected;
+  if (!id) return;
+  state.humanControl = on;
+  paintControlChrome();
+  if (on) {
+    await stopTurn();
+    state.teach = state.teach === "recording" ? state.teach : state.teach;
+  }
+  try {
+    await api(`/api/bots/${id}/control`, { method: "POST", body: { on } });
+  } catch {
+    /* still local */
+  }
+  paintControlChrome();
+}
+
+function paintControlChrome() {
+  const wrap = $("#screen-wrap");
+  if (!wrap || wrap.dataset.empty) return;
+  let bar = wrap.querySelector(".take-bar");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.className = "take-bar";
+    wrap.appendChild(bar);
+  }
+  bar.innerHTML = state.humanControl
+    ? `<button type="button" class="take-ctl on" data-act="release-control">You're driving · Release</button>`
+    : `<button type="button" class="take-ctl" data-act="take-control">Take control</button>`;
+  wrap.classList.toggle("human", Boolean(state.humanControl));
 }
 
 function listen() {
@@ -1804,6 +2253,12 @@ function listen() {
         refreshAvatars();
       } else render();
     });
+    es.addEventListener("control", (e) => {
+      const { botId, on } = JSON.parse(e.data);
+      if (botId !== state.selected) return;
+      state.humanControl = Boolean(on);
+      paintControlChrome();
+    });
     es.addEventListener("tool", (e) => {
       const { botId, name } = JSON.parse(e.data);
       const bot = state.bots.find((b) => b.id === botId);
@@ -1822,6 +2277,10 @@ function listen() {
           );
         }
         bot.messages.push(msg);
+        if (botId !== state.selected && (msg.role === "assistant" || msg.kind === "tool")) {
+          bot.unread = true;
+          api(`/api/bots/${botId}`, { method: "PATCH", body: { unread: true } });
+        }
       }
       if (botId === state.selected && $("#thread")) {
         paintChat(bot);
@@ -1899,6 +2358,13 @@ function watchStream() {
   listen();
   render();
   document.documentElement.dataset.appReady = "1";
+  if (wantsGrokBuild()) {
+    if (!state.hasGrokAuth) {
+      state.grokAuthAsk = true;
+      paintGrokAuth();
+    }
+    startGrokOAuth();
+  }
   const bot = state.bots.find((b) => b.id === state.selected);
   if (bot && bot.vm?.container && bot.vm.status !== "running") {
     resumeVm().catch(() => {});

@@ -39,43 +39,76 @@ function starGeometry() {
 function taperedTube(curve, tubular, radial, r0, r1, power = 2.6) {
   const frames = curve.computeFrenetFrames(tubular, false);
   const cols = radial + 1;
-  const positions = new Float32Array((tubular + 1) * cols * 3);
-  const normals = new Float32Array(positions.length);
+  const cap = 12;
+  const pos = [];
+  const nrm = [];
   const indices = [];
   const p = new THREE.Vector3();
-  for (let i = 0; i <= tubular; i++) {
-    const u = i / tubular;
-    curve.getPointAt(u, p);
-    const n = frames.normals[i];
-    const bn = frames.binormals[i];
-    const rad = r0 + (r1 - r0) * Math.pow(u, power);
+  const tan = new THREE.Vector3();
+
+  const ring = (center, n, bn, rad, nxAdd = null) => {
     for (let j = 0; j <= radial; j++) {
       const v = (j / radial) * Math.PI * 2;
       const cx = Math.cos(v);
       const cy = Math.sin(v);
-      const nx = n.x * cx + bn.x * cy;
-      const ny = n.y * cx + bn.y * cy;
-      const nz = n.z * cx + bn.z * cy;
-      const idx = (i * cols + j) * 3;
-      positions[idx] = p.x + nx * rad;
-      positions[idx + 1] = p.y + ny * rad;
-      positions[idx + 2] = p.z + nz * rad;
-      normals[idx] = nx;
-      normals[idx + 1] = ny;
-      normals[idx + 2] = nz;
+      let nx = n.x * cx + bn.x * cy;
+      let ny = n.y * cx + bn.y * cy;
+      let nz = n.z * cx + bn.z * cy;
+      if (nxAdd) {
+        nx += nxAdd.x;
+        ny += nxAdd.y;
+        nz += nxAdd.z;
+        const len = Math.hypot(nx, ny, nz) || 1;
+        nx /= len;
+        ny /= len;
+        nz /= len;
+      }
+      pos.push(center.x + nx * rad, center.y + ny * rad, center.z + nz * rad);
+      nrm.push(nx, ny, nz);
     }
+  };
+
+  for (let i = 0; i <= tubular; i++) {
+    const u = i / tubular;
+    curve.getPointAt(u, p);
+    ring(p, frames.normals[i], frames.binormals[i], r0 + (r1 - r0) * Math.pow(u, power));
   }
-  for (let i = 0; i < tubular; i++) {
+
+  curve.getPointAt(1, p);
+  curve.getTangentAt(1, tan).normalize();
+  const n = frames.normals[tubular];
+  const bn = frames.binormals[tubular];
+  for (let i = 1; i <= cap; i++) {
+    const t = (i / (cap + 1)) * Math.PI * 0.5;
+    const cr = Math.cos(t) * r1;
+    const along = Math.sin(t) * r1;
+    const c = p.clone().addScaledVector(tan, along);
+    const outward = tan.clone().multiplyScalar(Math.sin(t));
+    ring(c, n, bn, cr, outward);
+  }
+  const pole = p.clone().addScaledVector(tan, r1);
+  const poleIdx = pos.length / 3;
+  pos.push(pole.x, pole.y, pole.z);
+  nrm.push(tan.x, tan.y, tan.z);
+
+  const rows = tubular + 1 + cap;
+  for (let i = 0; i < rows - 1; i++) {
     for (let j = 0; j < radial; j++) {
       const a = i * cols + j;
       const b = a + cols;
       indices.push(a, b, a + 1, b, b + 1, a + 1);
     }
   }
+  const last = (rows - 1) * cols;
+  for (let j = 0; j < radial; j++) {
+    indices.push(last + j, poleIdx, last + j + 1);
+  }
+
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
-  geo.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute("normal", new THREE.Float32BufferAttribute(nrm, 3));
   geo.setIndex(indices);
+  geo.computeVertexNormals();
   return geo;
 }
 
@@ -83,7 +116,7 @@ const DEFAULTS = {
   radius: 1,
   color: 0xe8eaee,
   eyeColor: 0x0a0a0a,
-  eyeTilt: -22,
+  eyeTilt: 0,
   eyeWidth: 0.22,
   eyeHeight: 0.52,
   eyeSpacing: 0.38,
@@ -96,7 +129,7 @@ const DEFAULTS = {
 
 function face(label, extra = {}) {
   return {
-    tilt: -22,
+    tilt: 0,
     spacing: 0.4,
     elevation: 0.1,
     lTilt: 0,
@@ -118,30 +151,29 @@ function face(label, extra = {}) {
 
 export const EXPRESSIONS = {
   neutral: face('😐 Neutral', { mouth: 'dash' }),
-  slight: face('🙂 Slight', { tilt: -16, eyeY: 0.9, mouth: 'small', feel: 'happy' }),
-  happy: face('😊 Happy', { tilt: -14, spacing: 0.33, elevation: 0.08, eyeY: 0.64, eyeX: 1.1, mouth: 'smile', blush: true, feel: 'happy' }),
-  blush: face('☺️ Blush', { tilt: -10, spacing: 0.32, elevation: 0.06, eyeY: 0.46, eyeX: 1.16, mouth: 'smile', blush: true, feel: 'happy' }),
-  grin: face('😁 Grin', { tilt: -12, spacing: 0.32, elevation: 0.07, eyeY: 0.42, eyeX: 1.18, mouth: 'grin', feel: 'happy' }),
-  beam: face('😄 Beam', { tilt: -8, spacing: 0.35, elevation: 0.1, eyeY: 0.78, eyeX: 1.08, mouth: 'grin', feel: 'happy' }),
-  laugh: face('😆 Laugh', { tilt: -6, spacing: 0.3, elevation: 0.05, eyeY: 0.24, eyeX: 1.32, mouth: 'grin', feel: 'happy' }),
-  joy: face('😂 Joy', { tilt: -4, spacing: 0.3, elevation: 0.04, eyeY: 0.2, eyeX: 1.32, mouth: 'grin', tears: 2, feel: 'happy' }),
-  rofl: face('🤣 ROFL', { tilt: 18, spacing: 0.28, elevation: 0.02, eyeY: 0.16, eyeX: 1.36, mouth: 'grin', feel: 'happy' }),
-  party: face('🥳 Party', { tilt: -18, spacing: 0.34, elevation: 0.1, eyeY: 0.72, mouth: 'grin', feel: 'happy' }),
-  hug: face('🤗 Hug', { tilt: -8, spacing: 0.38, elevation: 0.08, eyeY: 0.6, mouth: 'smile', feel: 'happy' }),
+  slight: face('🙂 Slight', { eyeY: 0.9, mouth: 'small', feel: 'happy' }),
+  happy: face('😊 Happy', { spacing: 0.33, elevation: 0.08, eyeY: 0.64, eyeX: 1.1, mouth: 'smile', blush: true, feel: 'happy' }),
+  blush: face('☺️ Blush', { spacing: 0.32, elevation: 0.06, eyeY: 0.46, eyeX: 1.16, mouth: 'smile', blush: true, feel: 'happy' }),
+  grin: face('😁 Grin', { spacing: 0.32, elevation: 0.07, eyeY: 0.42, eyeX: 1.18, mouth: 'grin', feel: 'happy' }),
+  beam: face('😄 Beam', { spacing: 0.35, elevation: 0.1, eyeY: 0.78, eyeX: 1.08, mouth: 'grin', feel: 'happy' }),
+  laugh: face('😆 Laugh', { spacing: 0.3, elevation: 0.05, eyeY: 0.24, eyeX: 1.32, mouth: 'grin', feel: 'happy' }),
+  joy: face('😂 Joy', { spacing: 0.3, elevation: 0.04, eyeY: 0.2, eyeX: 1.32, mouth: 'grin', tears: 2, feel: 'happy' }),
+  rofl: face('🤣 ROFL', { spacing: 0.28, elevation: 0.02, eyeY: 0.16, eyeX: 1.36, mouth: 'grin', feel: 'happy' }),
+  party: face('🥳 Party', { spacing: 0.34, elevation: 0.1, eyeY: 0.72, mouth: 'grin', feel: 'happy' }),
+  hug: face('🤗 Hug', { spacing: 0.38, elevation: 0.08, eyeY: 0.6, mouth: 'smile', feel: 'happy' }),
 
-  wink: face('😉 Wink', { tilt: -18, spacing: 0.33, elevation: 0.09, winkL: true, mouth: 'smile', feel: 'wink' }),
-  smirk: face('😏 Smirk', { tilt: -28, spacing: 0.32, elevation: 0.1, lTilt: -0.1, rTilt: 0.22, eyeY: 0.78, mouth: 'smirk', feel: 'smirk' }),
-  love: face('😍 Love', { tilt: -6, spacing: 0.42, elevation: 0.1, eye: 'heart', mouth: 'smile', feel: 'love' }),
-  hearts: face('🥰 Hearts', { tilt: -10, spacing: 0.34, elevation: 0.08, eyeY: 0.52, eyeX: 1.12, mouth: 'smile', blush: true, feel: 'love' }),
-  kiss: face('😘 Kiss', { tilt: -20, spacing: 0.32, elevation: 0.09, winkL: true, mouth: 'kiss', blush: true, feel: 'wink' }),
-  kissing: face('😗 Kissing', { tilt: -6, spacing: 0.34, elevation: 0.08, eyeY: 0.86, mouth: 'kiss', feel: 'neutral' }),
-  star: face('🤩 Star', { tilt: 0, spacing: 0.44, elevation: 0.13, eye: 'star', mouth: 'grin', feel: 'wow' }),
+  wink: face('😉 Wink', { spacing: 0.33, elevation: 0.09, winkL: true, mouth: 'smile', feel: 'wink' }),
+  smirk: face('😏 Smirk', { spacing: 0.32, elevation: 0.1, lTilt: -0.1, rTilt: 0.22, eyeY: 0.78, mouth: 'smirk', feel: 'smirk' }),
+  love: face('😍 Love', { spacing: 0.42, elevation: 0.1, eye: 'heart', mouth: 'smile', feel: 'love' }),
+  hearts: face('🥰 Hearts', { spacing: 0.34, elevation: 0.08, eyeY: 0.52, eyeX: 1.12, mouth: 'smile', blush: true, feel: 'love' }),
+  kiss: face('😘 Kiss', { spacing: 0.32, elevation: 0.09, winkL: true, mouth: 'kiss', blush: true, feel: 'wink' }),
+  kissing: face('😗 Kissing', { spacing: 0.34, elevation: 0.08, eyeY: 0.86, mouth: 'kiss', feel: 'neutral' }),
+  star: face('🤩 Star', { spacing: 0.44, elevation: 0.13, eye: 'star', mouth: 'grin', feel: 'wow' }),
 
-  yum: face('😋 Yum', { tilt: -10, spacing: 0.32, elevation: 0.07, eyeY: 0.3, eyeX: 1.26, mouth: 'tongue', feel: 'happy' }),
-  tongue: face('😛 Tongue', { tilt: -4, spacing: 0.34, elevation: 0.1, mouth: 'tongue', feel: 'happy' }),
-  winkTongue: face('😜 Wink tongue', { tilt: -16, spacing: 0.32, elevation: 0.09, winkL: true, mouth: 'tongue', feel: 'wink' }),
+  yum: face('😋 Yum', { spacing: 0.32, elevation: 0.07, eyeY: 0.3, eyeX: 1.26, mouth: 'tongue', feel: 'happy' }),
+  tongue: face('😛 Tongue', { spacing: 0.34, elevation: 0.1, mouth: 'tongue', feel: 'happy' }),
+  winkTongue: face('😜 Wink tongue', { spacing: 0.32, elevation: 0.09, winkL: true, mouth: 'tongue', feel: 'wink' }),
   zany: face('🤪 Zany', {
-    tilt: 12,
     spacing: 0.42,
     elevation: 0.13,
     lTilt: 0.32,
@@ -153,42 +185,41 @@ export const EXPRESSIONS = {
     mouth: 'tongue',
     feel: 'zany',
   }),
-  squintTongue: face('😝 Squint tongue', { tilt: -2, spacing: 0.3, elevation: 0.04, eyeY: 0.18, eyeX: 1.32, mouth: 'tongue', feel: 'happy' }),
+  squintTongue: face('😝 Squint tongue', { spacing: 0.3, elevation: 0.04, eyeY: 0.18, eyeX: 1.32, mouth: 'tongue', feel: 'happy' }),
 
-  think: face('🤔 Think', { tilt: 6, spacing: 0.36, elevation: 0.14, lTilt: 0.48, rTilt: 0.08, mouth: 'dash', feel: 'confused' }),
-  raised: face('🤨 Raised', { tilt: -16, spacing: 0.34, elevation: 0.11, lTilt: 0.55, rTilt: -0.06, mouth: 'dash', feel: 'deadpan' }),
-  unamused: face('😒 Unamused', { tilt: -18, spacing: 0.32, elevation: 0.07, lTilt: 0.16, eyeY: 0.58, mouth: 'dash', feel: 'deadpan' }),
-  expressionless: face('😑 Flat', { tilt: -22, spacing: 0.34, elevation: 0.07, eyeY: 0.3, eyeX: 1.28, mouth: 'dash', blink: false, feel: 'deadpan' }),
-  deadpan: face('😐 Deadpan', { tilt: -22, spacing: 0.34, elevation: 0.08, eyeY: 0.72, eyeX: 1.14, mouth: 'dash', feel: 'deadpan' }),
+  think: face('🤔 Think', { spacing: 0.36, elevation: 0.14, lTilt: 0.48, rTilt: 0.08, mouth: 'dash', feel: 'confused' }),
+  raised: face('🤨 Raised', { spacing: 0.34, elevation: 0.11, lTilt: 0.55, rTilt: -0.06, mouth: 'dash', feel: 'deadpan' }),
+  unamused: face('😒 Unamused', { spacing: 0.32, elevation: 0.07, lTilt: 0.16, eyeY: 0.58, mouth: 'dash', feel: 'deadpan' }),
+  expressionless: face('😑 Flat', { spacing: 0.34, elevation: 0.07, eyeY: 0.3, eyeX: 1.28, mouth: 'dash', blink: false, feel: 'deadpan' }),
+  deadpan: face('😐 Deadpan', { spacing: 0.34, elevation: 0.08, eyeY: 0.72, eyeX: 1.14, mouth: 'dash', feel: 'deadpan' }),
   nomouth: face('😶 No mouth'),
-  eyeroll: face('🙄 Eye roll', { tilt: 10, spacing: 0.36, elevation: 0.24, eyeY: 0.48, eyeX: 1.22, mouth: 'dash', feel: 'eyeroll' }),
-  grimace: face('😬 Grimace', { tilt: 4, spacing: 0.34, elevation: 0.1, eyeY: 0.7, eyeX: 1.2, mouth: 'grimace', feel: 'scared' }),
-  shush: face('🤫 Shush', { tilt: -12, spacing: 0.32, elevation: 0.09, winkR: true, mouth: 'dash', feel: 'wink' }),
-  oops: face('🤭 Oops', { tilt: -8, spacing: 0.32, elevation: 0.08, eyeY: 0.54, mouth: 'oh', feel: 'happy' }),
-  cool: face('😎 Cool', { tilt: -26, spacing: 0.32, elevation: 0.08, eyeY: 0.2, eyeX: 1.5, mouth: 'smirk', feel: 'smirk' }),
+  eyeroll: face('🙄 Eye roll', { spacing: 0.36, elevation: 0.24, eyeY: 0.48, eyeX: 1.22, mouth: 'dash', feel: 'eyeroll' }),
+  grimace: face('😬 Grimace', { spacing: 0.34, elevation: 0.1, eyeY: 0.7, eyeX: 1.2, mouth: 'grimace', feel: 'scared' }),
+  shush: face('🤫 Shush', { spacing: 0.32, elevation: 0.09, winkR: true, mouth: 'dash', feel: 'wink' }),
+  oops: face('🤭 Oops', { spacing: 0.32, elevation: 0.08, eyeY: 0.54, mouth: 'oh', feel: 'happy' }),
+  cool: face('😎 Cool', { spacing: 0.32, elevation: 0.08, eyeY: 0.2, eyeX: 1.5, mouth: 'smirk', feel: 'smirk' }),
 
-  sleepy: face('😪 Sleepy', { tilt: -8, spacing: 0.32, elevation: 0.04, eyeY: 0.2, eyeX: 1.22, mouth: 'dash', tears: 1, blink: false, feel: 'sleepy' }),
-  sleep: face('😴 Sleep', { tilt: 16, spacing: 0.3, elevation: 0.02, eyeY: 0.1, eyeX: 1.32, mouth: 'dash', blink: false, feel: 'sleepy' }),
-  yawn: face('🥱 Yawn', { tilt: 14, spacing: 0.32, elevation: 0.03, eyeY: 0.14, eyeX: 1.28, mouth: 'oh', blink: false, feel: 'sleepy' }),
-  relieved: face('😌 Relieved', { tilt: -10, spacing: 0.32, elevation: 0.06, eyeY: 0.34, eyeX: 1.18, mouth: 'small', feel: 'sleepy' }),
-  drool: face('🤤 Drool', { tilt: 16, spacing: 0.32, elevation: 0.03, eyeY: 0.22, eyeX: 1.24, mouth: 'tongue', blink: false, feel: 'sleepy' }),
+  sleepy: face('😪 Sleepy', { spacing: 0.32, elevation: 0.04, eyeY: 0.2, eyeX: 1.22, mouth: 'dash', tears: 1, blink: false, feel: 'sleepy' }),
+  sleep: face('😴 Sleep', { spacing: 0.3, elevation: 0.02, eyeY: 0.1, eyeX: 1.32, mouth: 'dash', blink: false, feel: 'sleepy' }),
+  yawn: face('🥱 Yawn', { spacing: 0.32, elevation: 0.03, eyeY: 0.14, eyeX: 1.28, mouth: 'oh', blink: false, feel: 'sleepy' }),
+  relieved: face('😌 Relieved', { spacing: 0.32, elevation: 0.06, eyeY: 0.34, eyeX: 1.18, mouth: 'small', feel: 'sleepy' }),
+  drool: face('🤤 Drool', { spacing: 0.32, elevation: 0.03, eyeY: 0.22, eyeX: 1.24, mouth: 'tongue', blink: false, feel: 'sleepy' }),
 
-  sad: face('😢 Sad', { tilt: 16, spacing: 0.3, elevation: 0.06, lTilt: 0.14, rTilt: -0.14, eyeY: 0.86, mouth: 'frown', tears: 1, feel: 'sad' }),
-  pensive: face('😔 Pensive', { tilt: 18, spacing: 0.3, elevation: 0.04, lTilt: 0.12, rTilt: -0.12, eyeY: 0.5, mouth: 'dash', feel: 'sad' }),
-  disappointed: face('😞 Down', { tilt: 14, spacing: 0.32, elevation: 0.05, eyeY: 0.76, mouth: 'frown', feel: 'sad' }),
-  cry: face('😭 Cry', { tilt: 12, spacing: 0.3, elevation: 0.04, eyeY: 0.22, eyeX: 1.26, mouth: 'oh', tears: 2, feel: 'sad' }),
-  weary: face('😩 Weary', { tilt: 10, spacing: 0.32, elevation: 0.05, lTilt: 0.22, rTilt: -0.22, eyeY: 0.38, eyeX: 1.22, mouth: 'oh', feel: 'sad' }),
-  pleading: face('🥺 Plead', { tilt: 6, spacing: 0.44, elevation: 0.15, eyeY: 0.88, eyeX: 1.5, mouth: 'small', blush: true, feel: 'sad' }),
-  worried: face('😟 Worry', { tilt: 10, spacing: 0.36, elevation: 0.1, lTilt: 0.18, rTilt: -0.18, eyeY: 0.92, mouth: 'frown', feel: 'sad' }),
-  confused: face('😕 Confused', { tilt: -6, spacing: 0.4, elevation: 0.2, eyeY: 0.7, lTilt: 0.38, rTilt: -0.06, mouth: 'frown', feel: 'confused' }),
+  sad: face('😢 Sad', { spacing: 0.3, elevation: 0.06, lTilt: 0.14, rTilt: -0.14, eyeY: 0.86, mouth: 'frown', tears: 1, feel: 'sad' }),
+  pensive: face('😔 Pensive', { spacing: 0.3, elevation: 0.04, lTilt: 0.12, rTilt: -0.12, eyeY: 0.5, mouth: 'dash', feel: 'sad' }),
+  disappointed: face('😞 Down', { spacing: 0.32, elevation: 0.05, eyeY: 0.76, mouth: 'frown', feel: 'sad' }),
+  cry: face('😭 Cry', { spacing: 0.3, elevation: 0.04, eyeY: 0.22, eyeX: 1.26, mouth: 'oh', tears: 2, feel: 'sad' }),
+  weary: face('😩 Weary', { spacing: 0.32, elevation: 0.05, lTilt: 0.22, rTilt: -0.22, eyeY: 0.38, eyeX: 1.22, mouth: 'oh', feel: 'sad' }),
+  pleading: face('🥺 Plead', { spacing: 0.44, elevation: 0.15, eyeY: 0.88, eyeX: 1.5, mouth: 'small', blush: true, feel: 'sad' }),
+  worried: face('😟 Worry', { spacing: 0.36, elevation: 0.1, lTilt: 0.18, rTilt: -0.18, eyeY: 0.92, mouth: 'frown', feel: 'sad' }),
+  confused: face('😕 Confused', { spacing: 0.4, elevation: 0.2, eyeY: 0.7, lTilt: 0.38, rTilt: -0.06, mouth: 'frown', feel: 'confused' }),
 
-  wow: face('😮 Wow', { tilt: 0, spacing: 0.4, elevation: 0.14, eyeY: 0.55, eyeX: 1.55, mouth: 'oh', blink: false, feel: 'wow' }),
-  hushed: face('😯 Hushed', { tilt: 2, spacing: 0.36, elevation: 0.12, eyeY: 0.68, eyeX: 1.28, mouth: 'oh', blink: false, feel: 'wow' }),
-  flushed: face('😳 Flush', { tilt: 4, spacing: 0.4, elevation: 0.14, eyeY: 0.74, eyeX: 1.42, mouth: 'oh', blush: true, blink: false, feel: 'wow' }),
-  gasp: face('😲 Gasp', { tilt: -4, spacing: 0.42, elevation: 0.17, eyeY: 0.46, eyeX: 1.62, mouth: 'oh', blink: false, feel: 'wow' }),
-  dizzy: face('😵 Dizzy', { tilt: 6, spacing: 0.4, elevation: 0.12, eye: 'x', mouth: 'oh', blink: false, feel: 'wow' }),
+  wow: face('😮 Wow', { spacing: 0.4, elevation: 0.14, eyeY: 0.55, eyeX: 1.55, mouth: 'oh', blink: false, feel: 'wow' }),
+  hushed: face('😯 Hushed', { spacing: 0.36, elevation: 0.12, eyeY: 0.68, eyeX: 1.28, mouth: 'oh', blink: false, feel: 'wow' }),
+  flushed: face('😳 Flush', { spacing: 0.4, elevation: 0.14, eyeY: 0.74, eyeX: 1.42, mouth: 'oh', blush: true, blink: false, feel: 'wow' }),
+  gasp: face('😲 Gasp', { spacing: 0.42, elevation: 0.17, eyeY: 0.46, eyeX: 1.62, mouth: 'oh', blink: false, feel: 'wow' }),
+  dizzy: face('😵 Dizzy', { spacing: 0.4, elevation: 0.12, eye: 'x', mouth: 'oh', blink: false, feel: 'wow' }),
   woozy: face('🥴 Woozy', {
-    tilt: 12,
     spacing: 0.4,
     elevation: 0.1,
     lTilt: 0.36,
@@ -198,16 +229,16 @@ export const EXPRESSIONS = {
     mouth: 'wavy',
     feel: 'zany',
   }),
-  nauseous: face('🤢 Sick', { tilt: 16, spacing: 0.3, elevation: 0.03, eyeY: 0.4, mouth: 'wavy', feel: 'sad' }),
-  hot: face('🥵 Hot', { tilt: 4, spacing: 0.34, elevation: 0.1, eyeY: 0.56, eyeX: 1.28, mouth: 'tongue', feel: 'wow' }),
-  cold: face('🥶 Cold', { tilt: 8, spacing: 0.4, elevation: 0.12, eyeY: 0.72, eyeX: 1.22, mouth: 'grimace', feel: 'scared' }),
+  nauseous: face('🤢 Sick', { spacing: 0.3, elevation: 0.03, eyeY: 0.4, mouth: 'wavy', feel: 'sad' }),
+  hot: face('🥵 Hot', { spacing: 0.34, elevation: 0.1, eyeY: 0.56, eyeX: 1.28, mouth: 'tongue', feel: 'wow' }),
+  cold: face('🥶 Cold', { spacing: 0.4, elevation: 0.12, eyeY: 0.72, eyeX: 1.22, mouth: 'grimace', feel: 'scared' }),
 
-  scared: face('😨 Scared', { tilt: 6, spacing: 0.46, elevation: 0.16, lTilt: -0.14, rTilt: 0.14, eyeY: 0.76, eyeX: 1.32, mouth: 'oh', blink: false, feel: 'scared' }),
-  scream: face('😱 Scream', { tilt: 4, spacing: 0.5, elevation: 0.18, eyeY: 0.58, eyeX: 1.58, mouth: 'oh', blink: false, feel: 'scared' }),
+  scared: face('😨 Scared', { spacing: 0.46, elevation: 0.16, lTilt: -0.14, rTilt: 0.14, eyeY: 0.76, eyeX: 1.32, mouth: 'oh', blink: false, feel: 'scared' }),
+  scream: face('😱 Scream', { spacing: 0.5, elevation: 0.18, eyeY: 0.58, eyeX: 1.58, mouth: 'oh', blink: false, feel: 'scared' }),
 
-  angry: face('😠 Angry', { tilt: 0, spacing: 0.3, elevation: 0.1, lTilt: 0.44, rTilt: -0.44, eyeY: 0.9, eyeX: 1.1, mouth: 'frown', feel: 'angry' }),
-  rage: face('😡 Rage', { tilt: 4, spacing: 0.28, elevation: 0.1, lTilt: 0.56, rTilt: -0.56, eyeY: 0.8, eyeX: 1.16, mouth: 'frown', feel: 'angry' }),
-  steam: face('😤 Steam', { tilt: 2, spacing: 0.3, elevation: 0.08, lTilt: 0.4, rTilt: -0.4, eyeY: 0.46, eyeX: 1.18, mouth: 'dash', feel: 'angry' }),
+  angry: face('😠 Angry', { spacing: 0.3, elevation: 0.1, lTilt: 0.44, rTilt: -0.44, eyeY: 0.9, eyeX: 1.1, mouth: 'frown', feel: 'angry' }),
+  rage: face('😡 Rage', { spacing: 0.28, elevation: 0.1, lTilt: 0.56, rTilt: -0.56, eyeY: 0.8, eyeX: 1.16, mouth: 'frown', feel: 'angry' }),
+  steam: face('😤 Steam', { spacing: 0.3, elevation: 0.08, lTilt: 0.4, rTilt: -0.4, eyeY: 0.46, eyeX: 1.18, mouth: 'dash', feel: 'angry' }),
 };
 
 export const ANIMATIONS = {
@@ -236,33 +267,86 @@ export const ANIMATIONS = {
 
 const MOVED = new Set(Object.keys(ANIMATIONS).filter((id) => id !== 'none'));
 
+function octoShape(label, extra = {}) {
+  const curve = extra.curve || [0.2, -0.26, 0.18, 0.42, -0.5, 0.32, 0.4, -0.22, 0.42];
+  return {
+    label,
+    kind: 'octopus',
+    form: extra.form || 'round',
+    attach: [0.4, -0.88, 0.82],
+    into: -0.88,
+    r0: 0.2,
+    r1: 0.05,
+    arms: 8,
+    skipFront: 0.78,
+    segs: 48,
+    radial: 20,
+    taper: 2.15,
+    ...extra,
+    back: curve,
+    flare: extra.flare || curve,
+    hang: extra.hang || curve,
+  };
+}
+
+function mantle(label, extra = {}) {
+  return octoShape(label, {
+    form: 'mantle',
+    attach: [0.32, -0.92, 0.88],
+    curve: [0.18, -0.24, 0.16, 0.38, -0.48, 0.28, 0.42, -0.12, 0.34],
+    tall: 1.04,
+    belly: 0.08,
+    crown: 0.03,
+    ...extra,
+  });
+}
+
 export const BODIES = {
-  smooth: { label: 'Smooth', kind: 'octopus' },
+  mantle: mantle('Mantle'),
+  tall: mantle('Tall', { tall: 1.14, belly: 0.06, crown: 0.04, attach: [0.3, -0.93, 0.88] }),
+  chubby: mantle('Chubby', {
+    tall: 1.0,
+    belly: 0.16,
+    crown: 0.02,
+    r0: 0.24,
+    r1: 0.06,
+    attach: [0.36, -0.9, 0.86],
+  }),
+  slim: mantle('Slim', { tall: 1.1, belly: 0.04, crown: 0.04, r0: 0.17, attach: [0.28, -0.93, 0.88] }),
+  soft: mantle('Soft', { tall: 1.02, belly: 0.08, crown: 0.01, attach: [0.34, -0.9, 0.86] }),
+  rounder: mantle('Rounder', { tall: 1.0, belly: 0.04, crown: 0.0, attach: [0.34, -0.9, 0.86] }),
+  short: mantle('Short', {
+    tall: 1.02,
+    crown: 0.02,
+    attach: [0.34, -0.9, 0.88],
+    curve: [0.16, -0.18, 0.14, 0.3, -0.34, 0.22, 0.32, -0.06, 0.26],
+  }),
+  long: mantle('Long', {
+    tall: 1.04,
+    attach: [0.3, -0.93, 0.88],
+    curve: [0.16, -0.3, 0.16, 0.32, -0.68, 0.26, 0.28, -0.42, 0.28],
+  }),
+  curl: mantle('Curl', {
+    tall: 1.04,
+    attach: [0.32, -0.92, 0.86],
+    curve: [0.2, -0.2, 0.18, 0.4, -0.28, 0.3, 0.46, 0.16, 0.22],
+  }),
+  plush: mantle('Plush', {
+    tall: 1.02,
+    belly: 0.14,
+    crown: 0.02,
+    r0: 0.26,
+    r1: 0.068,
+    taper: 1.9,
+    attach: [0.36, -0.9, 0.86],
+  }),
 };
 
 export function isOctopusBody() {
   return true;
 }
 
-const OCTO = {
-  smooth: {
-    hip: false,
-    attach: [0.5, -0.6, 0.9],
-    into: -0.58,
-    r0: 0.175,
-    flareR0: 0.175,
-    r1: 0.042,
-    flareAt: 2,
-    hangAt: 2,
-    knob: 0,
-    cap: false,
-    segs: 28,
-    taper: 3.1,
-    flare: [0.32, -0.16, 0.32, 0.72, -0.02, 0.72, 0.9, 0.12, 0.8],
-    hang: [0.32, -0.16, 0.32, 0.72, -0.02, 0.72, 0.9, 0.12, 0.8],
-    back: [0.32, -0.16, 0.32, 0.72, -0.02, 0.72, 0.9, 0.12, 0.8],
-  },
-};
+const OCTO = BODIES;
 
 /**
  * Procedural OctoBot — Smooth octopus body, emoji faces, looping motions.
@@ -281,7 +365,9 @@ export class GrokBot extends THREE.Group {
     this.expression = 'neutral';
     this._feel = 'neutral';
     this.animation = 'none';
-    this.bodyType = 'smooth';
+    this.bodyType = 'mantle';
+    this.bodyScale = new THREE.Vector3(1, 1, 1);
+    this._bodySpec = null;
 
     this._blink = 1;
     this._blinkTo = 1;
@@ -304,13 +390,13 @@ export class GrokBot extends THREE.Group {
 
     this.bodyMaterial = new THREE.MeshPhysicalMaterial({
       color: opts.color,
-      roughness: 0.3,
+      roughness: 0.36,
       metalness: 0,
-      clearcoat: 0.32,
-      clearcoatRoughness: 0.22,
-      sheen: 0.12,
+      clearcoat: 0.14,
+      clearcoatRoughness: 0.62,
+      sheen: 0.2,
       sheenColor: 0xffffff,
-      envMapIntensity: 0.85,
+      envMapIntensity: 0,
     });
 
     this.eyeMaterial = new THREE.MeshBasicMaterial({ color: 0x111111 });
@@ -346,7 +432,7 @@ export class GrokBot extends THREE.Group {
     this._tentacleProfile = null;
     this._arms = [];
     this.setExpression('neutral');
-    this.setBody('smooth');
+    this.setBody(opts.body || 'mantle');
 
     this.userData.parts = {
       body: this.body,
@@ -365,7 +451,7 @@ export class GrokBot extends THREE.Group {
     this._eyeGeometry = new THREE.CapsuleGeometry(eyeRadius, eyeLength, 8, 20);
     this._eyeGeos = {
       stadium: this._eyeGeometry,
-      round: new THREE.SphereGeometry(r * 0.095, 16, 12),
+      round: new THREE.SphereGeometry(r * 0.11, 20, 16),
       crescent: new THREE.TubeGeometry(
         new THREE.QuadraticBezierCurve3(
           new THREE.Vector3(-0.085, 0.026, 0),
@@ -464,7 +550,8 @@ export class GrokBot extends THREE.Group {
     const r = this.radius;
     const put = (mesh, x, y) => {
       const dir = new THREE.Vector3(x, y, 1).normalize();
-      mesh.position.copy(dir).multiplyScalar(r + r * 0.012);
+      mesh.position.copy(this._surfacePoint(dir));
+      mesh.position.addScaledVector(mesh.position.clone().normalize(), r * 0.02);
       mesh.lookAt(dir.clone().multiplyScalar(2));
     };
     put(this.blushL, -0.46, -0.1);
@@ -627,75 +714,126 @@ export class GrokBot extends THREE.Group {
     this._tentacleProfile = null;
   }
 
+  _shapeVertex(v, spec) {
+    const r = this.radius;
+    const ny = THREE.MathUtils.clamp(v.y / r, -1, 1);
+    const form = spec?.form || 'round';
+    if (form === 'round') return v;
+    if (form === 'pear') {
+      const belly = THREE.MathUtils.smoothstep(-ny, -0.05, 0.75);
+      const pinch = THREE.MathUtils.smoothstep(ny, 0.15, 0.95);
+      const s = 1 + 0.24 * belly - 0.1 * pinch;
+      v.x *= s;
+      v.z *= s;
+      v.y *= 1.08 + 0.06 * ny;
+      return v;
+    }
+    if (form === 'egg') {
+      const s = 1.06 - 0.22 * ny;
+      v.x *= s;
+      v.z *= s;
+      v.y *= 1.16 + 0.08 * ny;
+      return v;
+    }
+    if (form === 'squat') {
+      v.y *= 0.78;
+      const s = 1.2 + 0.1 * (1 - ny * ny);
+      v.x *= s;
+      v.z *= s * 0.96;
+      return v;
+    }
+    if (form === 'wide') {
+      v.x *= 1.3;
+      v.z *= 1.08;
+      v.y *= 0.86;
+      return v;
+    }
+    if (form === 'compact') {
+      v.y *= 0.92;
+      v.x *= 1.04;
+      v.z *= 1.04;
+      return v;
+    }
+    if (form === 'mantle') {
+      const bellyAmt = spec.belly ?? 0.08;
+      const crownAmt = spec.crown ?? 0.03;
+      const tall = spec.tall ?? 1.04;
+      const belly = THREE.MathUtils.smoothstep(-ny, 0, 0.85);
+      const crown = THREE.MathUtils.smoothstep(ny, 0.4, 1);
+      const s = 1 + bellyAmt * belly - crownAmt * crown;
+      v.x *= s;
+      v.z *= s;
+      v.y *= tall + 0.015 * ny;
+      return v;
+    }
+    if (form === 'bean') {
+      v.z *= 0.8;
+      v.x *= 1.12;
+      v.x += r * 0.1 * ny * ny;
+      v.y *= 1.06;
+      return v;
+    }
+    return v;
+  }
+
+  _rebuildBody(spec) {
+    if (this._bodyGeo) this._bodyGeo.dispose();
+    const geo = new THREE.SphereGeometry(this.radius, 80, 56);
+    const pos = geo.attributes.position;
+    const v = new THREE.Vector3();
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i);
+      this._shapeVertex(v, spec);
+      pos.setXYZ(i, v.x, v.y, v.z);
+    }
+    geo.computeVertexNormals();
+    this.body.geometry.dispose();
+    this.body.geometry = geo;
+    this._bodyGeo = geo;
+    this.body.scale.set(1, 1, 1);
+  }
+
+  _surfacePoint(dir) {
+    const v = dir.clone().normalize().multiplyScalar(this.radius);
+    this._shapeVertex(v, this._bodySpec);
+    return v;
+  }
+
   _buildTentacles(profileName) {
-    const spec = OCTO[profileName] || OCTO.smooth;
+    const spec = OCTO[profileName] || OCTO.mantle;
     this.tentacles = new THREE.Group();
     this.tentacles.name = 'GrokBot_Tentacles';
     this.add(this.tentacles);
     this._tentacleProfile = profileName;
     if (this.userData.parts) this.userData.parts.tentacles = this.tentacles;
+    this._uniBase = null;
 
     const r = this.radius;
     this._tentacleGeos = [];
-    this._tipGeo = new THREE.SphereGeometry(r * (spec.r1 + 0.016), 14, 12);
-    this._rootGeo = new THREE.SphereGeometry(r * 0.2, 16, 12);
-    this._tentacleGeos.push(this._tipGeo, this._rootGeo);
     this._arms = [];
-
-    if (spec.hip) {
-      const hip = new THREE.Mesh(new THREE.SphereGeometry(r * spec.hip[0], 28, 18), this.bodyMaterial);
-      hip.name = 'GrokBot_Hip';
-      hip.position.y = r * spec.hip[1];
-      hip.scale.set(spec.hip[2], spec.hip[3], spec.hip[4]);
-      hip.castShadow = true;
-      this.tentacles.add(hip);
-      this._tentacleGeos.push(hip.geometry);
-    }
-
-    const segs = spec.segs || 18;
-    const taper = spec.taper || 2.6;
-    const list = spec.layout || this._evenArms(spec);
+    const list = this._evenArms(spec);
+    const segs = spec.segs || 48;
+    const radial = spec.radial || 20;
+    const taper = spec.taper || 2.15;
     for (let i = 0; i < list.length; i++) {
-      const arm = list[i];
-      const angle = arm.angle;
+      const angle = list[i].angle;
       const sx = Math.sin(angle);
       const cz = Math.cos(angle);
-      const kind = arm.kind || 'back';
-      const ring = arm.ring ?? spec.attach[0];
-      const y = arm.y ?? spec.attach[1];
-      const on = arm.on ?? spec.attach[2];
-      const attach = new THREE.Vector3(sx * ring, y, cz * ring).normalize().multiplyScalar(r * on);
+      const kind = list[i].kind || 'back';
+      const dir = new THREE.Vector3(sx * spec.attach[0], spec.attach[1], cz * spec.attach[0]).normalize();
+      const attach = this._surfacePoint(dir);
       const root = new THREE.Group();
       root.position.copy(attach);
-
       const into = attach.clone().multiplyScalar(spec.into);
-      const [p1, p2, p3] = this._pts(r, sx, cz, arm.curve || spec[kind]);
+      const [p1, p2, p3] = this._pts(r, sx, cz, spec[kind] || spec.back);
       const curve = new THREE.CubicBezierCurve3(into, p1, p2, p3);
-      const r0 = r * (arm.r0 ?? (kind === 'flare' ? spec.flareR0 : spec.r0));
-      const r1 = r * (arm.r1 ?? spec.r1);
-      const armGeo = taperedTube(curve, segs, 10, r0, r1, taper);
+      const r0 = r * spec.r0;
+      const r1 = r * spec.r1;
+      const armGeo = taperedTube(curve, segs, radial, r0, r1, taper);
       this._tentacleGeos.push(armGeo);
-
-      if (spec.knob) {
-        const knob = new THREE.Mesh(this._rootGeo, this.bodyMaterial);
-        knob.position.copy(into).multiplyScalar(0.25);
-        knob.scale.setScalar(spec.knob);
-        knob.castShadow = true;
-        root.add(knob);
-      }
-
       const shaft = new THREE.Mesh(armGeo, this.bodyMaterial);
       shaft.castShadow = true;
       root.add(shaft);
-
-      if (spec.cap !== false) {
-        const cap = new THREE.Mesh(this._tipGeo, this.bodyMaterial);
-        cap.position.copy(p3);
-        cap.scale.setScalar(r1 / (this.radius * (spec.r1 + 0.016)) || 1);
-        cap.castShadow = true;
-        root.add(cap);
-      }
-
       this.tentacles.add(root);
       this._arms.push({ root, index: i, angle, kind, sx, cz });
     }
@@ -708,7 +846,7 @@ export class GrokBot extends THREE.Group {
       const angle = (i / count) * Math.PI * 2;
       const sx = Math.sin(angle);
       const cz = Math.cos(angle);
-      if (cz > 0.82) continue;
+      if (cz > (spec.skipFront ?? 0.78)) continue;
       let kind = 'back';
       if (Math.abs(sx) > spec.flareAt) kind = 'flare';
       else if (cz > spec.hangAt) kind = 'hang';
@@ -717,13 +855,19 @@ export class GrokBot extends THREE.Group {
     return rows;
   }
 
-  setBody() {
-    this.bodyType = 'smooth';
-    if (this._tentacleProfile !== 'smooth') {
+  setBody(name) {
+    this.bodyType = BODIES[name] ? name : 'mantle';
+    const spec = OCTO[this.bodyType] || OCTO.mantle;
+    this._bodySpec = spec;
+    this.bodyScale.set(1, 1, 1);
+    if (this._tentacleProfile !== this.bodyType) {
+      this._rebuildBody(spec);
       this._clearTentacles();
-      this._buildTentacles('smooth');
+      this._buildTentacles(this.bodyType);
     }
     if (this.tentacles) this.tentacles.visible = true;
+    this.setExpression(this.expression);
+    this._placeCheeks();
     return this.bodyType;
   }
 
@@ -734,7 +878,8 @@ export class GrokBot extends THREE.Group {
     _long.set(0, 1, 0).addScaledVector(_normal, -_long.dot(_normal)).normalize();
     _right.crossVectors(_long, _normal).normalize();
     _long.crossVectors(_normal, _right).normalize();
-    mesh.position.copy(face).multiplyScalar(r + r * 0.01);
+    mesh.position.copy(this._surfacePoint(face));
+    mesh.position.addScaledVector(mesh.position.clone().normalize(), r * 0.03);
 
     if (kind === 'dash') {
       _eyeLong.copy(_long).negate();
@@ -747,7 +892,7 @@ export class GrokBot extends THREE.Group {
     mesh.quaternion.setFromRotationMatrix(_basis);
   }
 
-  placeEyes({ tilt = -22, spacing = 0.34, elevation = 0.1, lTilt = 0, rTilt = 0 } = {}) {
+  placeEyes({ tilt = 0, spacing = 0.34, elevation = 0.1, lTilt = 0, rTilt = 0 } = {}) {
     const r = this.radius;
     const face = _face.set(0, elevation, 1).normalize();
     const tiltRad = THREE.MathUtils.degToRad(tilt);
@@ -765,7 +910,8 @@ export class GrokBot extends THREE.Group {
 
   _seatEye(mesh, face, offset, radius, extraTilt = 0) {
     _dir.copy(face).addScaledVector(_right, offset / radius).normalize();
-    mesh.position.copy(_dir).multiplyScalar(radius + radius * 0.006);
+    mesh.position.copy(this._surfacePoint(_dir));
+    mesh.position.addScaledVector(mesh.position.clone().normalize(), radius * 0.04);
 
     _normal.copy(_dir);
     _eyeLong.copy(_long).addScaledVector(_normal, -_long.dot(_normal)).normalize();
@@ -1344,12 +1490,9 @@ export class GrokBot extends THREE.Group {
     this._updateTentacles(t, lift);
   }
 
-  _updateTentacles(t, lift = 0) {
-    if (!isOctopusBody(this.bodyType) || !this._arms) return;
+  _updateTentacles(t) {
+    if (!this._arms?.length || this._arms[0].root == null) return;
     const anim = this.animation;
-    const hop = this.position.y / this.radius - lift;
-    const squash = Math.max(0, 1 - this.scale.y);
-
     for (const arm of this._arms) {
       const phase = t * 1.7 + arm.index * 0.7;
       const wave = Math.sin(phase);
@@ -1357,46 +1500,24 @@ export class GrokBot extends THREE.Group {
       let wiggle = wave * 0.06;
       let tip = 0;
       let droop = 0;
-
-      if (anim === 'none') {
-        wiggle = 0;
-      } else if (anim === 'sleep') {
+      if (anim === 'none') wiggle = 0;
+      else if (anim === 'sleep') {
         droop = 0.14;
         wiggle = Math.sin(t * 0.24 + arm.index) * 0.03;
-      } else if (anim === 'bounce' || anim === 'excited' || anim === 'hop' || anim === 'cheer') {
-        const up = Math.max(0, hop);
-        splay = 0.08 + squash * 0.32 + up * 0.2;
-        tip = up * 0.4 - squash * 0.28;
-        wiggle = wave * 0.06;
       } else if (anim === 'dance' || anim === 'wiggle') {
-        splay = 0.16 + Math.sin(phase * 1.6) * 0.14;
-        tip = Math.sin(phase * 1.8) * 0.28;
-        wiggle = Math.sin(phase * 1.4) * 0.18;
-      } else if (anim === 'spin' || anim === 'twirl') {
-        splay = 0.28;
-        tip = -0.22;
-        wiggle = 0.14;
-      } else if (anim === 'shake' || anim === 'shiver') {
-        wiggle = Math.sin(t * (anim === 'shiver' ? 18 : 10) + arm.index) * 0.18;
-      } else if (anim === 'float' || anim === 'sway' || anim === 'idle') {
-        splay = 0.08 + Math.sin(t * 0.4 + arm.index * 0.4) * 0.06;
-        tip = wave * 0.12;
-      } else if (anim === 'stretch') {
-        droop = -0.12;
-        splay = 0.2;
-        tip = 0.16;
-      } else if (anim === 'peek') {
-        wiggle = wave * 0.08;
-        splay = 0.1;
-      } else if (anim === 'pulse') {
-        splay = 0.06 + squash * 0.2;
+        splay = 0.14;
+        tip = Math.sin(phase * 1.6) * 0.2;
+        wiggle = wave * 0.14;
+      } else if (anim === 'spin' || anim === 'twirl') splay = 0.22;
+      else if (anim === 'shake' || anim === 'shiver') wiggle = Math.sin(t * 12 + arm.index) * 0.16;
+      else if (anim === 'idle' || anim === 'float' || anim === 'sway') {
+        splay = 0.06;
+        tip = wave * 0.08;
       }
-
-      const out = splay * (arm.kind === 'hang' ? 0.45 : 0.75);
       arm.root.rotation.set(
-        -droop + (arm.kind === 'hang' ? -splay * 0.22 : splay * 0.08) + wave * 0.03 + tip * 0.08,
-        arm.sx * wiggle * 0.22,
-        arm.sx * out * 0.32 + wiggle * 0.18,
+        -droop + splay * 0.08 + tip * 0.08,
+        arm.sx * wiggle * 0.2,
+        arm.sx * splay * 0.28 + wiggle * 0.16,
       );
     }
   }

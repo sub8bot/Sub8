@@ -33,6 +33,14 @@ export function parseSchedule(text) {
   return null;
 }
 
+export function looksLikeChatLine(text) {
+  const t = String(text || "").trim();
+  if (!t) return true;
+  if (t.length < 220 && !t.includes("\n")) return true;
+  if (/^(ok|okay|hey|please|resume|continue|wtf|don't|dont|you should)\b/i.test(t) && t.length < 500) return true;
+  return false;
+}
+
 export function looksLikeSchedule(text) {
   const t = String(text || "");
   if (/\b(update|edit|change|rewrite|which|list|have|having)\b.{0,40}\b(routine|cron|schedule)\b/i.test(t)) return false;
@@ -60,8 +68,15 @@ export function upsertRoutine(bot, spec) {
   const existing = byId || (!spec.forceNew && primary) || sameGroup;
   if (existing) {
     if (text) {
-      if (spec.replace === false && existing.instruction) {
-        if (!existing.instruction.includes(text)) existing.instruction = `${existing.instruction.trim()}\n\n${text}`;
+      const prev = existing.instruction || "";
+      const casual = looksLikeChatLine(text);
+      if (prev.length > 400 && casual && spec.forceReplace !== true) {
+        existing.updatedAt = Date.now();
+        if (typeof spec.enabled === "boolean") existing.enabled = spec.enabled;
+        return { routine: existing, merged: true, rejected: "kept standing brief (refused casual rewrite)" };
+      }
+      if (spec.replace === false && prev) {
+        if (!prev.includes(text)) existing.instruction = `${prev.trim()}\n\n${text}`;
       } else {
         existing.instruction = text;
       }

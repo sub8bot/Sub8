@@ -3,6 +3,90 @@ import { ANIMATIONS, BODIES, EXPRESSIONS, GrokBot } from "./grok-bot.js";
 
 export { ANIMATIONS, BODIES, EXPRESSIONS };
 
+export const LOOK_DEFAULTS = {
+  gloss: 1,
+  coat: 0.02,
+  coatSoft: 1,
+  shineSize: 0.28,
+  shineBlur: 0.5,
+  highlights: 2,
+  shineX: 1,
+  shineY: 0.76,
+  shine2X: 0,
+  shine2Y: 0.59,
+  sheen: 0.26,
+  ambient: 1,
+  key: 0.43,
+  fill: 1,
+  punch: 0.13,
+};
+
+let lookTune = { ...LOOK_DEFAULTS };
+try {
+  const saved = JSON.parse(localStorage.getItem("octobot-catalog") || "null");
+  if (saved?.look && typeof saved.look === "object") {
+    lookTune = { ...LOOK_DEFAULTS, ...saved.look };
+    lookTune.highlights = Math.min(2, Math.max(1, Number(lookTune.highlights) || 1));
+  }
+} catch {
+  /* ignore */
+}
+
+export function getLookTune() {
+  return { ...lookTune };
+}
+
+export function setLookTune(partial) {
+  lookTune = { ...lookTune, ...partial };
+  for (const view of views.values()) {
+    if (view.color) applyBodyLook(view.bot, lookForColor(view.color));
+    applyLookToView(view);
+  }
+}
+
+function applyLookToView(view) {
+  applyMaterialTune(view.bot);
+  if (view.lights) {
+    if (view.lights.ambient) view.lights.ambient.intensity = lookTune.ambient;
+    if (view.lights.hemi) view.lights.hemi.intensity = Math.max(0.35, lookTune.ambient + 0.25);
+    if (view.lights.fill) view.lights.fill.intensity = lookTune.fill;
+    if (view.lights.shine) {
+      placeShinePoint(view.lights.shine, lookTune.shineX, lookTune.shineY, lookTune.key);
+    }
+    if (view.lights.shine2) {
+      const on = lookTune.highlights >= 2;
+      placeShinePoint(view.lights.shine2, lookTune.shine2X, lookTune.shine2Y, on ? lookTune.key * 0.7 : 0);
+    }
+  }
+}
+
+function applyMaterialTune(bot) {
+  const m = bot?.bodyMaterial;
+  if (!m) return;
+  const blur = lookTune.shineBlur;
+  const dual = lookTune.highlights >= 2;
+  if ("roughness" in m) m.roughness = 0.1 + blur * 0.62;
+  if ("clearcoat" in m) m.clearcoat = dual ? lookTune.coat : Math.min(lookTune.coat, 0.08);
+  if ("clearcoatRoughness" in m) m.clearcoatRoughness = 0.08 + blur * 0.78 + lookTune.coatSoft * 0.08;
+  if ("sheen" in m) m.sheen = lookTune.sheen;
+}
+
+function makeShinePoint(scene) {
+  const light = new THREE.PointLight(0xfff6ee, 0, 16, 1.35);
+  scene.add(light);
+  return light;
+}
+
+function placeShinePoint(light, nx, ny, strength) {
+  const dist = 3.35 - lookTune.shineSize * 1.85;
+  const x = (nx - 0.5) * 2.8;
+  const y = -0.05 + ny * 2.25;
+  const z = Math.sqrt(Math.max(0.55, dist * dist - x * x * 0.35 - y * y * 0.2));
+  light.position.set(x, y, z);
+  light.intensity = Math.max(0, strength) * dist * dist * (0.16 + lookTune.gloss * 0.18);
+  light.distance = 16;
+}
+
 const views = new Map();
 let renderer = null;
 let last = performance.now();
@@ -37,7 +121,8 @@ const RE = {
 export function defaultAvatar(partial = {}) {
   const expression = EXPRESSIONS[partial.expression] ? partial.expression : "neutral";
   const animation = ANIMATIONS[partial.animation] ? partial.animation : "idle";
-  return { expression, animation, body: "smooth" };
+  const body = BODIES[partial.body] ? partial.body : "mantle";
+  return { expression, animation, body };
 }
 
 export function inferMood(bot, { preview } = {}) {
@@ -146,19 +231,18 @@ function ensureRenderer() {
 
 function createView(item) {
   const scene = new THREE.Scene();
-  scene.add(new THREE.HemisphereLight(0xffffff, 0xffe8d2, 1.05));
-  const key = new THREE.DirectionalLight(0xffffff, 0.85);
-  key.position.set(2.2, 2.6, 3.4);
-  scene.add(key);
-  const fill = new THREE.DirectionalLight(0xfff4ea, 0.42);
-  fill.position.set(-2.8, 0.45, 1.2);
-  scene.add(fill);
-  const rim = new THREE.DirectionalLight(0xffffff, 0.28);
-  rim.position.set(0.2, 1.1, -2.6);
-  scene.add(rim);
+  const ambient = new THREE.AmbientLight(0xffffff, lookTune.ambient);
+  const hemi = new THREE.HemisphereLight(0xffffff, 0xe8d8cc, Math.max(0.35, lookTune.ambient + 0.25));
+  const fill = new THREE.DirectionalLight(0xeef2ff, lookTune.fill);
+  fill.position.set(-2.2, 0.6, 2.0);
+  scene.add(ambient, hemi, fill);
+  const shine = makeShinePoint(scene);
+  const shine2 = makeShinePoint(scene);
+  placeShinePoint(shine, lookTune.shineX, lookTune.shineY, lookTune.key);
+  placeShinePoint(shine2, lookTune.shine2X, lookTune.shine2Y, lookTune.highlights >= 2 ? lookTune.key * 0.7 : 0);
 
   const look = lookForColor(item.color);
-  const body = "smooth";
+  const body = item.body && BODIES[item.body] ? item.body : "mantle";
   const bot = new GrokBot({ radius: 1, color: look.body, eyeColor: look.eye, body });
   applyBodyLook(bot, look);
   scene.add(bot);
@@ -187,13 +271,14 @@ function createView(item) {
     framing: item.framing || "icon",
     body,
     moodKey: "",
+    lights: { ambient, hemi, fill, shine, shine2 },
   };
 }
 
 function frameCamera(camera, framing, body) {
   if (framing === "body") {
-    camera.position.set(0, 0.1, 7.15);
-    camera.lookAt(0, -0.08, 0);
+    camera.position.set(0, 0.08, 7.6);
+    camera.lookAt(0, -0.12, 0);
     return;
   }
   if (framing === "face") {
@@ -212,11 +297,11 @@ function applyView(view, item) {
     sizeCanvas(view.canvas, size);
   }
   const framing = item.framing || "icon";
-  const body = "smooth";
+  const body = item.body && BODIES[item.body] ? item.body : "mantle";
   if (framing !== view.framing || body !== view.body) {
     view.framing = framing;
     view.body = body;
-    view.bot.setBody();
+    view.bot.setBody(body);
     frameCamera(view.camera, framing, body);
   }
   if (item.color && item.color !== view.color) {
@@ -243,7 +328,7 @@ function sizeCanvas(canvas, css) {
 
 function lookForColor(hex) {
   const fallback = {
-    body: 0xb06dd1,
+    body: 0xc44dff,
     eye: 0x111111,
     dark: false,
     blush: 0xffb3c6,
@@ -255,9 +340,10 @@ function lookForColor(hex) {
   try {
     const tint = new THREE.Color(hex);
     const luma = 0.2126 * tint.r + 0.7152 * tint.g + 0.0722 * tint.b;
-    const dark = luma < 0.38;
+    const dark = luma < 0.28;
     const body = tint.clone();
-    if (!dark) body.offsetHSL(0, 0.02, 0.02);
+    if (!dark) body.offsetHSL(0, lookTune.punch, 0.05);
+    else body.offsetHSL(0, lookTune.punch * 0.5, 0.04);
     return {
       body: body.getHex(),
       eye: dark ? 0xf4f4f5 : 0x111111,
@@ -275,9 +361,9 @@ function lookForColor(hex) {
 function applyBodyLook(bot, look) {
   bot.bodyMaterial.color.set(look.body);
   bot.eyeMaterial.color.set(look.eye);
-  bot.bodyMaterial.sheenColor.set(look.dark ? 0x94a3b8 : look.body);
-  bot.bodyMaterial.sheen = look.dark ? 0.06 : 0.08;
-  bot.bodyMaterial.clearcoat = look.dark ? 0.22 : 0.18;
+  if ("metalness" in bot.bodyMaterial) bot.bodyMaterial.metalness = 0;
+  if ("sheenColor" in bot.bodyMaterial) bot.bodyMaterial.sheenColor.set(look.body);
+  applyMaterialTune(bot);
   if (bot.blushMaterial) {
     bot.blushMaterial.color.set(look.blush || 0xffb4c8);
     bot.blushMaterial.opacity = look.dark ? 0.78 : 0.7;
@@ -327,6 +413,23 @@ export function bodyList() {
 
 export function faceList() {
   return Object.entries(EXPRESSIONS).map(([id, exp]) => ({ id, label: exp.label }));
+}
+
+const HAPPY_FACES = ["happy", "blush", "grin", "beam", "laugh", "joy", "party", "hug", "wink", "love", "hearts", "star", "yum"];
+const HAPPY_ANIMS = ["bounce", "cheer", "pulse", "excited"];
+
+export function isSleepingMood(mood) {
+  const e = mood?.expression || "";
+  const a = mood?.animation || "";
+  return a === "sleep" || e === "sleepy" || e === "sleep" || e === "yawn" || e === "drool";
+}
+
+export function randomWakeMood() {
+  const faces = HAPPY_FACES.filter((id) => EXPRESSIONS[id]);
+  const anims = HAPPY_ANIMS.filter((id) => ANIMATIONS[id]);
+  const expression = faces[Math.floor(Math.random() * faces.length)] || "happy";
+  const animation = anims[Math.floor(Math.random() * anims.length)] || "bounce";
+  return defaultAvatar({ expression, animation });
 }
 
 export function animList() {

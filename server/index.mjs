@@ -6,6 +6,7 @@ import * as store from "./store.mjs";
 import * as vm from "./vm.mjs";
 import * as routines from "./routines.mjs";
 import { runTurn, publicBot, pingHarness, webSearch, orchestratorReply, isChatQuestion } from "./agent.mjs";
+import { setHumanControl, isHumanControl } from "./control.mjs";
 import { appRoot, dataDir } from "./paths.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -100,6 +101,7 @@ app.get("/api/settings", async (_req, res) => {
   res.json({
     settings: safe,
     hasEnvKey: Boolean(process.env.XAI_API_KEY),
+    hasGrokAuth: await vm.hostHasGrokAuth(),
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   });
 });
@@ -191,6 +193,24 @@ app.post("/api/bots", async (req, res) => {
   broadcast("bots", (await store.loadBots()).map(toClient));
   res.json(toClient(bot));
   provision(bot.id).catch((err) => console.error("provision", err));
+});
+
+app.post("/api/bots/:id/duplicate", async (req, res) => {
+  const src = await store.getBot(req.params.id);
+  if (!src) return res.status(404).json({ error: "not found" });
+  const copy = store.newBot({
+    name: `${src.name} copy`,
+    title: src.title,
+    description: src.description,
+    instructions: src.instructions,
+    color: src.color,
+    avatar: src.avatar,
+    section: src.section,
+  });
+  await store.upsertBot(copy);
+  broadcast("bots", (await store.loadBots()).map(toClient));
+  res.json(toClient(copy));
+  provision(copy.id).catch((err) => console.error("provision", err));
 });
 
 app.patch("/api/bots/:id", async (req, res) => {
@@ -317,6 +337,29 @@ function stopTurn(botId) {
   }
   busyIds.delete(botId);
 }
+
+app.post("/api/bots/:id/control", async (req, res) => {
+  const bot = await store.getBot(req.params.id);
+  if (!bot) return res.status(404).json({ error: "not found" });
+  const on = Boolean(req.body?.on);
+  setHumanControl(bot.id, on);
+  if (on) stopTurn(bot.id);
+  const note = {
+    id: `ctl${Date.now()}`,
+    role: "assistant",
+    content: on
+      ? "You've got the computer. I'll wait until you release it."
+      : "You're done driving. I can use the computer again.",
+    ts: Date.now(),
+  };
+  await store.patchBot(bot.id, (live) => {
+    live.messages = live.messages || [];
+    live.messages.push(note);
+  });
+  broadcast("message", { botId: bot.id, ...note });
+  broadcast("control", { botId: bot.id, on });
+  res.json({ ok: true, on });
+});
 
 app.post("/api/bots/:id/stop", async (req, res) => {
   const bot = await store.getBot(req.params.id);
@@ -542,6 +585,7 @@ async function tickRoutines() {
   const bots = await store.loadBots();
   const now = Date.now();
   for (const bot of bots) {
+    if (isHumanControl(bot.id)) continue;
     const due = routines.dueRoutines(bot, now);
     if (!due.length) continue;
     const packs = routines.packDue(due);

@@ -20,7 +20,7 @@ page.on("console", (msg) => {
   if (msg.type() === "error") console.error("console", msg.text());
 });
 
-await page.goto("http://127.0.0.1:8787/tool.html?v=no-front-leg", {
+await page.goto("http://127.0.0.1:8787/tool.html?v=straight-eyes", {
   waitUntil: "domcontentloaded",
   timeout: 15000,
 });
@@ -32,16 +32,8 @@ const hero = await page.$(".hero .stage");
 await hero.screenshot({ path: path.join(outDir, "octo-hero.png") });
 await page.screenshot({ path: path.join(outDir, "octo-catalog.png"), fullPage: false });
 
-const happy = await page.$('[data-act="face"][data-id="happy"]');
-if (happy) await happy.click();
-for (const hex of ["#b06dd1", "#9b6dd1", "#c56dd1", "#7d6dd1"]) {
-  const swatch = await page.$(`[data-act="color"][data-id="${hex}"]`);
-  if (swatch) await swatch.click();
-  await new Promise((r) => setTimeout(r, 500));
-  await hero.screenshot({ path: path.join(outDir, `octo-hero-${hex.slice(1)}.png`) });
-}
-const motions = await page.$("#motions");
-if (motions) await motions.screenshot({ path: path.join(outDir, "octo-motions.png") });
+const bodies = await page.$("#bodies");
+if (bodies) await bodies.screenshot({ path: path.join(outDir, "octo-bodies.png") });
 await page.screenshot({ path: path.join(outDir, "octo-catalog-pink.png"), fullPage: true });
 
 await browser.close();

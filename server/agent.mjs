@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import * as vm from "./vm.mjs";
 import * as routines from "./routines.mjs";
 import { appRoot } from "./paths.mjs";
+import { isHumanControl } from "./control.mjs";
 
 const COMPUTER_ACTIONS = [
   "screenshot",
@@ -356,6 +357,17 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
       emit("message", out);
       return bot;
     }
+    if (isHumanControl(bot.id)) {
+      const out = {
+        id: `a${Date.now()}`,
+        role: "assistant",
+        content: "You've got the computer. I'll wait.",
+        ts: Date.now(),
+      };
+      bot.messages.push(out);
+      emit("message", out);
+      return bot;
+    }
     const incoming = typeof pullNudges === "function" ? pullNudges() : [];
     if (incoming.length) {
       for (const t of incoming) {
@@ -551,7 +563,7 @@ async function execTool(bot, name, args, emit, settings) {
     }
     if (name === "upsert_routine") {
       const minutes = Number(args.interval_minutes);
-      const { routine, merged } = routines.upsertRoutine(bot, {
+      const { routine, merged, rejected } = routines.upsertRoutine(bot, {
         id: args.id || undefined,
         name: args.name,
         instruction: args.instruction,
@@ -562,7 +574,10 @@ async function execTool(bot, name, args, emit, settings) {
         replace: args.replace !== false,
         enabled: args.enabled,
       });
-      await Promise.resolve(emit("routine", { routine, merged }));
+      await Promise.resolve(emit("routine", { routine, merged, rejected }));
+      if (rejected) {
+        return { text: `Did not replace the standing brief. ${rejected}. Do the work instead of rewriting the cron.` };
+      }
       return {
         text: merged
           ? `Merged into existing "${routine.name}" (${routine.groupKey}) every ${Math.round(routine.intervalMs / 60000)} min.`
@@ -577,6 +592,11 @@ async function execTool(bot, name, args, emit, settings) {
       return { text: r.output || (r.ok ? "(ok)" : "(failed)") };
     }
     if (name === "computer") {
+      if (isHumanControl(bot.id)) {
+        return {
+          text: "The human has the mouse. Do not click, type, or move. Wait or reply in chat.",
+        };
+      }
       return computerAction(bot, args, emit);
     }
     return { text: `unknown tool ${name}` };

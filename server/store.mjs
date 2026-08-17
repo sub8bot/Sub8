@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { dataDir as defaultDataDir } from "./paths.mjs";
+import { AVATAR_COLORS } from "../web/palette.js";
 
 export const dataDir = defaultDataDir;
 export const botsPath = path.join(dataDir, "bots.json");
@@ -28,6 +29,7 @@ export const defaultSettings = {
   blockInstructions: [],
   autoUpdateWhenIdleOptIn: false,
   updateTrack: "stable",
+  sidebarSections: [],
   harness: {
     provider: "grok-build",
     model: "grok-4.6",
@@ -127,12 +129,13 @@ async function loadBotsUnlocked() {
       if (fileMsgs.length) b.messages = unionMessages(b.messages, fileMsgs);
       else if (b.messages.length) await saveConversation(b.id, b.messages);
       if (!b.avatar || typeof b.avatar !== "object") {
-        b.avatar = { expression: "neutral", animation: "idle", body: "smooth" };
+        b.avatar = { expression: "neutral", animation: "idle", body: "mantle" };
       } else {
+        const ok = ["mantle","tall","chubby","slim","soft","rounder","short","long","curl","plush"];
         b.avatar = {
           expression: b.avatar.expression || "neutral",
           animation: b.avatar.animation || "idle",
-          body: "smooth",
+          body: b.avatar.body && ok.includes(b.avatar.body) ? b.avatar.body : "mantle",
         };
       }
     }
@@ -154,10 +157,7 @@ export async function saveBots(bots) {
   });
 }
 
-const PALETTE = [
-  "#b06dd1", "#9b6dd1", "#c56dd1", "#7d6dd1", "#d16db8", "#8b6de0",
-  "#be7adf", "#a56de0", "#d17dc9", "#9966cc", "#c98ae0", "#7c6cf0",
-];
+const PALETTE = AVATAR_COLORS;
 
 export function newBot(partial = {}) {
   const id = randomUUID();
@@ -167,12 +167,12 @@ export function newBot(partial = {}) {
     title: partial.title || "",
     description: partial.description || "",
     instructions: partial.instructions || "",
-    color: partial.color || PALETTE[Math.floor(Math.random() * PALETTE.length)],
+    color: partial.color || PALETTE[0],
     icon: partial.icon || "hex",
     avatar: {
       expression: partial.avatar?.expression || "neutral",
       animation: partial.avatar?.animation || "idle",
-      body: "smooth",
+      body: partial.avatar?.body || "mantle",
     },
     notificationsEnabled: false,
     createdAt: Date.now(),
@@ -187,6 +187,10 @@ export function newBot(partial = {}) {
     messages: [],
     routines: [],
     grokSessionId: id,
+    pinned: Boolean(partial.pinned),
+    section: partial.section || "",
+    unread: Boolean(partial.unread),
+    hidden: Boolean(partial.hidden),
   };
 }
 
@@ -215,6 +219,10 @@ export async function upsertBot(bot) {
           "description",
           "instructions",
           "notificationsEnabled",
+          "pinned",
+          "section",
+          "unread",
+          "hidden",
         ]) {
           if (prev[key] !== undefined) bot[key] = prev[key];
         }

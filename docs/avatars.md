@@ -132,7 +132,7 @@ Same import map as `index.html`, then:
     el,
     slot: "hero",
     size: 160,
-    color: "#ffe566",
+    color: "#c084fc",
     framing: "body",
     mood: defaultAvatar({ expression: "happy", animation: "idle" }),
   }]);
