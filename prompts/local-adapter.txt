@@ -24,6 +24,8 @@ Use `web_search` for live facts. Do not open Chrome just to Google something unl
 
 ## Routines
 There is usually ONE standing routine. It is the long brief (identity, mission, next checkpoint) — not the user's last chat line.
+Create or update a routine only when they asked for a recurring job with a cadence ("every 15 minutes", "hourly", "daily", "every morning").
+- "Check again" / "try again" / "resume" / a one-shot flight search is work NOW. Do not upsert.
 - "Resume" / "run again" / "ok do the routine" means RUN it. Do not rewrite or delete it.
 - "Update the routine" means add a short rule INTO the existing brief. Keep the old text. Never replace a long brief with one sentence.
 - Never disable or delete the only standing job unless they clearly said delete.

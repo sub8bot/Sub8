@@ -17,19 +17,27 @@ export function groupLabel(key) {
   return GROUPS.find((g) => g.key === key)?.label || "General";
 }
 
+const WEAK_JOB =
+  /^(check again|check back|try again|look again|do it again|keep going|resume|continue|ok|okay|so)[\s.!?]*$/i;
+
+export function isWeakRoutineInstruction(text) {
+  const t = String(text || "").trim();
+  if (!t) return true;
+  if (WEAK_JOB.test(t)) return true;
+  if (t.length < 20 && !parseSchedule(t)) return true;
+  return false;
+}
+
 export function parseSchedule(text) {
   const t = String(text || "").toLowerCase();
-  const everyMin = t.match(/every\s+(\d+)\s*(min|mins|minute|minutes)/);
+  const everyMin = t.match(/every\s+(\d+)\s*(min|mins|minute|minutes)\b/);
   if (everyMin) return { intervalMs: Number(everyMin[1]) * 60_000, label: `Every ${everyMin[1]} minutes` };
-  const everyHr = t.match(/every\s+(\d+)\s*(hr|hrs|hour|hours)/);
+  const everyHr = t.match(/every\s+(\d+)\s*(hr|hrs|hour|hours)\b/);
   if (everyHr) return { intervalMs: Number(everyHr[1]) * 3600_000, label: `Every ${everyHr[1]} hours` };
-  if (/\bevery\s+hour\b/.test(t)) return { intervalMs: 3600_000, label: "Every hour" };
-  if (/\bhourly\b/.test(t)) return { intervalMs: 3600_000, label: "Every hour" };
+  if (/\bevery\s+hour\b/.test(t) || /\bhourly\b/.test(t)) return { intervalMs: 3600_000, label: "Every hour" };
   if (/\b(daily|every day|each day|once a day)\b/.test(t)) return { intervalMs: 86400_000, label: "Daily" };
   if (/\b(weekly|every week)\b/.test(t)) return { intervalMs: 7 * 86400_000, label: "Weekly" };
-  if (/\b(morning|at 9|9am)\b/.test(t)) return { intervalMs: 86400_000, label: "Daily morning" };
-  const looksScheduled = /\b(every|daily|hourly|weekly|cron|routine|on a schedule|check (back|again))\b/i.test(t);
-  if (looksScheduled) return { intervalMs: 15 * 60_000, label: "Every 15 minutes" };
+  if (/\b(every|each)\s+morning\b/.test(t)) return { intervalMs: 86400_000, label: "Daily morning" };
   return null;
 }
 
@@ -43,9 +51,11 @@ export function looksLikeChatLine(text) {
 
 export function looksLikeSchedule(text) {
   const t = String(text || "");
+  if (isWeakRoutineInstruction(t)) return false;
   if (/\b(update|edit|change|rewrite|which|list|have|having)\b.{0,40}\b(routine|cron|schedule)\b/i.test(t)) return false;
   if (/\b(routine details|cronjob|the routine)\b/i.test(t) && !/\bevery\s+\d+\s*(min|hour)/i.test(t)) return false;
-  return Boolean(parseSchedule(text));
+  if (!parseSchedule(t)) return false;
+  return /\b(every|hourly|daily|weekly|each day|once a day|each morning|every morning)\b/i.test(t);
 }
 
 function similarInterval(a, b) {
@@ -59,7 +69,16 @@ export function upsertRoutine(bot, spec) {
   if (!Array.isArray(bot.routines)) bot.routines = [];
   const text = String(spec.instruction || spec.name || "").trim();
   const key = spec.groupKey || "general";
-  const intervalMs = spec.intervalMs || parseSchedule(text)?.intervalMs || 20 * 60_000;
+  const parsed = parseSchedule(text);
+  const intervalMs = spec.intervalMs || parsed?.intervalMs || 20 * 60_000;
+  const creating = !spec.id && !(bot.routines || []).length;
+  if (creating && isWeakRoutineInstruction(text) && spec.forceNew !== true) {
+    return {
+      routine: null,
+      merged: false,
+      rejected: "need a standing job (what to watch, and how often), not a chat one-liner",
+    };
+  }
   const byId = spec.id ? bot.routines.find((r) => r.id === spec.id) : null;
   const primary = bot.routines.find((r) => r.groupKey === "general") || bot.routines[0] || null;
   const sameGroup = bot.routines.find(
@@ -69,8 +88,9 @@ export function upsertRoutine(bot, spec) {
   if (existing) {
     if (text) {
       const prev = existing.instruction || "";
-      const casual = looksLikeChatLine(text);
-      if (prev.length > 400 && casual && spec.forceReplace !== true) {
+      const weak = isWeakRoutineInstruction(text);
+      const casual = (looksLikeChatLine(text) || weak) && !parseSchedule(text);
+      if ((weak || (casual && prev.length > 80)) && spec.forceReplace !== true) {
         existing.updatedAt = Date.now();
         if (typeof spec.enabled === "boolean") existing.enabled = spec.enabled;
         return { routine: existing, merged: true, rejected: "kept standing brief (refused casual rewrite)" };
