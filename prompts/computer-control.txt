@@ -33,8 +33,9 @@ If a control is cut off, scroll until it is fully visible, then click.
 - The human can Take control. If you are told they have the mouse, do not click or type.
 
 ## Chrome
-Open with `/usr/local/bin/chrome-desktop`. Wait until painted, then screenshot.
-Local files: `chrome-desktop file:///…` — never type `file://` into the omnibox.
+Open with the computer action `open` (text = the URL). That starts Chrome and keeps it running. Do not use a long-running shell to launch the browser — it gets killed when the command ends.
+Wait until painted, then screenshot.
+Local files: computer `open` with `file:///…` — never type `file://` into the omnibox.
 Address bar is for a named URL. Buttons and menus are clicked.
 
 ## Desktop

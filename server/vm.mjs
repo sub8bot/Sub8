@@ -846,13 +846,33 @@ export async function wait(ms) {
   await new Promise((r) => setTimeout(r, Math.max(0, Math.min(15000, ms))));
 }
 
+export async function openChrome(bot, url = "") {
+  requireVm(bot, "open");
+  const dest = String(url || "").trim();
+  const arg = dest ? JSON.stringify(dest) : "";
+  const r = await docker([
+    "exec",
+    "-u",
+    "abc",
+    bot.vm.container,
+    "bash",
+    "-lc",
+    `${displayEnv(bot)}; nohup /usr/local/bin/chrome-desktop ${arg} >/tmp/chrome-desktop.log 2>&1 & echo OPENED:$!; sleep 0.8`,
+  ]);
+  if (!r.ok) throw new Error(`open Chrome failed: ${r.out.slice(-400)}`);
+  return { text: dest ? `opened ${dest}` : "opened Chrome", out: r.out };
+}
+
 export async function shell(bot, command) {
   requireVm(bot, "shell");
   assertVmShell(command);
-  if (/\b(google-chrome|chrome-desktop|chromium|xdg-open|firefox)\b/i.test(command) && /https?:\/\//i.test(command)) {
-    throw new Error("Use the computer tool to click. Do not open URLs from the shell.");
+  const cmd = String(command || "");
+  if (/\b(google-chrome|chrome-desktop|chromium|xdg-open|firefox)\b/i.test(cmd)) {
+    const url = (cmd.match(/https?:\/\/\S+/) || cmd.match(/file:\/\/\S+/) || [""])[0];
+    const opened = await openChrome(bot, url.replace(/["']$/, ""));
+    return { ok: true, output: opened.text };
   }
-  return trace.span(bot, "inside", "shell", { command: String(command).slice(0, 180) }, async () => {
+  return trace.span(bot, "inside", "shell", { command: cmd.slice(0, 180) }, async () => {
     const r = await docker([
       "exec",
       "-u",
@@ -860,7 +880,7 @@ export async function shell(bot, command) {
       bot.vm.container,
       "bash",
       "-lc",
-      `${displayEnv(bot)}; ${command}`,
+      `${displayEnv(bot)}; ${cmd}`,
     ]);
     return { ok: r.ok, output: r.out.slice(0, 8000) };
   });
