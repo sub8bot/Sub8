@@ -19,7 +19,7 @@ The mascot is the Smooth octopus you see in the rail: live Three.js, emoji faces
 
 ## Install
 
-Private repo for now. Grab a build from [Releases](https://github.com/sub8bot/Sub8/releases).
+Grab a build from [Releases](https://github.com/sub8bot/Sub8/releases).
 
 | Platform | Artifact |
 |---|---|
