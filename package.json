@@ -16,7 +16,7 @@
     "logo": "node scripts/render-logo.mjs",
     "dist": "electron-builder --mac --win --linux",
     "dist:mac": "electron-builder --mac dmg zip --arm64 --x64",
-    "dist:win": "electron-builder --win zip --x64",
+    "dist:win": "electron-builder --win nsis zip --x64",
     "dist:linux": "electron-builder --linux AppImage tar.gz --x64",
     "release": "bash scripts/release.sh"
   },
@@ -98,12 +98,32 @@
       "icon": "build/icon.ico",
       "target": [
         {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
           "target": "zip",
           "arch": [
             "x64"
           ]
         }
       ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Sub8",
+      "uninstallDisplayName": "Sub8",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
     },
     "linux": {
       "icon": "build/icon.png",
