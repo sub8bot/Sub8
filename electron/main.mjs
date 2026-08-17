@@ -10,6 +10,11 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 let PORT = process.env.PORT || "8787";
 let URL = process.env.LOCALBOT_URL || `http://127.0.0.1:${PORT}`;
 
+function extraPath() {
+  const extras = ["/opt/homebrew/bin", "/usr/local/bin", path.join(os.homedir(), ".docker", "bin")];
+  return extras.filter((p) => fs.existsSync(p)).join(path.delimiter);
+}
+
 function dockerHost() {
   const env = String(process.env.DOCKER_HOST || "").trim();
   // Let Docker Desktop pick its own named pipe / WSL context.
@@ -94,6 +99,7 @@ function startServer() {
       ...process.env,
       ELECTRON_RUN_AS_NODE: "1",
       PORT: String(PORT),
+      PATH: [extraPath(), process.env.PATH || "/usr/bin:/bin:/usr/sbin:/sbin"].filter(Boolean).join(path.delimiter),
       DOCKER_HOST: dockerHost() || process.env.DOCKER_HOST || "",
       SUB8BOT_ROOT: root,
       SUB8BOT_FILES: files,

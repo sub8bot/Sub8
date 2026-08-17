@@ -27,6 +27,7 @@ const state = {
   hasGrokAuth: null,
   grokAuthAsk: false,
   docker: null,
+  dockerGateDismissed: false,
   update: null,
   updateBusy: false,
   appVersion: "",
@@ -192,18 +193,28 @@ function paintDockerGate() {
     document.body.appendChild(host);
   }
   if (!dockerMissing()) {
+    state.dockerGateDismissed = false;
+    host.innerHTML = "";
+    host.hidden = true;
+    return;
+  }
+  if (state.dockerGateDismissed) {
     host.innerHTML = "";
     host.hidden = true;
     return;
   }
   host.hidden = false;
   host.innerHTML = `<div class="overlay docker-gate-overlay">
-    <div class="modal" style="max-width:440px">
+    <div class="modal" style="max-width:440px" data-modal="1">
       <div class="sbody" style="width:100%">
+        <button type="button" class="close" data-act="dismiss-docker-gate">×</button>
         <h2>Start Docker</h2>
-        <p>Sub8 cannot start a computer until Docker is running on this machine.</p>
+        <p>A Bot’s computer needs Docker (Colima on a Mac, or Docker Desktop). Chat still works without it.</p>
         <p class="muted">${escapeHtml(state.docker?.hint || "")}</p>
-        <p class="muted">Open Docker Desktop (Windows/Mac) or start the Docker daemon (Linux), then this screen will go away and the computer will start on its own.</p>
+        <p class="muted">Start Colima or Docker Desktop and the computer will come up on its own.</p>
+        <div class="routine-editor-foot">
+          <button type="button" class="pill primary" data-act="dismiss-docker-gate">Continue anyway</button>
+        </div>
       </div>
     </div>
   </div>`;
@@ -1212,7 +1223,10 @@ function paintModal() {
   }
   const active = document.activeElement;
   const typing = host.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active?.tagName || "");
-  if (host.dataset.key === key && host.innerHTML && (typing || state.modal === "routine")) return;
+  // Never rebuild a form modal in place — SSE/health render() would wipe
+  // the fields and steal the Create click onto the overlay.
+  const keepForm = typing || state.modal === "routine" || state.modal === "create";
+  if (host.dataset.key === key && host.innerHTML && keepForm) return;
   host.dataset.key = key;
   if (state.modal === "create") host.innerHTML = createBotHtml();
   else if (state.modal === "settings") host.innerHTML = settingsHtml();
@@ -1355,7 +1369,7 @@ function createBotHtml() {
           <input class="field" id="cn" placeholder="New Bot" autofocus />
           <label class="muted">What this Bot is for</label>
           <textarea class="field" id="cd" placeholder="Describe the job"></textarea>
-          <button class="pill primary" data-act="confirm-create">Create Bot</button>
+          <button type="button" class="pill primary" data-act="confirm-create" id="confirm-create">Create Bot</button>
         </div>
       </div>
     </div>
@@ -1572,6 +1586,11 @@ function bindDelegated() {
       state.plusMenu = false;
     }
     if (e.target.classList && e.target.classList.contains("overlay")) {
+      if (e.target.classList.contains("docker-gate-overlay") || e.target.closest("#docker-gate")) {
+        state.dockerGateDismissed = true;
+        paintDockerGate();
+        return;
+      }
       state.modal = null;
       state.botEdit = false;
       state.editingRoutineId = null;
@@ -1636,6 +1655,11 @@ function bindDelegated() {
     }
     if (act === "stop-turn") {
       stopTurn();
+      return;
+    }
+    if (act === "dismiss-docker-gate") {
+      state.dockerGateDismissed = true;
+      paintDockerGate();
       return;
     }
     if (act === "close-modal") {
@@ -2322,15 +2346,29 @@ async function createBot() {
 async function confirmCreateBot() {
   const name = ($("#cn")?.value || "").trim() || "New Bot";
   const description = ($("#cd")?.value || "").trim();
-  const bot = await api("/api/bots", {
-    method: "POST",
-    body: { name, description, avatar: defaultAvatar({ expression: state.createFace, animation: "idle" }) },
-  });
-  state.createFace = "neutral";
-  rememberSelected(bot.id);
-  state.modal = null;
-  state.picker = false;
-  await refresh();
+  const face = state.createFace;
+  const btn = $("#confirm-create");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Creating…";
+  }
+  try {
+    const bot = await api("/api/bots", {
+      method: "POST",
+      body: { name, description, avatar: defaultAvatar({ expression: face, animation: "idle" }) },
+    });
+    state.createFace = "neutral";
+    rememberSelected(bot.id);
+    state.modal = null;
+    state.picker = false;
+    await refresh();
+  } catch (err) {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Create Bot";
+    }
+    window.alert(err?.message || "Could not create the bot.");
+  }
 }
 
 async function saveRoutine() {
