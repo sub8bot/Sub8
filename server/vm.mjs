@@ -8,8 +8,14 @@ import * as trace from "./trace.mjs";
 import { appRoot, fileRoot, dataDir } from "./paths.mjs";
 
 export function resolveDockerHost() {
-  if (process.env.DOCKER_HOST) return process.env.DOCKER_HOST;
-  if (process.platform === "win32") return "npipe:////./pipe/docker_engine";
+  const env = process.env.DOCKER_HOST || "";
+  // Windows never uses a Colima unix socket. HOME=C:\Users\... turns
+  // unix://$HOME/.colima/... into an invalid URL and docker refuses to start.
+  if (process.platform === "win32") {
+    if (env && !/colima|unix:\/\//i.test(env)) return env;
+    return "npipe:////./pipe/docker_engine";
+  }
+  if (env) return env;
   const home = process.env.HOME || os.homedir() || "";
   const socks = [home && path.join(home, ".colima", "default", "docker.sock"), "/var/run/docker.sock"].filter(Boolean);
   for (const sock of socks) {
@@ -22,12 +28,11 @@ export function dockerPlatform() {
   return process.arch === "arm64" ? "linux/arm64" : "linux/amd64";
 }
 
-const DOCKER_HOST = resolveDockerHost();
 const IMAGE = process.env.LOCALBOT_IMAGE || "linuxserver/webtop:ubuntu-xfce";
 const START_PORT = 13100;
 
 function dockerEnv() {
-  return { ...process.env, DOCKER_HOST };
+  return { ...process.env, DOCKER_HOST: resolveDockerHost() };
 }
 
 function run(cmd, args, opts = {}) {
