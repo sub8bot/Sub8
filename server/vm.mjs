@@ -49,6 +49,46 @@ export function docker(args, opts) {
   return run("docker", args, opts);
 }
 
+let dockerStatusCache = { at: 0, value: null };
+
+function dockerInstallHint() {
+  if (process.platform === "darwin") {
+    return "Install Docker or start Colima. Sub8 needs Docker so each Bot can have a computer.";
+  }
+  if (process.platform === "win32") {
+    return "Install Docker Desktop and wait until it is running. Sub8 needs Docker so each Bot can have a computer.";
+  }
+  return "Install Docker Engine and start the daemon. Sub8 needs Docker so each Bot can have a computer.";
+}
+
+function dockerDaemonHint() {
+  if (process.platform === "darwin") {
+    return "Docker is installed but not running. Start Colima (colima start) or open Docker Desktop.";
+  }
+  if (process.platform === "win32") {
+    return "Docker is installed but not running. Open Docker Desktop and wait until it is ready.";
+  }
+  return "Docker is installed but the daemon is not running. Try: sudo systemctl start docker";
+}
+
+export async function dockerStatus() {
+  const now = Date.now();
+  if (dockerStatusCache.value && now - dockerStatusCache.at < 4000) return dockerStatusCache.value;
+  const cli = await docker(["version", "--format", "{{.Client.Version}}"]);
+  const missing = !cli.ok && /enoent|not found|cannot find|is not recognized/i.test(cli.out || "");
+  if (missing) {
+    const value = { ok: false, cli: false, daemon: false, hint: dockerInstallHint() };
+    dockerStatusCache = { at: now, value };
+    return value;
+  }
+  const info = await docker(["info", "--format", "{{.ServerVersion}}"]);
+  const value = info.ok
+    ? { ok: true, cli: true, daemon: true, hint: "", engine: (info.out || "").trim() }
+    : { ok: false, cli: true, daemon: false, hint: dockerDaemonHint() };
+  dockerStatusCache = { at: now, value };
+  return value;
+}
+
 export function containerName(botId) {
   return `localbot-${botId.slice(0, 8)}`;
 }
@@ -217,6 +257,8 @@ function configVolume(bot) {
 }
 
 export async function startVm(bot, onLog = () => {}, shouldAbort = async () => false) {
+  const dock = await dockerStatus();
+  if (!dock.ok) throw new Error(dock.hint);
   const name = containerName(bot.id);
   const volume = configVolume(bot);
   const abortIfGone = async () => {
