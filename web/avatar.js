@@ -23,7 +23,9 @@ export const LOOK_DEFAULTS = {
 
 let lookTune = { ...LOOK_DEFAULTS };
 try {
-  const saved = JSON.parse(localStorage.getItem("octobot-catalog") || "null");
+  const saved = JSON.parse(
+    localStorage.getItem("sub8bot-catalog") || localStorage.getItem("octobot-catalog") || "null",
+  );
   if (saved?.look && typeof saved.look === "object") {
     lookTune = { ...LOOK_DEFAULTS, ...saved.look };
     lookTune.highlights = Math.min(2, Math.max(1, Number(lookTune.highlights) || 1));

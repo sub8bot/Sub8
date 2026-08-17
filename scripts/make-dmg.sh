@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a signed + notarized OctoBot.dmg (same flow as Xnative).
+# Build a signed + notarized Sub8Bot.dmg (same flow as Xnative).
 #
 #   scripts/make-dmg.sh [--skip-app-build]
 set -euo pipefail
@@ -12,9 +12,9 @@ for a in "$@"; do [ "$a" = "--skip-app-build" ] && SKIP_BUILD=1; done
 VERSION="$(node -p "require('./package.json').version")"
 APP=""
 for cand in \
-  "$ROOT/dist/mac-arm64/OctoBot.app" \
-  "$ROOT/dist/mac/OctoBot.app" \
-  "$ROOT/dist/OctoBot.app"
+  "$ROOT/dist/mac-arm64/Sub8Bot.app" \
+  "$ROOT/dist/mac/Sub8Bot.app" \
+  "$ROOT/dist/Sub8Bot.app"
 do
   [ -d "$cand" ] && APP="$cand" && break
 done
@@ -23,37 +23,37 @@ if [ "$SKIP_BUILD" -eq 0 ] || [ -z "$APP" ]; then
   echo "==> Building mac app with electron-builder"
   npx electron-builder --mac dmg zip --arm64 --x64
   for cand in \
-    "$ROOT/dist/mac-arm64/OctoBot.app" \
-    "$ROOT/dist/mac/OctoBot.app"
+    "$ROOT/dist/mac-arm64/Sub8Bot.app" \
+    "$ROOT/dist/mac/Sub8Bot.app"
   do
     [ -d "$cand" ] && APP="$cand" && break
   done
 fi
 
-[ -d "$APP" ] || { echo "Missing OctoBot.app" >&2; exit 1; }
+[ -d "$APP" ] || { echo "Missing Sub8Bot.app" >&2; exit 1; }
 
 echo "==> Signing + notarizing app"
 bash "$ROOT/scripts/sign-and-notarize.sh" "$APP"
 
 STAGE="$ROOT/dist/dmg-stage"
-VOLNAME="OctoBot"
-DMG_PATH="$ROOT/dist/OctoBot-${VERSION}.dmg"
-DMG_LATEST="$ROOT/dist/OctoBot.dmg"
+VOLNAME="Sub8Bot"
+DMG_PATH="$ROOT/dist/Sub8Bot-${VERSION}.dmg"
+DMG_LATEST="$ROOT/dist/Sub8Bot.dmg"
 
 echo "==> Staging DMG contents"
 rm -rf "$STAGE"
 mkdir -p "$STAGE"
-ditto "$APP" "$STAGE/OctoBot.app"
+ditto "$APP" "$STAGE/Sub8Bot.app"
 ln -s /Applications "$STAGE/Applications"
 cat > "$STAGE/README.txt" << EOF
-OctoBot ${VERSION}
+Sub8Bot ${VERSION}
 ================
 
-1. Drag OctoBot to Applications
-2. Open OctoBot
+1. Drag Sub8Bot to Applications
+2. Open Sub8Bot
 3. Sign in to Grok / SpaceXAI from Settings → Harness if asked
 
-OctoBot runs each Bot on its own local Linux computer (Docker).
+Sub8Bot runs each Bot on its own local Linux computer (Docker).
 On a Mac, start Colima or Docker Desktop first.
 
 Not affiliated with xAI.

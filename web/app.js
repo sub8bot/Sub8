@@ -89,7 +89,7 @@ function attachLiveFrame(bot) {
     if (!wrap.dataset.empty) {
       wrap.dataset.empty = "1";
       wrap.innerHTML = `<div style="display:grid;place-items:center;height:100%;color:#6b7280;font-size:13px;padding:16px;text-align:center">${
-        bot?.vm?.status === "starting" ? "Starting OctoBot's computer…" : bot?.vm?.error || "Computer not assigned yet"
+        bot?.vm?.status === "starting" ? "Starting Sub8Bot's computer…" : bot?.vm?.error || "Computer not assigned yet"
       }</div>`;
       liveFrameKey = null;
     }
@@ -512,7 +512,7 @@ function paintTitle(bot) {
             <span class="avatar sm" data-avatar="${bot.id}" data-avatar-slot="title" data-avatar-size="32" data-avatar-framing="body"></span>
             <span class="bot-label">${escapeHtml(bot.name)}</span>
           </button>`
-        : "OctoBot"
+        : "Sub8Bot"
     }
       <span class="muted harness-chip">${escapeHtml(provider)} · ${escapeHtml(model)}</span>
     </div>
@@ -647,7 +647,7 @@ function bindRailDnD(host) {
   host.addEventListener("dragstart", (e) => {
     const row = e.target.closest(".rail-bot");
     if (!row) return;
-    e.dataTransfer.setData("text/octobot-id", row.dataset.id);
+    e.dataTransfer.setData("text/sub8bot-id", row.dataset.id);
     e.dataTransfer.setData("text/plain", row.dataset.id);
     e.dataTransfer.effectAllowed = "move";
     row.classList.add("dragging");
@@ -657,7 +657,11 @@ function bindRailDnD(host) {
     host.querySelectorAll(".drag-over").forEach((n) => n.classList.remove("drag-over"));
   });
   host.addEventListener("dragover", (e) => {
-    if (![...e.dataTransfer.types].includes("text/octobot-id") && ![...e.dataTransfer.types].includes("text/plain")) {
+    if (
+      ![...e.dataTransfer.types].includes("text/sub8bot-id") &&
+      ![...e.dataTransfer.types].includes("text/octobot-id") &&
+      ![...e.dataTransfer.types].includes("text/plain")
+    ) {
       /* keep allowing */
     }
     e.preventDefault();
@@ -669,7 +673,10 @@ function bindRailDnD(host) {
   host.addEventListener("drop", (e) => {
     e.preventDefault();
     host.querySelectorAll(".drag-over").forEach((n) => n.classList.remove("drag-over"));
-    const id = e.dataTransfer.getData("text/octobot-id") || e.dataTransfer.getData("text/plain");
+    const id =
+      e.dataTransfer.getData("text/sub8bot-id") ||
+      e.dataTransfer.getData("text/octobot-id") ||
+      e.dataTransfer.getData("text/plain");
     if (!id) return;
     const secEl = e.target.closest(".rail-sec");
     const onto = e.target.closest(".rail-bot");
@@ -1315,11 +1322,11 @@ function settingsHtml() {
           <div class="block"><h3>This Mac</h3>
             <div class="card">
               <div class="row"><div class="lbl">Timezone</div><span class="muted">${escapeHtml(state.timezone || "auto")}</span></div>
-              <div class="row"><div class="lbl">Version</div><span class="muted">OctoBot 0.2.1</span></div>
+              <div class="row"><div class="lbl">Version</div><span class="muted">Sub8Bot 0.3.0</span></div>
             </div>
           </div>`
             : sec === "usage"
-              ? `<h2>Usage</h2><div class="card"><div class="lbl">Plan</div><div class="muted">Usage follows your Grok Build or xAI account. Nothing is billed inside OctoBot.</div></div>`
+              ? `<h2>Usage</h2><div class="card"><div class="lbl">Plan</div><div class="muted">Usage follows your Grok Build or xAI account. Nothing is billed inside Sub8Bot.</div></div>`
               : `<h2>Computer</h2>
           <div class="block">
             <div class="card">
@@ -2071,7 +2078,7 @@ async function toggleDictate() {
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
   } catch {
-    setMicUI(false, "Allow Microphone for OctoBot in System Settings → Privacy.");
+    setMicUI(false, "Allow Microphone for Sub8Bot in System Settings → Privacy.");
     return;
   }
   const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find((t) => MediaRecorder.isTypeSupported(t)) || "";

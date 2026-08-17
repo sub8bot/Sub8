@@ -1,9 +1,9 @@
 #!/bin/zsh
-# Build a local OctoBot.app wrapper so macOS shows OctoBot, not Electron.
+# Build a local Sub8Bot.app wrapper so macOS shows Sub8Bot, not Electron.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC="$ROOT/node_modules/electron/dist/Electron.app"
-DEST="$ROOT/.app/OctoBot.app"
+DEST="$ROOT/.app/Sub8Bot.app"
 PLIST="$DEST/Contents/Info.plist"
 ICON="$ROOT/build/icon.icns"
 
@@ -22,15 +22,15 @@ if [ "$src_ver" != "$dst_ver" ] || [ ! -x "$DEST/Contents/MacOS/Electron" ]; the
   ditto "$SRC" "$DEST"
 fi
 
-/usr/libexec/PlistBuddy -c "Set :CFBundleName OctoBot" "$PLIST"
-/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName OctoBot" "$PLIST" 2>/dev/null \
-  || /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string OctoBot" "$PLIST"
-/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier app.octobot.desktop.dev" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleName Sub8Bot" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName Sub8Bot" "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string Sub8Bot" "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier app.sub8bot.desktop.dev" "$PLIST"
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable Electron" "$PLIST"
-/usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription OctoBot uses the microphone so you can dictate messages." "$PLIST" 2>/dev/null \
-  || /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string OctoBot uses the microphone so you can dictate messages." "$PLIST"
-/usr/libexec/PlistBuddy -c "Set :NSSpeechRecognitionUsageDescription OctoBot turns your speech into text on this Mac." "$PLIST" 2>/dev/null \
-  || /usr/libexec/PlistBuddy -c "Add :NSSpeechRecognitionUsageDescription string OctoBot turns your speech into text on this Mac." "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :NSMicrophoneUsageDescription Sub8Bot uses the microphone so you can dictate messages." "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Add :NSMicrophoneUsageDescription string Sub8Bot uses the microphone so you can dictate messages." "$PLIST"
+/usr/libexec/PlistBuddy -c "Set :NSSpeechRecognitionUsageDescription Sub8Bot turns your speech into text on this Mac." "$PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Add :NSSpeechRecognitionUsageDescription string Sub8Bot turns your speech into text on this Mac." "$PLIST"
 
 if [ -f "$ICON" ]; then
   cp -f "$ICON" "$DEST/Contents/Resources/electron.icns"

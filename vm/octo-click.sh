@@ -1,5 +1,5 @@
 #!/bin/bash
-# Reliable screen-absolute click for OctoBot / Grok Build.
+# Reliable screen-absolute click for Sub8Bot / Grok Build.
 # Usage: octo-click X Y [button] [count]
 set -euo pipefail
 export DISPLAY="${DISPLAY:-:1}"

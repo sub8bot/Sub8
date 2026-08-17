@@ -1,6 +1,7 @@
 node_modules
 .app
 scripts/.cache
+**/__pycache__/
 data/*.json
 data/screens
 data/conversations
