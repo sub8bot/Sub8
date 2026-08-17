@@ -3,8 +3,15 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-export const appRoot = process.env.OCTOBOT_ROOT || path.resolve(here, "..");
+function firstEnv(...keys) {
+  for (const key of keys) {
+    if (process.env[key]) return process.env[key];
+  }
+  return "";
+}
+
+export const appRoot = firstEnv("SUB8BOT_ROOT", "OCTOBOT_ROOT") || path.resolve(here, "..");
 export const fileRoot =
-  process.env.OCTOBOT_FILES ||
+  firstEnv("SUB8BOT_FILES", "OCTOBOT_FILES") ||
   (appRoot.endsWith(".asar") ? appRoot.replace(/\.asar$/, ".asar.unpacked") : appRoot);
-export const dataDir = process.env.OCTOBOT_DATA || path.join(process.cwd(), "data");
+export const dataDir = firstEnv("SUB8BOT_DATA", "OCTOBOT_DATA") || path.join(process.cwd(), "data");

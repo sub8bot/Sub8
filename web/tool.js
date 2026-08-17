@@ -1,7 +1,7 @@
 import { animList, bodyList, faceList, getLookTune, setLookTune, LOOK_DEFAULTS, syncAvatars } from "./avatar.js";
 import { AVATAR_COLORS as COLORS } from "./palette.js";
 
-const SAVE = "octobot-catalog";
+const SAVE = "sub8bot-catalog";
 const state = {
   body: "rounder",
   face: "neutral",
@@ -11,7 +11,7 @@ const state = {
 
 function loadState() {
   try {
-    const saved = JSON.parse(localStorage.getItem(SAVE) || "null");
+    const saved = JSON.parse(localStorage.getItem(SAVE) || localStorage.getItem("octobot-catalog") || "null");
     if (!saved) return;
     if (saved.body === "mantle") state.body = "rounder";
     else if (bodies.some((b) => b.id === saved.body)) state.body = saved.body;
@@ -61,7 +61,7 @@ function mount() {
     <div class="page">
       <header class="top">
         <div>
-          <h1>OctoBot catalog</h1>
+          <h1>Sub8Bot catalog</h1>
           <p class="lede">Bodies, faces, and motions. Click a card to pick.</p>
         </div>
         <div class="count">${bodies.length} bodies · ${faces.length} faces · ${motions.length} motions</div>

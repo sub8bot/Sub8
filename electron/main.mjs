@@ -38,13 +38,29 @@ async function resolvePort() {
   return { port: 8787, already: false };
 }
 
-app.setName("OctoBot");
+app.setName("Sub8Bot");
 app.setAboutPanelOptions({
-  applicationName: "OctoBot",
+  applicationName: "Sub8Bot",
   applicationVersion: app.getVersion(),
   copyright: "Copyright © 2026 Daniel Farina",
 });
 if (!app.isPackaged) app.commandLine.appendSwitch("disable-http-cache");
+
+function migrateLegacyUserData() {
+  const dest = path.join(app.getPath("userData"), "data");
+  if (fs.existsSync(path.join(dest, "bots.json"))) return;
+  const home = os.homedir();
+  const candidates = [
+    path.join(home, "Library", "Application Support", "OctoBot", "data"),
+    path.join(home, "Library", "Application Support", "octobot", "data"),
+  ];
+  for (const src of candidates) {
+    if (!fs.existsSync(path.join(src, "bots.json"))) continue;
+    fs.mkdirSync(dest, { recursive: true });
+    fs.cpSync(src, dest, { recursive: true });
+    return;
+  }
+}
 
 function packagedRoot() {
   return app.getAppPath();
@@ -59,8 +75,10 @@ function startServer() {
   if (!app.isPackaged) return null;
   if (process.env.LOCALBOT_URL) return null;
   const root = packagedRoot();
+  migrateLegacyUserData();
   const data = path.join(app.getPath("userData"), "data");
   fs.mkdirSync(data, { recursive: true });
+  const files = root.endsWith(".asar") ? root.replace(/\.asar$/, ".asar.unpacked") : root;
   const serverPath = path.join(root, "server", "index.mjs");
   const log = fs.openSync(path.join(app.getPath("userData"), "server.log"), "a");
   const child = spawn(process.execPath, [serverPath], {
@@ -70,15 +88,18 @@ function startServer() {
       ELECTRON_RUN_AS_NODE: "1",
       PORT: String(PORT),
       DOCKER_HOST: dockerHost() || process.env.DOCKER_HOST || "",
+      SUB8BOT_ROOT: root,
+      SUB8BOT_FILES: files,
+      SUB8BOT_DATA: data,
       OCTOBOT_ROOT: root,
-      OCTOBOT_FILES: root.endsWith(".asar") ? root.replace(/\.asar$/, ".asar.unpacked") : root,
+      OCTOBOT_FILES: files,
       OCTOBOT_DATA: data,
       HOME: os.homedir(),
     },
     stdio: ["ignore", log, log],
   });
   child.on("exit", (code) => {
-    if (code && code !== 0) console.error("OctoBot server exited", code);
+    if (code && code !== 0) console.error("Sub8Bot server exited", code);
   });
   return child;
 }
@@ -115,7 +136,7 @@ function create() {
     minWidth: 880,
     minHeight: 560,
     show: true,
-    title: "OctoBot",
+    title: "Sub8Bot",
     backgroundColor: "#ffffff",
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 16, y: 18 },

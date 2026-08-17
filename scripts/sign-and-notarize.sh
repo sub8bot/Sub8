@@ -1,29 +1,29 @@
 #!/usr/bin/env bash
-# Developer ID-sign, notarize, and staple OctoBot.
+# Developer ID-sign, notarize, and staple Sub8Bot.
 #
-#   scripts/sign-and-notarize.sh [path-to-OctoBot.app|OctoBot.dmg] [--sign-only]
+#   scripts/sign-and-notarize.sh [path-to-Sub8Bot.app|Sub8Bot.dmg] [--sign-only]
 #
 # Requires env (never commit these):
-#   OCTOBOT_SIGN_IDENTITY
-#   OCTOBOT_NOTARY_KEY / OCTOBOT_NOTARY_KEY_ID / OCTOBOT_NOTARY_ISSUER
-# or OCTOBOT_NOTARY_PROFILE for a notarytool keychain profile.
+#   SUB8BOT_SIGN_IDENTITY (or OCTOBOT_SIGN_IDENTITY)
+#   SUB8BOT_NOTARY_KEY / SUB8BOT_NOTARY_KEY_ID / SUB8BOT_NOTARY_ISSUER
+# or SUB8BOT_NOTARY_PROFILE for a notarytool keychain profile.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TARGET="${1:-$ROOT/dist/mac-arm64/OctoBot.app}"
+TARGET="${1:-$ROOT/dist/mac-arm64/Sub8Bot.app}"
 SIGN_ONLY=""
 for a in "$@"; do [ "$a" = "--sign-only" ] && SIGN_ONLY=1; done
 
-IDENTITY="${OCTOBOT_SIGN_IDENTITY:-}"
-PROFILE="${OCTOBOT_NOTARY_PROFILE:-}"
+IDENTITY="${SUB8BOT_SIGN_IDENTITY:-${OCTOBOT_SIGN_IDENTITY:-}}"
+PROFILE="${SUB8BOT_NOTARY_PROFILE:-${OCTOBOT_NOTARY_PROFILE:-}}"
 ENTITLEMENTS="$ROOT/build/entitlements.mac.plist"
 
-NOTARY_KEY="${OCTOBOT_NOTARY_KEY:-}"
-NOTARY_KEY_ID="${OCTOBOT_NOTARY_KEY_ID:-}"
-NOTARY_ISSUER="${OCTOBOT_NOTARY_ISSUER:-}"
+NOTARY_KEY="${SUB8BOT_NOTARY_KEY:-${OCTOBOT_NOTARY_KEY:-}}"
+NOTARY_KEY_ID="${SUB8BOT_NOTARY_KEY_ID:-${OCTOBOT_NOTARY_KEY_ID:-}}"
+NOTARY_ISSUER="${SUB8BOT_NOTARY_ISSUER:-${OCTOBOT_NOTARY_ISSUER:-}}"
 
 if [ -z "$IDENTITY" ]; then
-  echo "Set OCTOBOT_SIGN_IDENTITY to your Developer ID Application name." >&2
+  echo "Set SUB8BOT_SIGN_IDENTITY to your Developer ID Application name." >&2
   exit 1
 fi
 
@@ -62,7 +62,7 @@ fi
 SUBMIT="$TARGET"
 ZIP=""
 if [[ "$TARGET" == *.app ]]; then
-  ZIP="${TMPDIR:-/tmp}/OctoBot-notarize-$$.zip"
+  ZIP="${TMPDIR:-/tmp}/Sub8Bot-notarize-$$.zip"
   rm -f "$ZIP"
   echo "==> Zipping for notarytool"
   ditto -c -k --keepParent "$TARGET" "$ZIP"
@@ -70,7 +70,7 @@ if [[ "$TARGET" == *.app ]]; then
 fi
 
 if [ -z "$NOTARY_AUTH_DESC" ]; then
-  echo "Skipping notarization (set OCTOBOT_NOTARY_KEY + KEY_ID + ISSUER, or OCTOBOT_NOTARY_PROFILE)"
+  echo "Skipping notarization (set SUB8BOT_NOTARY_KEY + KEY_ID + ISSUER, or SUB8BOT_NOTARY_PROFILE)"
   exit 0
 fi
 

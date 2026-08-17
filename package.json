@@ -1,16 +1,16 @@
 {
-  "name": "octobot",
-  "productName": "OctoBot",
-  "version": "0.2.1",
+  "name": "sub8bot",
+  "productName": "Sub8Bot",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
   "author": "Daniel Farina",
-  "description": "OctoBot — local desktop assistants that live on their own Linux computers.",
+  "description": "Sub8Bot — local desktop assistants that live on their own Linux computers.",
   "scripts": {
     "start": "node server/index.mjs",
     "app": "zsh start.sh",
-    "electron": "zsh scripts/macos-dev-app.sh >/dev/null && open -n -a .app/OctoBot.app --args \"$PWD\"",
+    "electron": "zsh scripts/macos-dev-app.sh >/dev/null && open -n -a .app/Sub8Bot.app --args \"$PWD\"",
     "test": "node test/tunnels.mjs",
     "icons": "python3 scripts/make-icons.py && iconutil -c icns build/icon.iconset -o build/icon.icns",
     "logo": "node scripts/render-logo.mjs",
@@ -33,8 +33,8 @@
     "puppeteer-core": "^25.7.0"
   },
   "build": {
-    "appId": "app.octobot.desktop",
-    "productName": "OctoBot",
+    "appId": "app.sub8bot.desktop",
+    "productName": "Sub8Bot",
     "copyright": "Copyright © 2026 Daniel Farina",
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "directories": {
@@ -80,8 +80,8 @@
         }
       ],
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "OctoBot uses the microphone so you can dictate messages.",
-        "NSSpeechRecognitionUsageDescription": "OctoBot turns your speech into text on this Mac."
+        "NSMicrophoneUsageDescription": "Sub8Bot uses the microphone so you can dictate messages.",
+        "NSSpeechRecognitionUsageDescription": "Sub8Bot turns your speech into text on this Mac."
       },
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
@@ -90,7 +90,7 @@
       "notarize": false
     },
     "dmg": {
-      "title": "OctoBot",
+      "title": "Sub8Bot",
       "icon": "build/icon.icns",
       "sign": true
     },

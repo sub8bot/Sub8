@@ -19,7 +19,7 @@ else
   sleep 0.8
 fi
 zsh "$PWD/scripts/macos-dev-app.sh" >/dev/null
-APP_BUNDLE="$PWD/.app/OctoBot.app"
+APP_BUNDLE="$PWD/.app/Sub8Bot.app"
 APP_ELECTRON="$APP_BUNDLE/Contents/MacOS/Electron"
 STOCK_ELECTRON="$PWD/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
 has_main=0
@@ -32,7 +32,7 @@ while IFS= read -r pid cmd; do
   esac
 done < <(ps -ax -o pid=,command=)
 if [ "$has_main" = 1 ] && [ "$has_window" = 1 ]; then
-  echo "OctoBot window already running — focusing"
+  echo "Sub8Bot window already running — focusing"
   open -a "$APP_BUNDLE" --args "$PWD"
   if [ -n "$SERVER" ]; then
     wait "$SERVER"
@@ -40,7 +40,7 @@ if [ "$has_main" = 1 ] && [ "$has_window" = 1 ]; then
   exit 0
 fi
 if [ "$has_main" = 1 ]; then
-  echo "OctoBot has no window — relaunching"
+  echo "Sub8Bot has no window — relaunching"
   while IFS= read -r pid cmd; do
     case "$cmd" in
       "$APP_ELECTRON"*|"$STOCK_ELECTRON"*) kill "$pid" 2>/dev/null || true ;;
