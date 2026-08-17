@@ -1796,10 +1796,14 @@ function bindDelegated() {
     if (act === "add-routine") {
       state.modal = "routine";
       state.editingRoutineId = null;
+      render();
+      return;
     }
     if (act === "edit-routine") {
       state.modal = "routine";
       state.editingRoutineId = el.dataset.id;
+      render();
+      return;
     }
     if (act === "delete-routine") {
       deleteRoutine(el.dataset.id);
@@ -2352,11 +2356,17 @@ async function saveRoutine() {
 async function deleteRoutine(id) {
   const bot = state.bots.find((b) => b.id === state.selected);
   if (!bot || !id) return;
-
-  await api(`/api/bots/${bot.id}/routines/${id}`, { method: "DELETE" });
+  bot.routines = (bot.routines || []).filter((r) => r.id !== id);
+  paintRoutineList(bot);
   if (state.editingRoutineId === id) {
     state.editingRoutineId = null;
     state.modal = null;
+  }
+  try {
+    await api(`/api/bots/${bot.id}/routines/${id}`, { method: "DELETE" });
+  } catch {
+    await refresh();
+    return;
   }
   await refresh();
 }
