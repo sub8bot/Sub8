@@ -253,7 +253,7 @@ async function loadSystemPrompt(bot) {
   const core = await fs.readFile(path.join(appRoot, "prompts", "grok-bot-system.txt"), "utf8");
   const extra = bot.instructions?.trim() ? `\n\n## Standing instructions for this Bot\n${bot.instructions.trim()}\n` : "";
   const ident = `\nYou are the Bot named "${bot.name}". ${bot.description || ""}\n`;
-  return `${adapter}\n${computer}\n${ident}${extra}${routines.promptBlock(bot)}\n${core}`
+  return `${adapter}\n${computer}\n${ident}${extra}${routines.promptBlock(bot)}\n${core}
 
 ## OctoBot override (this wins)
 You already know the machine. Do not spend the first turns on \`pwd\`, \`whoami\`, \`ls /home\`, or hunting /workspace.
