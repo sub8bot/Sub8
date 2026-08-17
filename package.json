@@ -36,7 +36,7 @@
     "appId": "app.sub8bot.desktop",
     "productName": "Sub8",
     "copyright": "Copyright © 2026 Daniel Farina",
-    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "artifactName": "${productName}-${os}-${arch}.${ext}",
     "directories": {
       "output": "dist",
       "buildResources": "build"

@@ -23,10 +23,10 @@ Private repo for now. Grab a build from [Releases](https://github.com/sub8bot/Su
 
 | Platform | Artifact |
 |---|---|
-| macOS (Apple Silicon) | `Sub8-0.3.0-mac-arm64.dmg` — signed and notarized |
-| macOS (Intel) | `Sub8-0.3.0-mac-x64.dmg` — signed and notarized |
-| Windows | `Sub8-0.3.0-win-x64.zip` |
-| Linux | `Sub8-0.3.0-linux-x86_64.AppImage` or `Sub8-0.3.0-linux-x64.tar.gz` |
+| macOS (Apple Silicon) | [`Sub8-mac-arm64.dmg`](https://github.com/sub8bot/Sub8/releases/download/v0.3.0/Sub8-mac-arm64.dmg) — signed and notarized |
+| macOS (Intel) | [`Sub8-mac-x64.dmg`](https://github.com/sub8bot/Sub8/releases/download/v0.3.0/Sub8-mac-x64.dmg) — signed and notarized |
+| Windows | [`Sub8-win-x64.zip`](https://github.com/sub8bot/Sub8/releases/download/v0.3.0/Sub8-win-x64.zip) |
+| Linux | [`Sub8-linux-x86_64.AppImage`](https://github.com/sub8bot/Sub8/releases/download/v0.3.0/Sub8-linux-x86_64.AppImage) or [`Sub8-linux-x64.tar.gz`](https://github.com/sub8bot/Sub8/releases/download/v0.3.0/Sub8-linux-x64.tar.gz) |
 
 **macOS:** open the DMG, drag Sub8 to Applications, launch. Gatekeeper should accept it (Developer ID + notarized).
 
