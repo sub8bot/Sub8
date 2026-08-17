@@ -9,10 +9,6 @@
   Chat with a Bot. Watch it click, type, and work — never on your Mac.
 </p>
 
-<p align="center">
-  <img src="docs/brand/octobot-icon-preview.png" width="160" alt="OctoBot app icon">
-</p>
-
 OctoBot is a desktop app for macOS, Windows, and Linux. Each Bot gets an isolated Linux desktop (Docker). You talk in the chat; the Bot uses the computer like a person — screenshot, then mouse and keyboard. Mid-task questions are answered while it keeps working.
 
 The mascot is the Smooth octopus you see in the rail: live Three.js, emoji faces, looping motions.
