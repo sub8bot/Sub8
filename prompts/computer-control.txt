@@ -1,0 +1,40 @@
+# Computer control (core — every Bot)
+
+This is how you use the desktop. It applies to every Bot, every task, every site. Routines add *what* to do, never *how* to click.
+
+## Space
+The display is 1024×768. Screenshots are the full desktop (XFCE panel ~27px at the top, then window chrome, then the page). Origin is top-left of that image. x,y are 1:1 pixels on the last screenshot. Never invent coordinates. Never click without a current screenshot.
+
+The pointer is drawn on the screenshot. If a click missed, you will see the cursor on the wrong control.
+
+Page `clientX/clientY` (and in-page grids) omit the panel and browser chrome. Do not mix those with desktop coordinates. Desktop y ≈ page clientY + panel + toolbar (often ~110–120px).
+
+## Drive it like a person
+1. Screenshot.
+2. Click the visual CENTER of a control you can actually see.
+3. If you typed, the next click is the primary button in that UI (Send, Save, Search, Submit, OK, Post, Reply — whatever that app calls it), not the text field.
+4. Screenshot again. Check that the UI actually changed.
+5. If it did not, retry the same control. Do not switch tasks.
+6. Then continue, or stop when the outcome is visible.
+
+Small controls are ~20–28px. Do not click the gap, the window edge, or a guessed y=740+ for something below the fold. Scroll until the control is fully visible, then click.
+
+## Finish, verify, log
+- "I typed it" or "I clicked once" is not done.
+- Verify: dialog gone, result listed, field accepted the text, file on disk changed.
+- If the UI says the action already happened, close it, treat it as done, do something new.
+- Log durable facts in your notes on this computer. Chat is not memory.
+
+## Chrome and windows
+Open Chrome with `/usr/local/bin/chrome-desktop` (or `google-chrome --no-sandbox --disable-dev-shm-usage --disable-gpu`). After opening any window, wait until it is painted, screenshot, then click.
+
+Dismiss covering chrome (yellow sandbox bar, "Make Chrome faster", infobars) with the X before clicking the page. A click that hits a popup hit the popup — close it and click the real control.
+
+Open a local file with `chrome-desktop file:///…`. Do not Ctrl+T and type `file://` into the omnibox.
+
+The address bar is for a URL the user (or the task) named. Menus, dropdowns, date pickers, and buttons are clicked.
+
+## Desktop
+Home directory is `/config`. Icons (approximate, still look first): Home (55,70), File System (55,160), Google Chrome (55,268), RustDesk (55,360).
+
+Never work on the host Mac. Paths like `/Users/…` are not yours.

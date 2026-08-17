@@ -342,8 +342,10 @@ export async function installOctoClick(container) {
 
 export async function installAgentsMd(container, extra = "") {
   const host = path.resolve(appRoot, "prompts", "grok-build-vm.txt");
+  const control = path.resolve(appRoot, "prompts", "computer-control.txt");
   const base = await fs.readFile(host, "utf8").catch(() => "");
-  const body = `${base}\n${extra}\n`;
+  const how = await fs.readFile(control, "utf8").catch(() => "");
+  const body = `${base}\n${how}\n${extra}\n`;
   const b64 = Buffer.from(body, "utf8").toString("base64");
   await docker([
     "exec",
@@ -615,7 +617,7 @@ export async function click(bot, x, y, button = 1, count = 1) {
       bot.vm.container,
       "bash",
       "-lc",
-      `${displayEnv(bot)}; ${pointerScript(p.x, p.y)}; xdotool click --clearmodifiers --repeat ${n} --delay 40 ${button}; eval "$(xdotool getmouselocation --shell)"; echo POINTER=$X,$Y`,
+      `${displayEnv(bot)}; if [ -x /usr/local/bin/octo-click ]; then /usr/local/bin/octo-click ${p.x} ${p.y} ${button} ${n}; else ${pointerScript(p.x, p.y)}; xdotool click --clearmodifiers --repeat ${n} --delay 40 ${button}; eval "$(xdotool getmouselocation --shell)"; echo POINTER=$X,$Y; fi`,
     ]);
     if (!r.ok) throw new Error(`click failed: ${r.out.slice(-400)}`);
     await wait(160);

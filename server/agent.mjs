@@ -35,7 +35,7 @@ const TOOLS = [
     function: {
       name: "computer",
       description:
-        "Drive the desktop. x,y are pixels on the LAST screenshot (origin top-left, 1:1 with that image, including the top panel). Click the visual CENTER of a control you can actually see. If it is off-screen or cut off, scroll first — never guess. The screenshot shows the mouse pointer.",
+        "Drive the desktop. x,y are pixels on the LAST screenshot (origin top-left, 1:1 with the full 1024x768 image). Click the visual CENTER of a control you can see. After type, click the primary button (Send/Save/Search/OK/Post), then screenshot to verify. Scroll if the control is off-screen. The pointer is drawn on the image.",
       parameters: {
         type: "object",
         properties: {
@@ -116,6 +116,17 @@ const TOOLS = [
   },
 ];
 
+export function isChatQuestion(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  if (/^(stop|halt|cancel|never mind)\b/i.test(t)) return false;
+  if (/\b(go )?(post|tweet|publish) (it|now|this)\b/i.test(t)) return false;
+  if (/\bwhy\b/i.test(t)) return true;
+  if (/\b(answer|explain|you should)\b/i.test(t) && !/\bpost it\b/i.test(t)) return true;
+  if (/^(what|how|when|where|who|did|do you|have you|are you|can you)\b/i.test(t)) return true;
+  return /\?$/.test(t);
+}
+
 export async function orchestratorReply({ bot, settings, userText }) {
   const harness = resolveClient(settings);
   if (harness.kind !== "openai") return null;
@@ -123,11 +134,17 @@ export async function orchestratorReply({ bot, settings, userText }) {
     /what are you (doing|working)|status\??$|still (working|there)\??/i.test(String(t || "").trim());
   const lastTask = [...(bot.messages || [])]
     .reverse()
-    .find((m) => m.role === "user" && !m.hidden && !isStatus(m.content));
-  const since = lastTask?.ts || 0;
+    .find(
+      (m) =>
+        m.role === "user" &&
+        !m.hidden &&
+        !isStatus(m.content) &&
+        String(m.content || "").trim() !== String(userText || "").trim() &&
+        !isChatQuestion(m.content),
+    );
   const work = (bot.messages || [])
-    .filter((m) => m.kind === "tool" && (m.ts || 0) >= since)
-    .slice(-6)
+    .filter((m) => m.kind === "tool")
+    .slice(-16)
     .map((m) => m.summary || m.action || m.name)
     .filter(Boolean)
     .join("; ");
@@ -136,16 +153,26 @@ export async function orchestratorReply({ bot, settings, userText }) {
     messages: [
       {
         role: "system",
-        content: `You are the chat-facing orchestrator for "${bot.name}". A worker is on the computer. Answer in 1-3 short sentences using ONLY the latest assigned task and the worker actions after it. Ignore older projects. If they ask what you are doing, name that latest task. No tools.`,
+        content: `You are ${bot.name}. First person only: I, me, my. Never say worker or orchestrator. Answer the user's actual question from the action list. If they ask why work is unfinished, be specific (typed a draft then clicked the text instead of Post; missed the Reply button by a few pixels; opened another tab). Do not use a canned line.`,
       },
       {
         role: "user",
-        content: `Latest assigned task:\n${String(lastTask?.content || "unknown").slice(0, 280)}\n\nWorker actions since that task:\n${work || "just started"}\n\nUser:\n${userText}`,
+        content: `Standing job:\n${String(lastTask?.content || "the current computer work").slice(0, 400)}\n\nWhat I actually did on the computer:\n${work || "nothing logged yet"}\n\nUser:\n${userText}`,
       },
     ],
-    max_tokens: 160,
+    max_tokens: 180,
   });
-  return String(resp.choices?.[0]?.message?.content || "").trim() || null;
+  let text = String(resp.choices?.[0]?.message?.content || "").trim();
+  if (/\bworker\b|\borchestrator\b/i.test(text)) {
+    text = text
+      .replace(/\b[Tt]he worker\b/g, "I")
+      .replace(/\b[Ww]orker\b/g, "I")
+      .replace(/\bit's\b/g, "I'm")
+      .replace(/\bit is\b/g, "I am")
+      .replace(/\bit typed\b/gi, "I typed")
+      .replace(/\bit\b(?= (is|was|has|clicked|typed|started))/gi, "I");
+  }
+  return text || null;
 }
 
 export function resolveClient(settings) {
@@ -222,10 +249,11 @@ export async function pingHarness(settings) {
 
 async function loadSystemPrompt(bot) {
   const adapter = await fs.readFile(path.join(appRoot, "prompts", "local-adapter.txt"), "utf8");
+  const computer = await fs.readFile(path.join(appRoot, "prompts", "computer-control.txt"), "utf8");
   const core = await fs.readFile(path.join(appRoot, "prompts", "grok-bot-system.txt"), "utf8");
   const extra = bot.instructions?.trim() ? `\n\n## Standing instructions for this Bot\n${bot.instructions.trim()}\n` : "";
   const ident = `\nYou are the Bot named "${bot.name}". ${bot.description || ""}\n`;
-  return `${adapter}\n${ident}${extra}${routines.promptBlock(bot)}\n${core}
+  return `${adapter}\n${computer}\n${ident}${extra}${routines.promptBlock(bot)}\n${core}`
 
 ## OctoBot override (this wins)
 You already know the machine. Do not spend the first turns on \`pwd\`, \`whoami\`, \`ls /home\`, or hunting /workspace.
@@ -336,8 +364,9 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
       }
       history.push({
         role: "user",
-        content:
-          "The user sent a chat message while you were working. An orchestrator already answered them in the chat. Do not send_message about that question unless they asked you to stop or change the task. If they asked to stop or change course, follow that. Otherwise continue the computer work.",
+        content: incoming.some((t) => isChatQuestion(t))
+          ? "The user asked a question in chat. It was already answered there in first person. Do NOT treat that question as a new computer task. Do not start posting or change what you are doing unless they explicitly said to post/do it now."
+          : "The user sent a chat message while you were working. It was already answered in chat. If they asked to stop or change course, follow that. If they asked you to do the thing now, do it. Otherwise continue the same computer work.",
       });
     }
     const resp = await harness.client.chat.completions.create(
@@ -354,17 +383,7 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
 
     if (msg.content && msg.content.trim() && !msg.tool_calls?.length) {
       const think = String(msg.reasoning_content || msg.reasoning || "").trim();
-      if (think) {
-        const thought = {
-          id: `th${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
-          role: "activity",
-          kind: "think",
-          content: think,
-          ts: Date.now(),
-        };
-        bot.messages.push(thought);
-        emit("message", thought);
-      }
+      emitThink(bot, emit, think, { hidden });
       lastVisible = msg.content.trim();
       const out = { id: `a${Date.now()}`, role: "assistant", content: lastVisible, ts: Date.now() };
       bot.messages.push(out);
@@ -386,17 +405,7 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
     const think = String(msg.reasoning_content || msg.reasoning || "").trim()
       || (msg.content && String(msg.content).trim())
       || "";
-    if (think) {
-      const thought = {
-        id: `th${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
-        role: "activity",
-        kind: "think",
-        content: think,
-        ts: Date.now(),
-      };
-      bot.messages.push(thought);
-      emit("message", thought);
-    }
+    emitThink(bot, emit, think, { hidden });
 
     history.push({ role: "assistant", content: msg.content || null, tool_calls: msg.tool_calls });
 
@@ -484,6 +493,25 @@ function isDone(text) {
   return /\b(done|finished|all set|that's it|thats it|completed|closed the loop|nothing else|task is complete)\b/i.test(
     text || ""
   );
+}
+
+const lastThinkAt = new Map();
+
+function emitThink(bot, emit, text, { hidden } = {}) {
+  const think = String(text || "").trim();
+  if (!think || hidden) return;
+  const now = Date.now();
+  if (now - (lastThinkAt.get(bot.id) || 0) < 12_000) return;
+  lastThinkAt.set(bot.id, now);
+  const thought = {
+    id: `th${now}${Math.random().toString(36).slice(2, 5)}`,
+    role: "activity",
+    kind: "think",
+    content: think,
+    ts: now,
+  };
+  bot.messages.push(thought);
+  emit("message", thought);
 }
 
 async function shotPayload(bot, emit, note = "") {
@@ -594,7 +622,11 @@ async function computerAction(bot, args, emit) {
   else return { text: `unknown computer action ${action}` };
 
   if (AUTO_SHOT.has(action)) {
-    const shot = await shotPayload(bot, emit, `After ${action}.`);
+    const note =
+      action === "type"
+        ? "After type. If a primary button is visible (Post, Reply, Send, Save, OK), click its CENTER next. Then screenshot to verify the action landed. Do not type more."
+        : `After ${action}.`;
+    const shot = await shotPayload(bot, emit, note);
     lastShotAt.set(bot.id, Date.now());
     return shot;
   }
