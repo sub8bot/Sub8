@@ -1,4 +1,4 @@
-import { app, BrowserWindow, session, shell, nativeImage } from "electron";
+import { app, BrowserWindow, session, shell, nativeImage, ipcMain } from "electron";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
@@ -148,7 +148,11 @@ function create() {
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 16, y: 18 },
     icon: icon || undefined,
-    webPreferences: { sandbox: true },
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      preload: path.join(here, "preload.cjs"),
+    },
   });
   win.webContents.session.setPermissionRequestHandler((_wc, permission, callback) => {
     callback(permission === "media" || permission === "microphone" || permission === "audioCapture");
@@ -198,6 +202,44 @@ function focusMainWindow() {
   }
 }
 
+async function setupAutoUpdate() {
+  if (!app.isPackaged) return;
+  let autoUpdater;
+  try {
+    ({ autoUpdater } = await import("electron-updater"));
+  } catch {
+    return;
+  }
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+  ipcMain.handle("update-check", async () => {
+    try {
+      const result = await autoUpdater.checkForUpdates();
+      const info = result?.updateInfo;
+      return {
+        ok: true,
+        updateAvailable: Boolean(info?.version && info.version !== app.getVersion()),
+        latestVersion: info?.version || null,
+        currentVersion: app.getVersion(),
+      };
+    } catch (err) {
+      return { ok: false, error: String(err?.message || err), currentVersion: app.getVersion() };
+    }
+  });
+  ipcMain.handle("update-download", async () => {
+    try {
+      await autoUpdater.downloadUpdate();
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: String(err?.message || err) };
+    }
+  });
+  ipcMain.handle("update-install", () => {
+    setImmediate(() => autoUpdater.quitAndInstall(false, true));
+    return { ok: true };
+  });
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
@@ -208,6 +250,7 @@ if (!gotLock) {
     PORT = String(resolved.port);
     URL = process.env.LOCALBOT_URL || `http://127.0.0.1:${PORT}`;
     if (!resolved.already) serverProc = startServer();
+    setupAutoUpdate().catch(() => {});
     create();
   });
   app.on("activate", () => focusMainWindow());

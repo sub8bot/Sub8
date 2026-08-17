@@ -10,6 +10,7 @@ import * as routines from "./routines.mjs";
 import { runTurn, publicBot, pingHarness, webSearch, orchestratorReply, isChatQuestion } from "./agent.mjs";
 import { setHumanControl, isHumanControl } from "./control.mjs";
 import { appRoot, dataDir } from "./paths.mjs";
+import * as appUpdate from "./update.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = appRoot;
@@ -168,7 +169,12 @@ app.get("/api/settings", async (_req, res) => {
     hasGrokAuth: await vm.hostHasGrokAuth(),
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     docker: await vm.dockerStatus(),
+    appVersion: appUpdate.appVersion(),
   });
+});
+
+app.get("/api/update", async (_req, res) => {
+  res.json(await appUpdate.checkForAppUpdate());
 });
 
 app.put("/api/settings", async (req, res) => {

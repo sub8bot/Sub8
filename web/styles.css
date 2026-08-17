@@ -1072,6 +1072,24 @@ textarea.field { min-height: 88px; resize: vertical; }
 .banner.warn {
   background: #fff6e5; color: #9a6700;
 }
+.update-strip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 16px;
+  background: #111;
+  color: #fff;
+  font-size: 13px;
+}
+.update-strip .muted { color: #a1a1aa; }
+.update-strip .pill { background: #fff; color: #111; }
 .danger { background: #e11d48; color: #fff; border: 0; border-radius: 10px; padding: 8px 14px; cursor: pointer; }
 .plus-menu {
   position: absolute;

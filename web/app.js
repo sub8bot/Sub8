@@ -27,6 +27,9 @@ const state = {
   hasGrokAuth: null,
   grokAuthAsk: false,
   docker: null,
+  update: null,
+  updateBusy: false,
+  appVersion: "",
   teach: null,
   teachFrames: [],
   attachments: [],
@@ -112,6 +115,73 @@ function dockerMissing() {
 function dockerMissingHtml() {
   const hint = state.docker?.hint || "Please start Docker. Sub8 needs it so each Bot can have a computer.";
   return `<div class="banner warn" style="margin:0;text-align:left"><strong>Docker is not running.</strong> ${escapeHtml(hint)}</div>`;
+}
+
+function paintUpdateBanner() {
+  let host = $("#update-banner");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "update-banner";
+    document.body.appendChild(host);
+  }
+  const u = state.update;
+  if (!u?.updateAvailable) {
+    host.innerHTML = "";
+    host.hidden = true;
+    return;
+  }
+  host.hidden = false;
+  host.innerHTML = `<div class="update-strip">
+    Sub8 ${escapeHtml(u.latestVersion || "")} is available
+    <span class="muted">(you have ${escapeHtml(u.currentVersion || "")})</span>
+    <button type="button" class="pill primary" data-act="install-update">${state.updateBusy ? "Working…" : "Download update"}</button>
+    <button type="button" class="pill" data-act="dismiss-update">Later</button>
+  </div>`;
+}
+
+async function checkForUpdate({ silent = true } = {}) {
+  try {
+    const desktop = window.sub8Desktop;
+    let info = await api("/api/update");
+    if (desktop?.checkUpdate) {
+      const native = await desktop.checkUpdate().catch(() => null);
+      if (native?.updateAvailable && native.latestVersion) {
+        info = { ...info, ...native, downloadUrl: info.downloadUrl };
+      }
+    }
+    state.update = info;
+    if (!silent && !info.updateAvailable) {
+      state.update = { ...info, justChecked: true };
+    }
+    paintUpdateBanner();
+    if (state.modal === "settings") paintModal();
+    return info;
+  } catch (err) {
+    state.update = { currentVersion: state.appVersion || "", updateAvailable: false, error: err.message };
+    if (!silent && state.modal === "settings") paintModal();
+    return state.update;
+  }
+}
+
+async function installUpdate() {
+  const u = state.update;
+  state.updateBusy = true;
+  paintUpdateBanner();
+  try {
+    const desktop = window.sub8Desktop;
+    if (desktop?.downloadUpdate && desktop?.installUpdate) {
+      const dl = await desktop.downloadUpdate();
+      if (dl?.ok) {
+        await desktop.installUpdate();
+        return;
+      }
+    }
+    if (u?.downloadUrl) window.open(u.downloadUrl, "_blank");
+    else if (u?.releaseUrl) window.open(u.releaseUrl, "_blank");
+  } finally {
+    state.updateBusy = false;
+    paintUpdateBanner();
+  }
 }
 
 function paintDockerGate() {
@@ -1362,7 +1432,23 @@ function settingsHtml() {
           <div class="block"><h3>This Mac</h3>
             <div class="card">
               <div class="row"><div class="lbl">Timezone</div><span class="muted">${escapeHtml(state.timezone || "auto")}</span></div>
-              <div class="row"><div class="lbl">Version</div><span class="muted">Sub8 0.3.6</span></div>
+              <div class="row"><div class="lbl">Version</div><span class="muted">Sub8 ${escapeHtml(state.appVersion || state.update?.currentVersion || "0.3.7")}</span></div>
+              <div class="row"><div><div class="lbl">Updates</div><div class="sub">${
+                state.update?.updateAvailable
+                  ? `Sub8 ${escapeHtml(state.update.latestVersion)} is available`
+                  : state.update?.error
+                    ? escapeHtml(state.update.error)
+                    : state.update
+                      ? "You're on the latest version"
+                      : "Checks GitHub Releases, same as Xnative"
+              }</div></div>
+                <button class="pill" data-act="check-update">${state.updateBusy ? "Checking…" : "Check for updates"}</button></div>
+              ${
+                state.update?.updateAvailable
+                  ? `<div class="row"><div class="lbl">Install</div>
+                <button class="pill primary" data-act="install-update">Download ${escapeHtml(state.update.downloadName || "update")}</button></div>`
+                  : ""
+              }
             </div>
           </div>`
             : sec === "usage"
@@ -1670,6 +1756,27 @@ function bindDelegated() {
     }
     if (act === "reset-vm") {
       if (confirm("Reset this Bot’s computer? Files and logins on that desktop will be gone.")) resetVm();
+      return;
+    }
+    if (act === "check-update") {
+      state.updateBusy = true;
+      paintModal();
+      checkForUpdate({ silent: false }).finally(() => {
+        state.updateBusy = false;
+        paintModal();
+      });
+      return;
+    }
+    if (act === "install-update") {
+      installUpdate();
+      return;
+    }
+    if (act === "dismiss-update") {
+      const host = $("#update-banner");
+      if (host) {
+        host.innerHTML = "";
+        host.hidden = true;
+      }
       return;
     }
     if (act === "reload-vm") {
@@ -2343,6 +2450,7 @@ async function refreshSettings() {
   state.timezone = r.timezone;
   state.hasGrokAuth = Boolean(r.hasGrokAuth);
   if (r.docker) state.docker = r.docker;
+  if (r.appVersion) state.appVersion = r.appVersion;
   applyTheme();
   paintDockerGate();
 }
@@ -2594,6 +2702,7 @@ function watchStream() {
   listen();
   render();
   document.documentElement.dataset.appReady = "1";
+  checkForUpdate({ silent: true }).catch(() => {});
   if (wantsGrokBuild()) {
     if (state.hasGrokAuth) {
       state.grokAuthAsk = false;
