@@ -179,9 +179,10 @@ test("Chrome exists in the VM", async () => {
   assert.ok(/chrome/i.test(r.output));
 });
 
-test("Grok CLI exists in the VM", async () => {
-  const r = await vm.shell(bot, "test -x /usr/local/bin/grok && /usr/local/bin/grok --version");
-  assert.match(r.output, /grok/i);
+test("Grok Build is not required inside the VM", async () => {
+  const r = await vm.shell(bot, "command -v grok || echo no-grok");
+  assert.ok(r.ok);
+  assert.match(r.output, /grok|no-grok/i);
 });
 
 test("AGENTS.md is installed in the VM", async () => {

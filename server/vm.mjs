@@ -71,6 +71,40 @@ function dockerEnv() {
 
 const dockerKids = new Set();
 
+function makeLimiter(n) {
+  let active = 0;
+  const q = [];
+  return {
+    async acquire() {
+      if (active < n) {
+        active += 1;
+        return;
+      }
+      await new Promise((resolve) => q.push(resolve));
+    },
+    release() {
+      if (q.length) q.shift()();
+      else active = Math.max(0, active - 1);
+    },
+    stats() {
+      return { active, waiting: q.length };
+    },
+  };
+}
+
+const shortDocker = makeLimiter(2);
+const longDocker = makeLimiter(1);
+
+export function isLongDocker(args = [], opts = {}) {
+  const joined = (Array.isArray(args) ? args : []).join(" ");
+  if (/setup-apps|apt-get|\bapt\b/i.test(joined)) return true;
+  return (opts.timeout || 0) >= 60_000;
+}
+
+export function dockerQueueStats() {
+  return { short: shortDocker.stats(), long: longDocker.stats(), kids: dockerKids.size };
+}
+
 function run(cmd, args, opts = {}) {
   const { timeout, track, env, ...spawnOpts } = opts;
   return new Promise((resolve) => {
@@ -107,8 +141,14 @@ function run(cmd, args, opts = {}) {
   });
 }
 
-export function docker(args, opts = {}) {
-  return run(dockerBin(), args, { ...opts, track: dockerKids });
+export async function docker(args, opts = {}) {
+  const lim = isLongDocker(args, opts) ? longDocker : shortDocker;
+  await lim.acquire();
+  try {
+    return await run(dockerBin(), args, { ...opts, track: dockerKids });
+  } finally {
+    lim.release();
+  }
 }
 
 export function killHungDockerClients() {
@@ -492,11 +532,20 @@ async function portFree(port) {
   return !r.ok || !r.out;
 }
 
+let portLock = Promise.resolve();
+
 export async function allocatePort() {
-  for (let p = START_PORT; p < START_PORT + 80; p++) {
-    if (await portFree(p)) return p;
-  }
-  throw new Error("No free noVNC port");
+  const run = portLock.then(async () => {
+    for (let p = START_PORT; p < START_PORT + 80; p++) {
+      if (await portFree(p)) return p;
+    }
+    throw new Error("No free noVNC port");
+  });
+  portLock = run.then(
+    () => {},
+    () => {},
+  );
+  return run;
 }
 
 export async function ensureImage(onLog = () => {}) {
@@ -632,7 +681,15 @@ export async function startVm(bot, onLog = () => {}, shouldAbort = async () => f
   if (existing.paused) {
     await resumeContainer(name);
   }
-  if (existing.exists && (existing.running || existing.paused)) {
+  if (existing.exists && !existing.running && !existing.paused) {
+    const started = await startExistingContainer(name);
+    if (!started.ok) {
+      onLog(`Could not resume ${name}, recreating…`);
+      await docker(["rm", "-f", name], { timeout: 20_000 });
+    }
+  }
+  const live = await inspectState(name);
+  if (live.exists && (live.running || live.paused)) {
     await abortIfGone();
     const port = bot.vm?.novncPort || (await detectMappedPort(name));
     const chrome = await chromeReady(name);
@@ -646,7 +703,7 @@ export async function startVm(bot, onLog = () => {}, shouldAbort = async () => f
       setup: setupProgress(name),
     };
   }
-  if (existing.exists) await docker(["rm", "-f", name], { timeout: 20_000 });
+  if (live.exists) await docker(["rm", "-f", name], { timeout: 20_000 });
 
   await ensureImage(onLog);
   await abortIfGone();
@@ -662,6 +719,12 @@ export async function startVm(bot, onLog = () => {}, shouldAbort = async () => f
     name,
     "--hostname",
     "computer",
+    "--restart",
+    "unless-stopped",
+    "--dns",
+    "8.8.8.8",
+    "--dns",
+    "1.1.1.1",
     "--shm-size=1g",
     "-e",
     "PUID=1000",
@@ -717,13 +780,34 @@ export function setupProgress(name) {
   return setupJobs.get(name)?.progress || { step: 0, total: SETUP_TOTAL, label: "", ready: false };
 }
 
+const chromeCache = new Map();
+const CHROME_TTL_MS = 12_000;
+
 export async function chromeReady(name) {
   if (!name) return false;
-  const r = await docker(
-    ["exec", name, "bash", "-lc", "command -v google-chrome-stable || command -v google-chrome"],
-    { timeout: 12_000 },
-  );
-  return r.ok && /chrome/i.test(r.out || "");
+  if (setupProgress(name).ready) return true;
+  const now = Date.now();
+  const hit = chromeCache.get(name);
+  if (hit?.value === true) return true;
+  if (hit?.inflight) return hit.inflight;
+  if (hit && now - hit.at < CHROME_TTL_MS) return Boolean(hit.value);
+  const inflight = (async () => {
+    const r = await docker(
+      ["exec", name, "bash", "-lc", "command -v google-chrome-stable || command -v google-chrome"],
+      { timeout: 12_000 },
+    );
+    const ok = r.ok && /chrome/i.test(r.out || "");
+    chromeCache.set(name, { at: Date.now(), value: ok, inflight: null });
+    if (ok) setSetup(name, SETUP_TOTAL, "Ready", true);
+    return ok;
+  })();
+  chromeCache.set(name, { at: hit?.at || now, value: Boolean(hit?.value), inflight });
+  try {
+    return await inflight;
+  } finally {
+    const cur = chromeCache.get(name);
+    if (cur?.inflight === inflight) cur.inflight = null;
+  }
 }
 
 function setupLine(p) {
@@ -761,7 +845,7 @@ async function finishDesktopSetup(name, onLog) {
       say(3, "Installing Chrome");
       const iv = setInterval(() => {
         markReadyIfChrome(name, onLog).catch(() => {});
-      }, 3000);
+      }, 8000);
       try {
         await ensureApps(name, (m) => {
           if (setupProgress(name).ready) {
@@ -827,33 +911,41 @@ async function waitHttp(url, timeoutMs, onLog, shouldAbort) {
   throw new Error("Desktop did not become reachable");
 }
 
+let setupLock = Promise.resolve();
+function withSetupLock(fn) {
+  const run = setupLock.then(fn, fn);
+  setupLock = run.then(
+    () => {},
+    () => {},
+  );
+  return run;
+}
+
 async function ensureTools(name, onLog) {
   const check = await docker(["exec", "-u", "root", name, "bash", "-lc", "command -v xdotool && command -v scrot"], {
     timeout: 20_000,
   });
   if (check.ok) return;
   onLog("Installing computer-use tools…");
-  const inst = await docker(
-    [
-      "exec",
-      "-u",
-      "root",
-      name,
-      "bash",
-      "-lc",
-      "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq xdotool scrot wmctrl x11-apps xclip xsel >/tmp/apt.log 2>&1",
-    ],
-    { timeout: 120_000 },
+  const inst = await withSetupLock(() =>
+    docker(
+      [
+        "exec",
+        "-u",
+        "root",
+        name,
+        "bash",
+        "-lc",
+        "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq xdotool scrot wmctrl x11-apps xclip xsel >/tmp/apt.log 2>&1",
+      ],
+      { timeout: 120_000 },
+    ),
   );
   if (!inst.ok) onLog(`tool install warning: ${inst.out.slice(-300)}`);
 }
 
 async function appsReady(name) {
-  const check = await docker(
-    ["exec", "-u", "root", name, "bash", "-lc", "command -v google-chrome-stable >/dev/null || command -v google-chrome >/dev/null"],
-    { timeout: 20_000 },
-  );
-  return check.ok;
+  return chromeReady(name);
 }
 
 async function ensureApps(name, onLog) {
@@ -864,7 +956,9 @@ async function ensureApps(name, onLog) {
   if (!cp.ok) throw new Error(`copy setup-apps failed: ${cp.out}`);
   let last = "";
   for (let attempt = 1; attempt <= 4; attempt++) {
-    const inst = await docker(["exec", "-u", "root", name, "bash", "/tmp/setup-apps.sh"], { timeout: 180_000 });
+    const inst = await withSetupLock(() =>
+      docker(["exec", "-u", "root", name, "bash", "/tmp/setup-apps.sh"], { timeout: 180_000 }),
+    );
     last = inst.out || "";
     const tail = last.split("\n").filter(Boolean).slice(-2).join(" | ");
     if (tail) onLog(tail);
@@ -1004,33 +1098,26 @@ export async function streamHealth(bot) {
     }
   }
   let grok = false;
-  let chrome = false;
-  if (running && name) {
-    const apps = await docker([
-      "exec",
-      name,
-      "bash",
-      "-lc",
-      "command -v grok; command -v google-chrome-stable || command -v google-chrome",
-    ]);
-    grok = /(^|\/)grok\b/.test(apps.out);
-    chrome = /chrome/i.test(apps.out);
-  }
+  let chrome = name ? setupProgress(name).ready || chromeCache.get(name)?.value === true : false;
+  if (running && name && !chrome) chrome = await chromeReady(name);
   let x11 = false;
   if (running && name) {
-    const xr = await docker([
-      "exec",
-      "-u",
-      "abc",
-      "-e",
-      "HOME=/config",
-      "-e",
-      `DISPLAY=${bot.vm?.display || ":1"}`,
-      name,
-      "bash",
-      "-lc",
-      "xset q >/dev/null 2>&1 && echo X_OK",
-    ]);
+    const xr = await docker(
+      [
+        "exec",
+        "-u",
+        "abc",
+        "-e",
+        "HOME=/config",
+        "-e",
+        `DISPLAY=${bot.vm?.display || ":1"}`,
+        name,
+        "bash",
+        "-lc",
+        "xset q >/dev/null 2>&1 && echo X_OK",
+      ],
+      { timeout: 8_000 },
+    );
     x11 = /X_OK/.test(xr.out || "");
   }
   return {
@@ -1051,8 +1138,8 @@ export async function waitForDesktop(bot, { timeoutMs = 90_000, onLog = () => {}
   if (!dock.ok) return { ok: false, reason: dock.hint };
   const start = Date.now();
   const gone = async () => Boolean(shouldAbort && (await shouldAbort()));
-  const name = containerName(bot.id);
-  const inspect = await docker(["inspect", "-f", "{{.State.Running}}", name]);
+  const name = bot.vm?.container || containerName(bot.id);
+  const inspect = await docker(["inspect", "-f", "{{.State.Running}}", name], { timeout: 8_000 });
   let alive = inspect.ok && inspect.out.trim() === "true";
   if (!alive) {
     onLog("Starting computer…");
@@ -1079,7 +1166,7 @@ export async function waitForDesktop(bot, { timeoutMs = 90_000, onLog = () => {}
     const h = await streamHealth(bot);
     const box = bot.vm?.container || name;
     if (h.ok) {
-      if (h.chrome || (await chromeReady(box))) {
+      if (h.chrome || setupProgress(box).ready || (await chromeReady(box))) {
         setSetup(box, SETUP_TOTAL, "Ready", true);
         return { ok: true, health: { ...h, chrome: true }, setup: setupProgress(box) };
       }
@@ -1090,7 +1177,7 @@ export async function waitForDesktop(bot, { timeoutMs = 90_000, onLog = () => {}
       const why = !h.running ? "container not running" : !h.http ? "stream not up" : !h.x11 ? "display not ready" : "not ready";
       onLog(`Waiting for desktop (${why})…`);
     }
-    await new Promise((r) => setTimeout(r, 1500));
+    await new Promise((r) => setTimeout(r, 4000));
   }
   const p = setupProgress(bot.vm?.container || name);
   return {
