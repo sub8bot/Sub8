@@ -195,13 +195,55 @@ function parseGrokStream(line, acc) {
   if (/agent_message/i.test(kind) && chunk) acc.reply += chunk;
 }
 
+export function hostCodexAuthPath() {
+  return path.join(os.homedir(), ".codex", "auth.json");
+}
+
+export function hostHermesAuthPath() {
+  return path.join(os.homedir(), ".hermes", "auth.json");
+}
+
+/** Share login tokens with an isolated CLI home. Copying auth.json burns one-time refresh tokens. */
+export async function shareAuthFile(src, dest) {
+  if (!src || !fsSync.existsSync(src)) return "missing";
+  await fs.mkdir(path.dirname(dest), { recursive: true });
+  try {
+    await fs.lstat(dest);
+    await fs.unlink(dest);
+  } catch {
+    /* dest missing */
+  }
+  try {
+    await fs.symlink(src, dest);
+    return "symlink";
+  } catch {
+    await fs.copyFile(src, dest);
+    return "copy";
+  }
+}
+
+/** If Codex rewrote a copied auth.json, copy the new tokens back to the host login. */
+export async function harvestAuthFile(src, dest) {
+  try {
+    const st = await fs.lstat(dest);
+    if (st.isSymbolicLink()) return "symlink";
+    const srcExists = fsSync.existsSync(src);
+    const srcM = srcExists ? (await fs.stat(src)).mtimeMs : 0;
+    if (!srcExists || st.mtimeMs >= srcM - 1000) {
+      await fs.mkdir(path.dirname(src), { recursive: true });
+      await fs.copyFile(dest, src);
+      return "copied-back";
+    }
+    return "stale";
+  } catch {
+    return "missing";
+  }
+}
+
 export async function writeCodexHome(work, mcpEnv) {
   const home = path.join(work, "codex-home");
   await fs.mkdir(home, { recursive: true });
-  const srcAuth = path.join(os.homedir(), ".codex", "auth.json");
-  if (fsSync.existsSync(srcAuth)) {
-    await fs.copyFile(srcAuth, path.join(home, "auth.json"));
-  }
+  await shareAuthFile(hostCodexAuthPath(), path.join(home, "auth.json"));
   const envLines = Object.entries({ PATH: hostEnv().PATH, ...mcpEnv })
     .filter(([, v]) => v != null && String(v))
     .map(([k, v]) => `${k} = ${JSON.stringify(String(v))}`)
@@ -233,10 +275,11 @@ export async function writeHermesHome(work, mcpEnv) {
   const src = path.join(os.homedir(), ".hermes");
   const home = path.join(work, "hermes-home");
   await fs.mkdir(home, { recursive: true });
-  for (const name of ["config.yaml", "auth.json", ".env"]) {
+  for (const name of ["config.yaml", ".env"]) {
     const from = path.join(src, name);
     if (fsSync.existsSync(from)) await fs.copyFile(from, path.join(home, name));
   }
+  await shareAuthFile(path.join(src, "auth.json"), path.join(home, "auth.json"));
   // CLI caches LM Studio context here. Without it, oneshot re-probes /v1/models
   // and Hermes rejects Qwen at the advertised ~4k window.
   for (const name of ["models_dev_cache.json", "ollama_cloud_models_cache.json"]) {
@@ -493,6 +536,12 @@ To sign in: vault_fill. Do not use browser-use or host Bash. If sub8 MCP is miss
         .trim();
       try {
         out = vault.redactSecrets(out, await vault.listSecrets());
+      } catch {
+        /* ignore */
+      }
+      try {
+        if (provider === "codex") await harvestAuthFile(hostCodexAuthPath(), path.join(work, "codex-home", "auth.json"));
+        if (provider === "hermes") await harvestAuthFile(hostHermesAuthPath(), path.join(work, "hermes-home", "auth.json"));
       } catch {
         /* ignore */
       }
