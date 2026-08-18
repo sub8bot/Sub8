@@ -154,30 +154,33 @@ export async function ensureHermesAcp({ bin, env } = {}) {
 
 export async function hermesAcpPrompt({ bot, text, mcpEnv, command, args, signal, bin, env }) {
   await ensureHermesAcp({ bin, env });
-  let sid = sessions.get(bot.id);
-  if (!sid) {
-    const envList = Object.entries(mcpEnv || {})
-      .filter(([, v]) => v != null && String(v))
-      .map(([name, value]) => ({ name, value: String(value) }));
-    const cwd = path.join(os.tmpdir(), "sub8-hermes");
-    await fs.mkdir(cwd, { recursive: true });
-    const created = await rpc("session/new", {
-      cwd,
-      mcpServers: command
-        ? [
-            {
-              name: "sub8",
-              command,
-              args: args || [],
-              env: envList,
-            },
-          ]
-        : [],
-    });
-    sid = created?.sessionId || created?.session_id;
-    if (!sid) throw new Error("Hermes ACP did not return a session");
-    sessions.set(bot.id, sid);
+  const prev = sessions.get(bot.id);
+  if (prev) {
+    rpc("session/cancel", { sessionId: prev }, { hardMs: 8_000 }).catch(() => {});
+    sessions.delete(bot.id);
+    replies.delete(prev);
   }
+  const envList = Object.entries(mcpEnv || {})
+    .filter(([, v]) => v != null && String(v))
+    .map(([name, value]) => ({ name, value: String(value) }));
+  const cwd = path.join(os.tmpdir(), "sub8-hermes");
+  await fs.mkdir(cwd, { recursive: true });
+  const created = await rpc("session/new", {
+    cwd,
+    mcpServers: command
+      ? [
+          {
+            name: "sub8",
+            command,
+            args: args || [],
+            env: envList,
+          },
+        ]
+      : [],
+  });
+  const sid = created?.sessionId || created?.session_id;
+  if (!sid) throw new Error("Hermes ACP did not return a session");
+  sessions.set(bot.id, sid);
   replies.set(sid, "");
   const onAbort = () => {
     rpc("session/cancel", { sessionId: sid }, { hardMs: 8_000 }).catch(() => {});
