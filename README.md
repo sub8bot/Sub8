@@ -82,3 +82,7 @@ That writes Mac (signed + notarized when Apple credentials are in the environmen
 | `build/icon.icns` / `build/icon.ico` | Packaged app icons (all sizes) |
 
 Not affiliated with xAI.
+
+## License
+
+[MIT](LICENSE) © 2026 Daniel Farina.
