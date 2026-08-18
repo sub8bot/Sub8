@@ -19,7 +19,12 @@ const state = {
   confirmDeleteId: null,
   deskSize: "side",
   createFace: "neutral",
+  createHarness: "default",
+  createModel: "",
+  createName: "",
+  createDesc: "",
   paneWidth: Number(localStorage.getItem("paneWidth")) || 420,
+  railWidth: Number(localStorage.getItem("railWidth")) || 72,
   plusMenu: false,
   humanControl: false,
   railWake: null,
@@ -38,6 +43,11 @@ const state = {
   vaultGroup: "all",
   vaultEditId: null,
   vaultReveal: false,
+  localHarness: {
+    ollama: { ok: false, models: [] },
+    lmstudio: { ok: false, models: [] },
+    grok: { ok: true, models: ["grok-4.6", "grok-4.5", "grok-4.3", "grok-build-0.1"] },
+  },
 };
 
 async function api(path, opts) {
@@ -313,8 +323,10 @@ function unionClientMessages(a = [], b = []) {
   return [...byId.values()].sort((x, y) => (x.ts || 0) - (y.ts || 0));
 }
 
+const forgottenBots = new Set();
+
 function adoptBot(next) {
-  if (!next?.id) return next;
+  if (!next?.id || forgottenBots.has(next.id)) return next;
   const i = state.bots.findIndex((b) => b.id === next.id);
   if (i < 0) {
     next.messages = Array.isArray(next.messages) ? next.messages : [];
@@ -326,6 +338,17 @@ function adoptBot(next) {
   state.bots[i] = { ...prev, ...next, messages: next.messages };
   if (typeof next.busy === "boolean") state.bots[i].busy = next.busy;
   return state.bots[i];
+}
+
+function syncBots(incoming) {
+  const list = Array.isArray(incoming) ? incoming : [];
+  const seen = new Set(list.map((b) => b.id).filter(Boolean));
+  for (const id of seen) forgottenBots.delete(id);
+  for (const b of list) adoptBot(b);
+  state.bots = state.bots.filter((b) => seen.has(b.id));
+  if (state.selected && !seen.has(state.selected)) {
+    rememberSelected(state.bots.find((b) => !b.hidden)?.id || null);
+  }
 }
 
 async function stopTurn() {
@@ -387,7 +410,9 @@ function paintChat(bot) {
       html.push(renderActivity(batch, Boolean(bot.busy && i >= rows.length)));
       continue;
     }
-    html.push(`<div class="bubble">${formatChatText(m.content)}</div>`);
+    if (String(m.content || "").trim()) {
+      html.push(`<div class="bubble">${formatChatText(m.content)}</div>`);
+    }
     i += 1;
   }
   if (bot.busy) {
@@ -541,7 +566,9 @@ function applyDeskSize() {
   }
   if (fab) fab.hidden = true;
   applyPaneWidth();
+  applyRailWidth();
   bindSplit();
+  bindRailResize();
 }
 
 function applyPaneWidth() {
@@ -549,6 +576,48 @@ function applyPaneWidth() {
   if (!frame) return;
   const w = Math.round(state.paneWidth || 420);
   frame.style.setProperty("--pane-w", `${w}px`);
+}
+
+function applyRailWidth() {
+  const w = Math.round(Math.min(248, Math.max(68, state.railWidth || 72)));
+  document.documentElement.style.setProperty("--sidebar", `${w}px`);
+}
+
+function bindRailResize() {
+  const rail = $("#rail");
+  if (!rail) return;
+  let handle = $("#rail-resize");
+  if (!handle) {
+    handle = document.createElement("div");
+    handle.id = "rail-resize";
+    handle.className = "rail-resize";
+    handle.title = "Drag to resize sidebar";
+    rail.appendChild(handle);
+  }
+  if (handle.dataset.ready) return;
+  handle.dataset.ready = "1";
+  handle.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = rail.getBoundingClientRect().width;
+    handle.classList.add("dragging");
+    const onMove = (ev) => {
+      state.railWidth = Math.min(248, Math.max(68, startW + (ev.clientX - startX)));
+      applyRailWidth();
+    };
+    const onUp = () => {
+      handle.classList.remove("dragging");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      try {
+        localStorage.setItem("railWidth", String(Math.round(state.railWidth)));
+      } catch {
+        /* ignore */
+      }
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  });
 }
 
 function bindSplit() {
@@ -650,9 +719,23 @@ function iconClock() {
   return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>`;
 }
 
+function resolvedHarness(bot) {
+  const global = state.settings?.harness || {};
+  const local = bot?.harness || {};
+  const provider =
+    local.provider && local.provider !== "default" ? local.provider : global.provider || "grok-build";
+  let model = (local.model && String(local.model).trim()) || "";
+  if (!model && global.provider === provider) model = String(global.model || "").trim();
+  if (!model) {
+    if (provider === "claude" || provider === "codex") model = "default";
+    else if (provider === "grok-build" || provider === "spacexai") model = "grok-4.6";
+    else model = provider;
+  }
+  return { provider, model };
+}
+
 function paintTitle(bot) {
-  const model = state.settings?.harness?.model || "grok-4.6";
-  const provider = state.settings?.harness?.provider || "grok-build";
+  const { provider, model } = resolvedHarness(bot);
   const bar = $("#titlebar");
   const collapsed = !state.showComputer && !state.botEdit && state.deskSize !== "full";
   const stamp = `${bot?.id || ""}|${state.botEdit ? "1" : "0"}|${state.deskSize}|${collapsed ? "1" : "0"}`;
@@ -725,13 +808,14 @@ function ensureRailNode(b) {
 
 function paintRail(bot) {
   const rail = $("#rail");
-  if (!rail.dataset.ready) {
+  if (rail.dataset.ready !== "scroll") {
     rail.innerHTML = `
       <button class="plus" data-act="create" title="Create new Bot">+</button>
       <div class="rail-bots" id="rail-bots"></div>
-      <div class="grow"></div>
-      <button class="me" data-act="profile" title="App settings"></button>`;
-    rail.dataset.ready = "1";
+      <button class="me" data-act="profile" title="App settings"></button>
+      <div class="rail-resize" id="rail-resize" title="Drag to resize sidebar"></div>`;
+    rail.dataset.ready = "scroll";
+    bindRailResize();
   }
   const host = $("#rail-bots");
   const { pinned, groups } = railLayout();
@@ -770,12 +854,17 @@ function paintRail(bot) {
   bindRailDnD(host);
 }
 
+function isNamedSection(id) {
+  return Boolean(id && id !== "pinned");
+}
+
 function sectionTag(id, name) {
   const tag = document.createElement("div");
   tag.className = "rail-sec";
   tag.dataset.sec = id || "";
-  tag.title = name;
+  tag.title = isNamedSection(id) ? `${name} · right-click to rename` : name;
   tag.innerHTML = `<span>${escapeHtml(name)}</span>`;
+  if (isNamedSection(id)) tag.classList.add("editable");
   return tag;
 }
 
@@ -995,6 +1084,33 @@ function paintCtxMenu() {
     host.innerHTML = "";
     return;
   }
+  if (ctx.type === "section") {
+    const sec = sidebarSections().find((s) => s.id === ctx.secId);
+    if (!sec) {
+      host.innerHTML = "";
+      return;
+    }
+    const left = Math.min(ctx.x, window.innerWidth - 240);
+    const top = Math.min(ctx.y, window.innerHeight - 180);
+    if (ctx.naming) {
+      host.innerHTML = `<div class="ctx-prompt" style="top:${top}px;left:${left}px">
+        <input id="ctx-sec-name" class="field" value="${escapeHtml(sec.name)}" placeholder="Section name" />
+        <button type="button" class="pill primary" data-act="ctx-rename-section" data-sec="${escapeHtml(sec.id)}">Save</button>
+      </div>`;
+      setTimeout(() => {
+        const input = $("#ctx-sec-name");
+        if (!input) return;
+        input.focus();
+        input.select();
+      }, 20);
+      return;
+    }
+    host.innerHTML = `<div class="ctx-menu" style="top:${top}px;left:${left}px">
+      <button type="button" class="ctx-item" data-act="ctx-rename-section-open" data-sec="${escapeHtml(sec.id)}">${ctxIcon("edit")}<span>Rename section</span></button>
+      <button type="button" class="ctx-item ctx-danger" data-act="ctx-delete-section" data-sec="${escapeHtml(sec.id)}">${ctxIcon("del")}<span>Delete section</span></button>
+    </div>`;
+    return;
+  }
   const bot = state.bots.find((b) => b.id === ctx.botId);
   if (!bot) {
     host.innerHTML = "";
@@ -1186,6 +1302,12 @@ function paintBotEditor(bot) {
     </div>
     <label class="muted">Instructions</label>
     <textarea class="field" id="bi" placeholder="Standing rules this Bot always follows">${escapeHtml(bot.instructions || "")}</textarea>
+    <label class="muted">Harness</label>
+    <select class="field" id="bh">
+      ${harnessProviderOptions(bot.harness?.provider || "default")}
+    </select>
+    <label class="muted">Model</label>
+    ${modelPickerHtml(bot.harness?.provider || "default", bot.harness?.model || "", { id: "bm" })}
     <label class="muted">Color</label>
     <div class="muted" style="margin:0 0 6px">Light colors use dark eyes and mouth.</div>
     <div class="swatches">
@@ -1284,10 +1406,20 @@ function paintModal() {
 }
 
 function advancedHtml(bot) {
-  const h = state.settings?.harness || {};
+  const h = resolvedHarness(bot);
   const s = bot.storage || {};
+  const local = bot.harness || {};
+  const base =
+    local.provider === "lmstudio"
+      ? "http://127.0.0.1:1234/v1"
+      : local.provider === "ollama"
+        ? "http://127.0.0.1:11434/v1"
+        : h.provider === "claude" || h.provider === "codex"
+          ? "host CLI"
+          : state.settings?.harness?.baseUrl || "https://api.x.ai/v1";
   const msgs = bot.messages || [];
   const visible = msgs.filter((m) => !m.hidden && m.role !== "tool");
+  const routineN = (bot.routines || []).length;
   const row = (label, value) =>
     `<div class="adv-row"><div class="muted">${escapeHtml(label)}</div><code class="adv-val" title="${escapeHtml(value)}">${escapeHtml(value || "—")}</code></div>`;
   return `<div class="overlay">
@@ -1298,11 +1430,16 @@ function advancedHtml(bot) {
         <p class="muted" style="margin-top:-10px">This conversation’s storage and session.</p>
         <div class="adv-card">
           ${row("Session ID", s.sessionId || bot.id)}
-          ${row("Grok Build session", bot.grokSessionId || bot.id)}
+          ${
+            h.provider === "grok-build"
+              ? row("Grok Build session", bot.grokSessionId || bot.id)
+              : ""
+          }
           ${row("Bot", bot.name)}
-          ${row("Model", h.model || "grok-4.6")}
-          ${row("Harness", h.provider || "grok-build")}
-          ${row("API base", h.baseUrl || "https://api.x.ai/v1")}
+          ${row("Model", h.model || "—")}
+          ${row("Harness", h.provider || "—")}
+          ${row("API base", base)}
+          ${row("Routines", routineN ? String(routineN) : "none")}
           ${row("History file", s.conversationFile || "")}
           ${row("Bots file", s.botsFile || "")}
           ${row("Screenshot file", s.screensFile || "")}
@@ -1395,14 +1532,100 @@ function botSettingsHtml(bot) {
   </aside>`;
 }
 
+function harnessProviderOptions(selected) {
+  return [
+    ["default", "App default"],
+    ["grok-build", "Grok Build"],
+    ["claude", "Claude"],
+    ["codex", "Codex"],
+    ["ollama", "Ollama"],
+    ["lmstudio", "LM Studio"],
+    ["spacexai", "SpaceXAI"],
+  ]
+    .map(([id, label]) => `<option value="${id}" ${selected === id ? "selected" : ""}>${escapeHtml(label)}</option>`)
+    .join("");
+}
+
+function modelPickerHtml(provider, selected, { id = "cm" } = {}) {
+  const models = localModels(provider);
+  const local = provider === "ollama" || provider === "lmstudio";
+  const grok = provider === "grok-build" || provider === "spacexai";
+  const detected = state.localHarness?.[provider];
+  if ((local || grok) && models.length) {
+    const value = models.includes(selected) ? selected : grok ? "grok-4.6" : models[0];
+    const label = provider === "lmstudio" ? "LM Studio" : provider === "ollama" ? "Ollama" : "Grok Build";
+    return `<select class="field" id="${id}">${models
+      .map((m) => `<option value="${escapeHtml(m)}" ${value === m ? "selected" : ""}>${escapeHtml(m)}</option>`)
+      .join("")}</select>
+      <div class="muted">${escapeHtml(label)} · ${models.length} available</div>`;
+  }
+  if (local) {
+    return `<input class="field" id="${id}" value="${escapeHtml(selected || "")}" placeholder="${
+      detected?.ok ? "no chat models detected" : "start the app to list models"
+    }" />
+      <div class="muted">${detected?.ok ? "Running, but no chat models yet." : "Not detected. Start the app, then Refresh."}</div>
+      <button type="button" class="pill" data-act="refresh-local-harness">Refresh models</button>`;
+  }
+  if (provider === "claude" || provider === "codex") {
+    return `<input class="field" id="${id}" value="${escapeHtml(selected || "")}" placeholder="default" />`;
+  }
+  if (provider === "default") {
+    const def = state.settings?.harness?.model || "app default";
+    return `<input class="field" id="${id}" value="${escapeHtml(selected || "")}" placeholder="${escapeHtml(def)}" />
+      <div class="muted">Uses the harness in Settings unless you set one here.</div>`;
+  }
+  return `<input class="field" id="${id}" value="${escapeHtml(selected || "")}" placeholder="grok-4.6" />`;
+}
+
+function snapshotCreateForm() {
+  const n = $("#cn")?.value;
+  const d = $("#cd")?.value;
+  const m = $("#cm")?.value;
+  const h = $("#ch")?.value;
+  if (n != null) state.createName = n;
+  if (d != null) state.createDesc = d;
+  if (m != null) state.createModel = m;
+  if (h != null) state.createHarness = h;
+}
+
+function resetCreateForm() {
+  state.createFace = "neutral";
+  state.createHarness = "default";
+  state.createModel = "";
+  state.createName = "";
+  state.createDesc = "";
+}
+
+function rebuildCreateModal() {
+  const host = $("#modal-host");
+  if (host) delete host.dataset.key;
+  paintModal();
+  refreshAvatars();
+}
+
 function createBotHtml() {
+  const provider = state.createHarness || "default";
   return `<div class="overlay">
-    <div class="modal" style="height:auto;max-height:88%;width:min(440px,92%)" data-modal="1">
+    <div class="modal create-modal" data-modal="1">
       <div class="sbody" style="width:100%">
         <button class="close" data-act="close-modal">×</button>
         <h2>Create new Bot</h2>
         <div class="botset">
-          <div class="avatar-preview sm" data-avatar="create" data-avatar-slot="create" data-avatar-size="128" data-avatar-framing="body" data-preview="1"></div>
+          <div class="create-top">
+            <div class="avatar-preview sm" data-avatar="create" data-avatar-slot="create" data-avatar-size="128" data-avatar-framing="body" data-preview="1"></div>
+            <div class="create-col">
+              <label class="muted">Name</label>
+              <input class="field" id="cn" placeholder="New Bot" value="${escapeHtml(state.createName || "")}" autofocus />
+              <label class="muted">What this Bot is for</label>
+              <textarea class="field" id="cd" placeholder="Describe the job">${escapeHtml(state.createDesc || "")}</textarea>
+            </div>
+            <div class="create-col">
+              <label class="muted">Harness</label>
+              <select class="field" id="ch">${harnessProviderOptions(provider)}</select>
+              <label class="muted">Model</label>
+              ${modelPickerHtml(provider, state.createModel || "")}
+            </div>
+          </div>
           <label class="muted">Face</label>
           <div class="chips chips-scroll">
             ${faceList()
@@ -1412,12 +1635,8 @@ function createBotHtml() {
               )
               .join("")}
           </div>
-          <label class="muted">Name</label>
-          <input class="field" id="cn" placeholder="New Bot" autofocus />
-          <label class="muted">What this Bot is for</label>
-          <textarea class="field" id="cd" placeholder="Describe the job"></textarea>
-          <button type="button" class="pill primary" data-act="confirm-create" id="confirm-create">Create Bot</button>
         </div>
+        <button type="button" class="pill primary" data-act="confirm-create" id="confirm-create">Create Bot</button>
       </div>
     </div>
   </div>`;
@@ -1523,30 +1742,100 @@ function seg(key, value, options) {
     .join("")}</div>`;
 }
 
+function grokModels() {
+  const live = state.localHarness?.grok?.models;
+  if (Array.isArray(live) && live.length) return live;
+  return ["grok-4.6", "grok-4.5", "grok-4.3", "grok-build-0.1"];
+}
+
+function localModels(provider) {
+  if (provider === "grok-build" || provider === "spacexai") return grokModels();
+  return state.localHarness?.[provider]?.models || [];
+}
+
+function pickModelForProvider(provider, current = "") {
+  const models = localModels(provider);
+  if (provider === "grok-build" || provider === "spacexai") {
+    return models.includes(current) ? current : "grok-4.6";
+  }
+  if (provider === "ollama" || provider === "lmstudio") {
+    if (models.length) return models.includes(current) ? current : models[0];
+    return "";
+  }
+  if (provider === "claude" || provider === "codex") return "";
+  return current || "";
+}
+
 function harnessHtml(h) {
-  const grok = h.provider !== "spacexai" && h.provider !== "custom";
+  const p = h.provider || "grok-build";
+  const detected = (id) => {
+    const d = state.localHarness?.[id];
+    if (!d) return "";
+    if (d.ok) return ` · ${d.models.length} model${d.models.length === 1 ? "" : "s"}`;
+    return " · not detected";
+  };
+  const hint =
+    p === "claude"
+      ? "Uses Claude Code signed in on this Mac. It only drives the Bot computer, never your files."
+      : p === "codex"
+        ? "Uses Codex signed in on this Mac. It only drives the Bot computer, never your files."
+        : p === "ollama"
+          ? state.localHarness?.ollama?.ok
+            ? `Ollama on :11434 · ${state.localHarness.ollama.models.length} models`
+            : "Ollama not detected. Start the Ollama app."
+          : p === "lmstudio"
+            ? state.localHarness?.lmstudio?.ok
+              ? `LM Studio on :1234 · ${state.localHarness.lmstudio.models.length} models`
+              : "LM Studio not detected. Start the local server."
+          : p === "spacexai"
+            ? "SpaceXAI · api.x.ai"
+            : "Grok Build uses this Mac’s Grok login inside the Bot computer.";
+  const models = localModels(p);
   return `<h2>Harness</h2>
-    <p class="muted" style="margin-top:-8px">How every Bot talks to a model.</p>
+    <p class="muted" style="margin-top:-8px">Default for new Bots. Each Bot can override this in its settings.</p>
     <div class="block">
       <div class="card">
-        <div class="row"><div><div class="lbl">Provider</div><div class="sub">Grok Build is the default (OAuth on this Mac). SpaceXAI uses an API key.</div></div>
-          <div class="seg" role="tablist">
-            <button type="button" class="seg-btn ${grok ? "on" : ""}" data-act="set-harness" data-id="grok-build">Grok Build</button>
-            <button type="button" class="seg-btn ${h.provider === "spacexai" ? "on" : ""}" data-act="set-harness" data-id="spacexai">SpaceXAI</button>
+        <div class="row"><div><div class="lbl">Provider</div><div class="sub">Claude and Codex use signed-in CLIs. Ollama and LM Studio are detected if they are running.</div></div>
+          <div class="seg wrap" role="tablist">
+            <button type="button" class="seg-btn ${p === "grok-build" ? "on" : ""}" data-act="set-harness" data-id="grok-build">Grok Build</button>
+            <button type="button" class="seg-btn ${p === "claude" ? "on" : ""}" data-act="set-harness" data-id="claude">Claude</button>
+            <button type="button" class="seg-btn ${p === "codex" ? "on" : ""}" data-act="set-harness" data-id="codex">Codex</button>
+            <button type="button" class="seg-btn ${p === "ollama" ? "on" : ""}" data-act="set-harness" data-id="ollama">Ollama${detected("ollama")}</button>
+            <button type="button" class="seg-btn ${p === "lmstudio" ? "on" : ""}" data-act="set-harness" data-id="lmstudio">LM Studio${detected("lmstudio")}</button>
+            <button type="button" class="seg-btn ${p === "spacexai" ? "on" : ""}" data-act="set-harness" data-id="spacexai">SpaceXAI</button>
           </div>
         </div>
         <div class="row"><div class="lbl">Model</div>
-          <input class="field" style="max-width:220px" data-harness-text="model" value="${escapeHtml(h.model || "grok-4.6")}" />
+          ${
+            models.length
+              ? `<select class="field" style="max-width:280px" data-harness-text="model">${models
+                  .map((m) => {
+                    const value = models.includes(h.model) ? h.model : p === "grok-build" || p === "spacexai" ? "grok-4.6" : models[0];
+                    return `<option value="${escapeHtml(m)}" ${value === m ? "selected" : ""}>${escapeHtml(m)}</option>`;
+                  })
+                  .join("")}</select>`
+              : `<input class="field" style="max-width:280px" data-harness-text="model" value="${escapeHtml(
+                  p === "grok-build" || p === "spacexai" ? "grok-4.6" : h.model || "",
+                )}" placeholder="${p === "claude" || p === "codex" ? "default" : p === "ollama" || p === "lmstudio" ? "start the app to list models" : "grok-4.6"}" />`
+          }
         </div>
         ${
-          grok
-            ? ""
-            : `<div class="row"><div><div class="lbl">API key</div><div class="sub">Leave blank to use XAI_API_KEY from the environment.</div></div>
-          <input class="field" style="max-width:220px" type="password" data-harness-text="apiKey" placeholder="••••" /></div>`
+          p === "ollama" || p === "lmstudio"
+            ? `<div class="row"><div class="lbl">Detected</div><div class="sub">${
+                state.localHarness?.[p]?.ok
+                  ? escapeHtml((state.localHarness[p].models || []).join(", ") || "running, no chat models")
+                  : "Not running"
+              }</div>
+              <button type="button" class="pill" data-act="refresh-local-harness">Refresh</button></div>`
+            : ""
         }
-        <div class="row"><div><div class="lbl">Connection</div><div class="sub" id="harness-ping">${
-          grok ? "Grok Build uses this Mac’s Grok login automatically." : "SpaceXAI · api.x.ai"
-        }</div></div>
+        ${
+          p === "spacexai" || p === "custom"
+            ? `<div class="row"><div><div class="lbl">API key</div><div class="sub">Leave blank to use XAI_API_KEY from the environment.</div></div>
+          <input class="field" style="max-width:220px" type="password" data-harness-text="apiKey" placeholder="••••" /></div>`
+            : ""
+        }
+        <div class="row"><div><div class="lbl">Connection</div><div class="sub" id="harness-ping">${hint}</div></div>
           <button class="pill" data-act="test-harness" type="button">Test</button>
         </div>
       </div>
@@ -1658,6 +1947,12 @@ function escapeHtml(s) {
 
 function bindDelegated() {
   document.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.target?.id === "ctx-sec-name") {
+      e.preventDefault();
+      const save = document.querySelector("[data-act=ctx-rename-section], [data-act=ctx-create-section]");
+      save?.click();
+      return;
+    }
     if (e.key === "Escape" && state.teach) {
       stopTeachCapture();
       state.teach = null;
@@ -1709,10 +2004,25 @@ function bindDelegated() {
     render();
   });
   document.addEventListener("contextmenu", (e) => {
+    const sec = e.target.closest(".rail-sec");
+    if (sec && isNamedSection(sec.dataset.sec)) {
+      e.preventDefault();
+      state.ctx = { type: "section", secId: sec.dataset.sec, x: e.clientX, y: e.clientY, naming: false };
+      paintCtxMenu();
+      return;
+    }
     const rail = e.target.closest(".rail-bot");
     if (!rail) return;
     e.preventDefault();
-    state.ctx = { botId: rail.dataset.id, x: e.clientX, y: e.clientY, sub: null, naming: false };
+    state.ctx = { type: "bot", botId: rail.dataset.id, x: e.clientX, y: e.clientY, sub: null, naming: false };
+    paintCtxMenu();
+  });
+  document.addEventListener("dblclick", (e) => {
+    const sec = e.target.closest(".rail-sec");
+    if (!sec || !isNamedSection(sec.dataset.sec)) return;
+    e.preventDefault();
+    const r = sec.getBoundingClientRect();
+    state.ctx = { type: "section", secId: sec.dataset.sec, x: r.right + 8, y: r.top, naming: true };
     paintCtxMenu();
   });
   document.addEventListener("click", (e) => {
@@ -1850,7 +2160,18 @@ function bindDelegated() {
       state.botEdit = false;
       state.editingRoutineId = null;
     }
-    if (act === "sec") state.section = el.dataset.id;
+    if (act === "sec") {
+      state.section = el.dataset.id;
+      if (el.dataset.id === "harness") {
+        const h = state.settings?.harness;
+        if (h && (h.provider === "grok-build" || h.provider === "spacexai") && !grokModels().includes(h.model)) {
+          const harness = { ...h, model: "grok-4.6", baseUrl: "https://api.x.ai/v1" };
+          state.settings = { ...(state.settings || {}), harness };
+          api("/api/settings", { method: "PUT", body: { harness } });
+        }
+        loadLocalHarness().then(() => paintModal());
+      }
+    }
     if (act === "select") {
       rememberSelected(el.dataset.id);
       state.picker = false;
@@ -1865,8 +2186,12 @@ function bindDelegated() {
       loadBotHistory(el.dataset.id);
     }
     if (act === "create") {
+      resetCreateForm();
       state.modal = "create";
       state.picker = false;
+      loadLocalHarness().then(() => {
+        if (state.modal === "create") rebuildCreateModal();
+      });
     }
     if (act === "confirm-create") {
       confirmCreateBot();
@@ -2055,8 +2380,46 @@ function bindDelegated() {
       return;
     }
     if (act === "ctx-new-section") {
-      if (state.ctx) state.ctx = { ...state.ctx, naming: true, sub: "move" };
+      if (state.ctx) state.ctx = { ...state.ctx, type: "bot", naming: true, sub: "move" };
       paintCtxMenu();
+      return;
+    }
+    if (act === "ctx-rename-section-open") {
+      if (state.ctx?.type === "section") state.ctx = { ...state.ctx, naming: true };
+      else {
+        const sec = sidebarSections().find((s) => s.id === el.dataset.sec);
+        if (sec) state.ctx = { type: "section", secId: sec.id, x: state.ctx?.x || 80, y: state.ctx?.y || 80, naming: true };
+      }
+      paintCtxMenu();
+      return;
+    }
+    if (act === "ctx-rename-section") {
+      const id = el.dataset.sec || state.ctx?.secId;
+      const name = ($("#ctx-sec-name")?.value || "").trim();
+      if (!id || !name) return;
+      const sections = sidebarSections().map((s) => (s.id === id ? { ...s, name } : s));
+      state.settings = { ...(state.settings || {}), sidebarSections: sections };
+      api("/api/settings", { method: "PUT", body: { sidebarSections: sections } }).then(refreshSettings);
+      state.ctx = null;
+      render();
+      return;
+    }
+    if (act === "ctx-delete-section") {
+      const id = el.dataset.sec || state.ctx?.secId;
+      if (!id) return;
+      const sec = sidebarSections().find((s) => s.id === id);
+      if (sec && !confirm(`Delete “${sec.name}”? Bots in it stay, ungrouped.`)) return;
+      const sections = sidebarSections().filter((s) => s.id !== id);
+      state.settings = { ...(state.settings || {}), sidebarSections: sections };
+      for (const b of state.bots) {
+        if (b.section === id) {
+          b.section = "";
+          api(`/api/bots/${b.id}`, { method: "PATCH", body: { section: "" } });
+        }
+      }
+      api("/api/settings", { method: "PUT", body: { sidebarSections: sections } }).then(refreshSettings);
+      state.ctx = null;
+      render();
       return;
     }
     if (act === "ctx-create-section") {
@@ -2152,7 +2515,17 @@ function bindDelegated() {
     if (act === "set-harness") {
       const provider = el.dataset.id;
       const harness = { ...(state.settings?.harness || {}), provider };
-      if (provider === "spacexai") {
+      if (provider === "ollama") {
+        harness.baseUrl = "http://127.0.0.1:11434/v1";
+        harness.model = pickModelForProvider("ollama", harness.model);
+      } else if (provider === "lmstudio") {
+        harness.baseUrl = "http://127.0.0.1:1234/v1";
+        harness.model = pickModelForProvider("lmstudio", harness.model);
+      } else if (provider === "claude" || provider === "codex") {
+        harness.model = "";
+        harness.baseUrl = "https://api.x.ai/v1";
+      } else {
+        harness.model = pickModelForProvider(provider, "grok-4.6");
         harness.baseUrl = "https://api.x.ai/v1";
         harness.apiKeyEnv = "XAI_API_KEY";
       }
@@ -2178,6 +2551,20 @@ function bindDelegated() {
     }
     if (act === "release-control") {
       setHumanControl(false);
+      return;
+    }
+    if (act === "refresh-local-harness") {
+      if (state.modal === "create") snapshotCreateForm();
+      loadLocalHarness().then(() => {
+        if (state.modal === "create") rebuildCreateModal();
+        else paintModal();
+        if (state.botEdit) {
+          const bot = state.bots.find((b) => b.id === state.selected);
+          const host = $("#bot-editor");
+          if (host) delete host.dataset.bot;
+          if (bot) paintBotEditor(bot);
+        }
+      });
       return;
     }
     if (act === "test-harness") {
@@ -2228,6 +2615,34 @@ function bindDelegated() {
         api(`/api/bots/${bot.id}`, { method: "PATCH", body: { color: bot.color } });
         refreshAvatars();
       }
+    }
+    if (el.id === "ch") {
+      snapshotCreateForm();
+      state.createHarness = el.value;
+      state.createModel = pickModelForProvider(el.value, state.createModel);
+      rebuildCreateModal();
+    }
+    if (el.id === "cm") {
+      state.createModel = el.value;
+    }
+    if (el.id === "bh") {
+      const bot = state.bots.find((b) => b.id === state.selected);
+      if (bot) {
+        const provider = el.value;
+        const prev = bot.harness?.model || "";
+        bot.harness = {
+          ...(bot.harness || {}),
+          provider,
+          model: pickModelForProvider(provider, prev),
+        };
+        const host = $("#bot-editor");
+        if (host) delete host.dataset.bot;
+        paintBotEditor(bot);
+      }
+    }
+    if (el.id === "bm") {
+      const bot = state.bots.find((b) => b.id === state.selected);
+      if (bot) bot.harness = { ...(bot.harness || {}), model: el.value };
     }
   });
   document.addEventListener("click", async (e) => {
@@ -2282,7 +2697,7 @@ async function testHarness() {
   const note = $("#harness-ping");
   if (note) note.textContent = "Testing harness…";
   try {
-    const r = await api("/api/harness/test", { method: "POST", body: {} });
+    const r = await api("/api/harness/test", { method: "POST", body: { botId: state.selected } });
     const line = r.ok
       ? `OK · ${r.provider} · ${r.model} · ${r.sample || "PONG"}`
       : `Failed · ${r.error || r.sample || "no reply"}`;
@@ -2521,9 +2936,12 @@ async function onSend(e) {
 }
 
 async function createBot() {
+  resetCreateForm();
   state.modal = "create";
   state.picker = false;
   render();
+  await loadLocalHarness();
+  if (state.modal === "create") rebuildCreateModal();
 }
 
 async function openVault() {
@@ -2613,9 +3031,14 @@ async function deleteVaultAccount(id) {
 }
 
 async function confirmCreateBot() {
-  const name = ($("#cn")?.value || "").trim() || "New Bot";
-  const description = ($("#cd")?.value || "").trim();
+  snapshotCreateForm();
+  const name = (state.createName || "").trim() || "New Bot";
+  const description = (state.createDesc || "").trim();
   const face = state.createFace;
+  const provider = state.createHarness || "default";
+  const model = (state.createModel || "").trim();
+  const harness = { provider };
+  if (model) harness.model = model;
   const btn = $("#confirm-create");
   if (btn) {
     btn.disabled = true;
@@ -2624,9 +3047,14 @@ async function confirmCreateBot() {
   try {
     const bot = await api("/api/bots", {
       method: "POST",
-      body: { name, description, avatar: defaultAvatar({ expression: face, animation: "idle" }) },
+      body: {
+        name,
+        description,
+        avatar: defaultAvatar({ expression: face, animation: "idle" }),
+        harness,
+      },
     });
-    state.createFace = "neutral";
+    resetCreateForm();
     rememberSelected(bot.id);
     state.modal = null;
     state.picker = false;
@@ -2691,10 +3119,20 @@ async function toggleRoutine(id) {
 
 async function deleteBot(id) {
   if (!id) return;
-  await api(`/api/bots/${id}`, { method: "DELETE" });
+  forgottenBots.add(id);
+  state.bots = state.bots.filter((b) => b.id !== id);
   state.confirmDeleteId = null;
   state.botEdit = false;
-  if (state.selected === id) rememberSelected(null);
+  if (state.selected === id) rememberSelected(state.bots.find((b) => !b.hidden)?.id || null);
+  render();
+  try {
+    await api(`/api/bots/${id}`, { method: "DELETE" });
+  } catch (err) {
+    forgottenBots.delete(id);
+    window.alert(err?.message || "Could not delete the bot.");
+    await refresh();
+    return;
+  }
   await refresh();
 }
 
@@ -2708,6 +3146,10 @@ async function saveBot() {
       title: $("#bt")?.value ?? bot.title,
       description: $("#bd")?.value ?? bot.description,
       instructions: $("#bi")?.value ?? bot.instructions,
+      harness: {
+        provider: $("#bh")?.value || bot.harness?.provider || "default",
+        model: ($("#bm")?.value ?? bot.harness?.model ?? "").trim(),
+      },
       notificationsEnabled: bot.notificationsEnabled,
       color: bot.color,
       avatar: defaultAvatar(bot.avatar),
@@ -2753,7 +3195,7 @@ async function resumeVm() {
 
 async function refresh() {
   const incoming = await api("/api/bots");
-  for (const b of incoming) adoptBot(b);
+  syncBots(incoming);
   const saved = state.selected || (typeof localStorage !== "undefined" ? localStorage.getItem("selectedBot") : null);
   if (saved && state.bots.some((b) => b.id === saved)) rememberSelected(saved);
   else if (state.bots[0]) rememberSelected(state.bots[0].id);
@@ -2770,11 +3212,24 @@ async function refreshSettings() {
   if (r.appVersion) state.appVersion = r.appVersion;
   applyTheme();
   paintDockerGate();
+  await loadLocalHarness();
+}
+
+async function loadLocalHarness() {
+  try {
+    state.localHarness = await api("/api/harness/local");
+  } catch {
+    state.localHarness = {
+      ollama: { ok: false, models: [] },
+      lmstudio: { ok: false, models: [] },
+      grok: { ok: true, models: grokModels() },
+    };
+  }
 }
 
 function wantsGrokBuild() {
   const p = state.settings?.harness?.provider;
-  return p !== "spacexai" && p !== "custom";
+  return p === "grok-build" || !p;
 }
 
 function paintGrokAuth() {
@@ -2863,15 +3318,27 @@ function listen() {
     }
     es = new EventSource("/api/events");
     es.addEventListener("bots", (e) => {
-      const incoming = JSON.parse(e.data);
-      for (const b of incoming) adoptBot(b);
+      syncBots(JSON.parse(e.data));
       render();
+    });
+    es.addEventListener("routine", (e) => {
+      const { botId, routine } = JSON.parse(e.data);
+      if (!routine?.id) return;
+      const bot = state.bots.find((b) => b.id === botId);
+      if (!bot) return;
+      const rows = Array.isArray(bot.routines) ? bot.routines : [];
+      const i = rows.findIndex((r) => r.id === routine.id);
+      if (i >= 0) rows[i] = routine;
+      else rows.push(routine);
+      bot.routines = rows;
+      if (botId === state.selected) paintRoutineList(bot);
     });
     es.addEventListener("bot", (e) => {
       const bot = adoptBot(JSON.parse(e.data));
       const selected = state.bots.find((b) => b.id === state.selected);
       if (selected && $("#thread")) {
         paintChat(selected);
+        paintRoutineList(selected);
         if (state.botEdit) {
           const host = $("#bot-editor");
           const active = document.activeElement;

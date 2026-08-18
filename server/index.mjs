@@ -7,7 +7,9 @@ import { fileURLToPath } from "node:url";
 import * as store from "./store.mjs";
 import * as vm from "./vm.mjs";
 import * as routines from "./routines.mjs";
-import { runTurn, publicBot, pingHarness, webSearch, orchestratorReply, isChatQuestion } from "./agent.mjs";
+import { runTurn, publicBot, pingHarness, webSearch, orchestratorReply, isChatQuestion, HARNESS_PROVIDERS } from "./agent.mjs";
+import { detectLocalHarnesses } from "./local-llm.mjs";
+import { randomBytes } from "node:crypto";
 import { setHumanControl, isHumanControl } from "./control.mjs";
 import { appRoot, dataDir } from "./paths.mjs";
 import * as appUpdate from "./update.mjs";
@@ -23,6 +25,7 @@ app.use("/screens", express.static(path.join(dataDir, "screens")));
 app.use("/vendor/three", express.static(path.join(root, "node_modules", "three")));
 
 const busyIds = new Set();
+const internalToken = randomBytes(24).toString("hex");
 function toClient(bot) {
   return {
     ...publicBot(bot),
@@ -171,7 +174,25 @@ app.get("/api/settings", async (_req, res) => {
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     docker: await vm.dockerStatus(),
     appVersion: appUpdate.appVersion(),
+    harnessProviders: HARNESS_PROVIDERS,
   });
+});
+
+app.post("/api/internal/emit", async (req, res) => {
+  if (req.get("x-sub8-token") !== internalToken) return res.status(401).json({ error: "unauthorized" });
+  const botId = req.body?.botId;
+  const event = req.body?.event || "message";
+  const data = req.body?.data || {};
+  if (!botId) return res.status(400).json({ error: "botId required" });
+  if (event === "message" && data?.role) {
+    await store.patchBot(botId, (b) => {
+      b.messages = b.messages || [];
+      if (data.id && b.messages.some((m) => m.id === data.id)) return;
+      b.messages.push(data);
+    });
+  }
+  broadcast(event, { botId, ...data });
+  res.json({ ok: true });
 });
 
 app.get("/api/update", async (_req, res) => {
@@ -265,10 +286,14 @@ app.get("/api/harness/grok-login", async (req, res) => {
   res.json({ ok: true, ...job, signedIn: signed.ok, container: box });
 });
 
-app.post("/api/harness/test", async (_req, res) => {
+app.get("/api/harness/local", async (_req, res) => {
+  res.json(await detectLocalHarnesses({ force: true }));
+});
+
+app.post("/api/harness/test", async (req, res) => {
   try {
     const settings = await store.loadSettings();
-    res.json(await pingHarness(settings));
+    res.json(await pingHarness(settings, req.body?.botId ? await store.getBot(req.body.botId) : null));
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -353,14 +378,15 @@ app.delete("/api/bots/:id", async (req, res) => {
   if (!bot) return res.status(404).json({ error: "not found" });
   deletedIds.add(bot.id);
   try {
-    await vm.stopVm(bot);
+    await vm.stopVm(bot, { wipe: true });
   } catch {
     /* already gone */
   }
   const next = await store.deleteBot(bot.id);
   if (!next) return res.status(404).json({ error: "not found" });
   const keep = next.map((b) => b.vm?.container || vm.containerName(b.id));
-  vm.sweepOrphans(keep).catch((err) => console.error("sweep", err));
+  const keepVols = next.map((b) => vm.configVolume(b));
+  vm.sweepOrphans(keep, keepVols).catch((err) => console.error("sweep", err));
   broadcast("bots", next.map(toClient));
   res.json({ ok: true });
 });
@@ -653,6 +679,8 @@ async function runUserTurn(botId, text, hidden, images = [], opts = {}) {
     }
     bot = await store.getBot(botId);
     const settings = await store.loadSettings();
+    settings.__internalToken = internalToken;
+    settings.__port = PORT;
     await runTurn({
       bot,
       settings,
@@ -796,7 +824,8 @@ app.listen(PORT, "127.0.0.1", async () => {
   try {
     const bots = await store.loadBots();
     const keep = bots.map((b) => b.vm?.container || vm.containerName(b.id));
-    const gone = await vm.sweepOrphans(keep);
+    const keepVols = bots.map((b) => vm.configVolume(b));
+    const gone = await vm.sweepOrphans(keep, keepVols);
     if (gone.length) console.log("swept orphan computers", gone.join(", "));
   } catch (err) {
     console.error("startup sweep", err);

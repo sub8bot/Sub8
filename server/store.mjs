@@ -63,14 +63,35 @@ export async function saveConversation(id, messages) {
   return merged;
 }
 
+function looksLocalModel(model) {
+  const m = String(model || "");
+  return /[:/]/.test(m) || /qwen3\.\d|gemma4|\bmlx\b|lmstudio|ollama/i.test(m);
+}
+
 function normalizeHarness(h = {}) {
-  const provider = h.provider === "custom" || h.provider === "spacexai" ? h.provider : "grok-build";
+  const allowed = new Set(["grok-build", "claude", "codex", "ollama", "lmstudio", "spacexai", "custom"]);
+  const provider = allowed.has(h.provider) ? h.provider : "grok-build";
+  const localBase = provider === "ollama" ? "http://127.0.0.1:11434/v1" : provider === "lmstudio" ? "http://127.0.0.1:1234/v1" : "";
+  let model = typeof h.model === "string" ? h.model : "";
+  let baseUrl = typeof h.baseUrl === "string" ? h.baseUrl : "";
+  if (provider === "ollama" || provider === "lmstudio") {
+    baseUrl = localBase;
+  } else if (provider === "custom") {
+    baseUrl = baseUrl || "https://api.x.ai/v1";
+  } else {
+    if (!baseUrl || /127\.0\.0\.1:(11434|1234)/.test(baseUrl)) baseUrl = "https://api.x.ai/v1";
+    if (provider === "claude" || provider === "codex") {
+      /* empty model means the CLI default */
+    } else if (!model || looksLocalModel(model)) {
+      model = "grok-4.6";
+    }
+  }
   return {
     ...defaultSettings.harness,
     ...h,
     provider,
-    model: h.model || "grok-4.6",
-    baseUrl: provider === "custom" ? h.baseUrl || "https://api.x.ai/v1" : "https://api.x.ai/v1",
+    model,
+    baseUrl,
     apiKeyEnv: h.apiKeyEnv || "XAI_API_KEY",
     grokBuildCommand: h.grokBuildCommand || "grok",
   };
@@ -85,7 +106,7 @@ export async function loadSettings() {
       ...raw,
       harness: normalizeHarness(raw.harness),
     };
-    if (raw.harness?.provider && raw.harness.provider !== next.harness.provider) {
+    if (JSON.stringify(raw.harness || {}) !== JSON.stringify(next.harness)) {
       await fs.writeFile(settingsPath, JSON.stringify(next, null, 2));
     }
     return next;
@@ -121,10 +142,15 @@ async function loadBotsUnlocked() {
   await ensure();
   try {
     const bots = JSON.parse(await fs.readFile(botsPath, "utf8"));
+    let migratedHarness = false;
     for (const b of bots) {
       if (!Array.isArray(b.routines)) b.routines = [];
       if (!Array.isArray(b.messages)) b.messages = [];
       if (!b.grokSessionId) b.grokSessionId = b.id;
+      if (!b.harness || typeof b.harness !== "object" || !b.harness.provider) {
+        b.harness = { provider: "grok-build", model: "grok-4.6" };
+        migratedHarness = true;
+      }
       const fileMsgs = await loadConversation(b.id);
       if (fileMsgs.length) b.messages = unionMessages(b.messages, fileMsgs);
       else if (b.messages.length) await saveConversation(b.id, b.messages);
@@ -139,6 +165,15 @@ async function loadBotsUnlocked() {
           body,
         };
       }
+    }
+    if (migratedHarness) {
+      const disk = JSON.parse(await fs.readFile(botsPath, "utf8"));
+      for (const row of disk) {
+        if (!row.harness || typeof row.harness !== "object" || !row.harness.provider) {
+          row.harness = { provider: "grok-build", model: "grok-4.6" };
+        }
+      }
+      await fs.writeFile(botsPath, JSON.stringify(disk, null, 2));
     }
     return bots;
   } catch {
@@ -168,7 +203,7 @@ export function newBot(partial = {}) {
     title: partial.title || "",
     description: partial.description || "",
     instructions: partial.instructions || "",
-    color: partial.color || PALETTE[0],
+    color: partial.color || PALETTE[Math.floor(Math.random() * PALETTE.length)],
     icon: partial.icon || "hex",
     avatar: {
       expression: partial.avatar?.expression || "neutral",
@@ -188,6 +223,7 @@ export function newBot(partial = {}) {
     messages: [],
     routines: [],
     grokSessionId: id,
+    harness: partial.harness && typeof partial.harness === "object" ? partial.harness : { provider: "default" },
     pinned: Boolean(partial.pinned),
     section: partial.section || "",
     unread: Boolean(partial.unread),
@@ -224,6 +260,7 @@ export async function upsertBot(bot) {
           "section",
           "unread",
           "hidden",
+          "harness",
         ]) {
           if (prev[key] !== undefined) bot[key] = prev[key];
         }
@@ -276,6 +313,11 @@ export async function deleteBot(id) {
       await fs.unlink(conversationPath(id));
     } catch {
       /* no conversation file yet */
+    }
+    try {
+      await fs.unlink(screenPath(id));
+    } catch {
+      /* no screenshot yet */
     }
     return next;
   });
