@@ -1,7 +1,7 @@
 {
   "name": "sub8bot",
   "productName": "Sub8",
-  "version": "0.3.9",
+  "version": "0.3.10",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
@@ -11,7 +11,7 @@
     "start": "node server/index.mjs",
     "app": "zsh start.sh",
     "electron": "zsh scripts/macos-dev-app.sh >/dev/null && open -n -a .app/Sub8.app --args \"$PWD\"",
-    "test": "node test/tunnels.mjs",
+    "test": "node test/vault.mjs && node test/tunnels.mjs",
     "icons": "python3 scripts/make-icons.py && iconutil -c icns build/icon.iconset -o build/icon.icns",
     "logo": "node scripts/render-logo.mjs",
     "dist": "electron-builder --mac --win --linux",

@@ -422,7 +422,7 @@ async function ensureTools(name, onLog) {
   if (!inst.ok) onLog(`tool install warning: ${inst.out.slice(-300)}`);
 }
 
-async function ensureApps(name, onLog) {
+async function appsReady(name) {
   const check = await docker([
     "exec",
     "-u",
@@ -432,18 +432,49 @@ async function ensureApps(name, onLog) {
     "-lc",
     "command -v google-chrome-stable >/dev/null && command -v rustdesk >/dev/null && test -f /config/Desktop/RustDesk.desktop && test -f '/config/Desktop/Grok Build.desktop'",
   ]);
-  if (!check.ok) onLog("Installing Chrome, RustDesk, and Grok Build on the computer…");
-  else onLog("Updating Grok Build CLI on the computer…");
+  return check.ok;
+}
+
+async function ensureApps(name, onLog) {
+  if (await appsReady(name)) onLog("Updating Grok Build CLI on the computer…");
+  else onLog("Installing Chrome, RustDesk, and Grok Build on the computer…");
   const scriptHost = path.resolve(fileRoot, "vm", "setup-apps.sh");
   const cp = await docker(["cp", scriptHost, `${name}:/tmp/setup-apps.sh`]);
   if (!cp.ok) throw new Error(`copy setup-apps failed: ${cp.out}`);
-  const inst = await docker(["exec", "-u", "root", name, "bash", "/tmp/setup-apps.sh"]);
-  onLog(inst.out.split("\n").slice(-3).join(" | "));
-  if (!inst.ok) throw new Error(`app install failed: ${inst.out.slice(-800)}`);
-  const auth = await pushHostGrokAuth(name);
-  if (auth.ok) onLog("Grok session copied onto the computer.");
-  await installOctoClick(name);
-  await installAgentsMd(name, "");
+  let last = "";
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const inst = await docker(["exec", "-u", "root", name, "bash", "/tmp/setup-apps.sh"]);
+    last = inst.out || "";
+    const tail = last.split("\n").filter(Boolean).slice(-2).join(" | ");
+    if (tail) onLog(tail);
+    if (inst.ok || (await appsReady(name))) {
+      const auth = await pushHostGrokAuth(name);
+      if (auth.ok) onLog("Grok session copied onto the computer.");
+      await installOctoClick(name);
+      await installOctoVault(name);
+      await installAgentsMd(name, "");
+      onLog("Computer is ready.");
+      return;
+    }
+    onLog(`Still setting up the computer (${attempt}/4)…`);
+    await new Promise((r) => setTimeout(r, 3000 * attempt));
+  }
+  throw new Error(`app install failed: ${last.slice(-800)}`);
+}
+
+export async function installOctoVault(container) {
+  const host = path.resolve(fileRoot, "vm", "octo-vault.sh");
+  const cp = await docker(["cp", host, `${container}:/tmp/octo-vault.sh`]);
+  if (!cp.ok) return;
+  await docker([
+    "exec",
+    "-u",
+    "root",
+    container,
+    "bash",
+    "-lc",
+    "install -m 755 /tmp/octo-vault.sh /usr/local/bin/octo-vault && ln -sfn /usr/local/bin/octo-vault /usr/bin/octo-vault",
+  ]);
 }
 
 export async function installOctoClick(container) {
@@ -587,9 +618,20 @@ export async function waitForDesktop(bot, { timeoutMs = 90_000, onLog = () => {}
   const gone = async () => Boolean(shouldAbort && (await shouldAbort()));
   const name = containerName(bot.id);
   const inspect = await docker(["inspect", "-f", "{{.State.Running}}", name]);
-  const alive = inspect.ok && inspect.out.trim() === "true";
+  let alive = inspect.ok && inspect.out.trim() === "true";
   if (!alive) {
     onLog("Starting computer…");
+    const grace = Date.now() + 25_000;
+    while (Date.now() < grace && !(await gone())) {
+      const again = await docker(["inspect", "-f", "{{.State.Running}}", name]);
+      if (again.ok && again.out.trim() === "true") {
+        alive = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+  if (!alive) {
     try {
       const info = await startVm(bot, onLog, shouldAbort);
       bot.vm = { ...bot.vm, ...info, error: null };
@@ -880,6 +922,23 @@ export async function clipboardWrite(bot, text) {
     `${displayEnv(bot)}; echo '${b64}' | base64 -d | xclip -selection clipboard`,
   ]);
   if (!r.ok) throw new Error(`clipboard write failed: ${r.out.slice(-400)}`);
+}
+
+/** Paste a secret into the focused field, then wipe the clipboard. Never logs the value. */
+export async function pasteSecret(bot, text) {
+  requireVm(bot, "paste");
+  await clipboardWrite(bot, text);
+  const r = await docker([
+    "exec",
+    "-u",
+    "abc",
+    bot.vm.container,
+    "bash",
+    "-lc",
+    `${displayEnv(bot)}; wid=$(xdotool getwindowfocus); xdotool windowactivate "$wid" 2>/dev/null || true; xdotool key --clearmodifiers ctrl+v`,
+  ]);
+  await clipboardWrite(bot, "").catch(() => {});
+  if (!r.ok) throw new Error("Could not paste into the focused field.");
 }
 
 export async function wait(ms) {

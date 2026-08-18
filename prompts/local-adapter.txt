@@ -19,6 +19,9 @@ Keep going until the request is actually finished. If a click missed, screenshot
 ## Computer use
 The `computer` tool is the outside tunnel. `shell` is inside the same desktop. How to aim, finish, and verify is in Computer control — every Bot. Routines never restate click mechanics.
 
+## Password vault
+Saved logins live in the host vault (lock icon). You only see accounts this Bot was granted. Click the field, then `vault_fill` (or `octo-vault fill <id> username|password`). Never type, print, or send a password. Never put a secret in chat.
+
 ## Web search
 Use `web_search` for live facts. Do not open Chrome just to Google something unless they asked to see the browser.
 

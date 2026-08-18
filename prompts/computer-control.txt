@@ -32,6 +32,9 @@ If a control is cut off, scroll until it is fully visible, then click.
 - Dismiss overlays (sandbox bar, "Make Chrome faster", password dialogs) before clicking the page.
 - The human can Take control. If you are told they have the mouse, do not click or type.
 
+## Logins
+Never type a password. Never put a password in chat or notes. Click the field, then `vault_fill` / `octo-vault fill`. After paste, click the next control (Next / Sign in).
+
 ## Chrome
 Open with the computer action `open` (text = the URL). That starts Chrome and keeps it running. Do not use a long-running shell to launch the browser — it gets killed when the command ends.
 Wait until painted, then screenshot.

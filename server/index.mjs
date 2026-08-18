@@ -11,6 +11,7 @@ import { runTurn, publicBot, pingHarness, webSearch, orchestratorReply, isChatQu
 import { setHumanControl, isHumanControl } from "./control.mjs";
 import { appRoot, dataDir } from "./paths.mjs";
 import * as appUpdate from "./update.mjs";
+import * as vault from "./vault.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = appRoot;
@@ -175,6 +176,50 @@ app.get("/api/settings", async (_req, res) => {
 
 app.get("/api/update", async (_req, res) => {
   res.json(await appUpdate.checkForAppUpdate());
+});
+
+app.get("/api/vault", async (_req, res) => {
+  try {
+    res.json(await vault.snapshot());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/vault/groups", async (req, res) => {
+  const group = await vault.upsertGroup({ id: req.body?.id, name: req.body?.name });
+  res.json(group);
+});
+
+app.delete("/api/vault/groups/:id", async (req, res) => {
+  res.json(await vault.deleteGroup(req.params.id));
+});
+
+app.post("/api/vault/accounts", async (req, res) => {
+  const acc = await vault.upsertAccount(req.body || {});
+  res.json(acc);
+});
+
+app.patch("/api/vault/accounts/:id", async (req, res) => {
+  const acc = await vault.upsertAccount({ ...(req.body || {}), id: req.params.id });
+  res.json(acc);
+});
+
+app.delete("/api/vault/accounts/:id", async (req, res) => {
+  res.json(await vault.deleteAccount(req.params.id));
+});
+
+app.get("/api/vault/accounts/:id/reveal", async (req, res) => {
+  const acc = await vault.revealAccount(req.params.id);
+  if (!acc) return res.status(404).json({ error: "not found" });
+  res.json(acc);
+});
+
+app.put("/api/vault/grants/:botId", async (req, res) => {
+  const ids = await vault.setGrants(req.params.botId, req.body?.accountIds || []);
+  const bot = await store.getBot(req.params.botId);
+  if (bot) vault.pushListToBot(bot).catch(() => {});
+  res.json({ botId: req.params.botId, accountIds: ids });
 });
 
 app.put("/api/settings", async (req, res) => {
@@ -459,27 +504,27 @@ app.post("/api/bots/:id/messages", async (req, res) => {
   const text = String(req.body?.content || "").trim();
   const images = Array.isArray(req.body?.images) ? req.body.images.filter((x) => typeof x === "string").slice(0, 16) : [];
   if (!text && !images.length) return res.status(400).json({ error: "empty" });
+  const userMsg = {
+    id: `u${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
+    role: "user",
+    content: text || "See attached.",
+    ts: Date.now(),
+  };
+  await store.patchBot(bot.id, (b) => {
+    b.messages = b.messages || [];
+    b.messages.push(userMsg);
+  });
+  broadcast("message", { botId: bot.id, ...userMsg });
   const live = inflightTurns.get(bot.id);
-  if (busyIds.has(bot.id) && live) {
-    const userMsg = {
-      id: `u${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
-      role: "user",
-      content: text || "See attached.",
-      ts: Date.now(),
-    };
-    await store.patchBot(bot.id, (b) => {
-      b.messages = b.messages || [];
-      b.messages.push(userMsg);
-    });
-    broadcast("message", { botId: bot.id, ...userMsg });
-    const question = isChatQuestion(userMsg.content);
-    if (!question) live.nudges.push(userMsg.content);
-    res.json({ ok: true, nudged: !question });
+  const busy = busyIds.has(bot.id) && live;
+  const question = isChatQuestion(userMsg.content);
+  if (busy && question) {
     talkWhileWorking(bot.id, userMsg.content).catch((err) => console.error("orchestrator", err));
+    res.json({ ok: true, chat: true });
     return;
   }
-  res.json({ ok: true });
-  enqueueTurn(bot.id, () => runUserTurn(bot.id, text || "See attached.", false, images));
+  res.json({ ok: true, queued: busy });
+  enqueueTurn(bot.id, () => runUserTurn(bot.id, userMsg.content, false, images, { persistUser: false }));
 });
 
 app.post("/api/bots/:id/teach", async (req, res) => {
@@ -567,7 +612,7 @@ async function talkWhileWorking(botId, text) {
   broadcast("message", { botId, ...out });
 }
 
-async function runUserTurn(botId, text, hidden, images = []) {
+async function runUserTurn(botId, text, hidden, images = [], opts = {}) {
   const ac = new AbortController();
   turnAbort.set(botId, ac);
   busyIds.add(botId);
@@ -578,8 +623,8 @@ async function runUserTurn(botId, text, hidden, images = []) {
     if (!bot) return;
     broadcast("bot", toClient(bot));
     const ready = await vm.waitForDesktop(bot, {
-      timeoutMs: 90_000,
-      onLog: (m) => broadcast("log", { botId, m }),
+      timeoutMs: 180_000,
+      onLog: (m) => noteVm(botId, m),
       shouldAbort: async () => ac.signal.aborted || deletedIds.has(botId),
     });
     if (ac.signal.aborted) return;
@@ -596,7 +641,9 @@ async function runUserTurn(botId, text, hidden, images = []) {
         live.messages.push({
           id: `a${Date.now()}`,
           role: "assistant",
-          content: ready.reason || "Computer is not ready yet.",
+          content: /app install|wget|apt|PackageKit|Unable to fetch/i.test(ready.reason || "")
+            ? "The computer is still installing Chrome and tools. I’ll keep going once it’s ready."
+            : ready.reason || "Computer is not ready yet.",
           ts: Date.now(),
         });
         await store.upsertBot(live);
@@ -612,6 +659,7 @@ async function runUserTurn(botId, text, hidden, images = []) {
       userText: text,
       hidden,
       images,
+      persistUser: opts.persistUser !== false,
       signal: ac.signal,
       pullNudges: () => bag.nudges.splice(0),
       emit: (event, data) => {
@@ -680,28 +728,50 @@ async function tickRoutines() {
 
 setInterval(() => tickRoutines().catch((e) => console.error("routines", e)), 15_000);
 
+const provisioning = new Set();
+
+function noteVm(id, hint) {
+  broadcast("log", { botId: id, m: hint });
+  broadcast("vm-status", { botId: id, status: "starting", hint });
+}
+
 async function provision(id) {
-  if (deletedIds.has(id)) return;
+  if (deletedIds.has(id) || provisioning.has(id)) return;
+  provisioning.add(id);
   const bot = await store.patchBot(id, (live) => {
-    live.vm = { ...live.vm, status: "starting", error: null };
+    live.vm = { ...live.vm, status: "starting", error: null, hint: "Starting the computer…" };
   });
-  if (!bot) return;
+  if (!bot) {
+    provisioning.delete(id);
+    return;
+  }
   broadcast("bot", toClient(bot));
   try {
     const info = await vm.startVm(
       bot,
-      (m) => broadcast("log", { botId: id, m }),
+      (m) => noteVm(id, m),
       async () => deletedIds.has(id) || !(await store.getBot(id)),
     );
     const live = await store.patchBot(id, (b) => {
-      b.vm = { ...b.vm, ...info, error: null };
+      b.vm = { ...b.vm, ...info, error: null, hint: "" };
     });
-    if (live) broadcast("bot", toClient(live));
+    if (live) {
+      vault.pushListToBot(live).catch(() => {});
+      broadcast("bot", toClient(live));
+    }
   } catch (err) {
+    const transient = /app install|Unable to fetch|apt|wget|PackageKit|warming|not become/i.test(err.message || "");
     const live = await store.patchBot(id, (b) => {
-      b.vm = { ...b.vm, status: "error", error: err.message };
+      b.vm = {
+        ...b.vm,
+        status: transient ? "starting" : "error",
+        error: transient ? null : err.message,
+        hint: transient ? "Still setting up the computer…" : err.message,
+      };
     });
     if (live) broadcast("bot", toClient(live));
+  } finally {
+    provisioning.delete(id);
   }
 }
 
@@ -714,10 +784,8 @@ async function ensureDesktops() {
   if (!dock.ok) return dock;
   const bots = await store.loadBots();
   for (const bot of bots) {
-    if (deletedIds.has(bot.id) || isHumanControl(bot.id)) continue;
-    const starting = bot.vm?.status === "starting";
-    const stuckStart = starting && !bot.vm?.container;
-    if (bot.vm?.status === "running" || (starting && !stuckStart)) continue;
+    if (deletedIds.has(bot.id) || isHumanControl(bot.id) || provisioning.has(bot.id)) continue;
+    if (bot.vm?.status === "running") continue;
     provision(bot.id).catch((err) => console.error("ensure desktop", bot.id, err));
   }
   return dock;
@@ -737,4 +805,5 @@ app.listen(PORT, "127.0.0.1", async () => {
   setInterval(() => {
     ensureDesktops().catch((err) => console.error("ensureDesktops", err));
   }, 12_000);
+  vault.startVaultBridge(() => store.loadBots());
 });
