@@ -151,8 +151,11 @@ function create() {
     show: true,
     title: "Sub8",
     backgroundColor: "#ffffff",
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 16, y: 18 },
+    // hiddenInset is macOS-only. On Windows it removes the title bar, so a
+    // restored window has no chrome and can sit unseen at the top of the screen.
+    ...(process.platform === "darwin"
+      ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 16, y: 18 } }
+      : { frame: true, autoHideMenuBar: true }),
     icon: icon || undefined,
     webPreferences: {
       sandbox: true,
@@ -168,8 +171,18 @@ function create() {
     const rounded = path.join(here, "..", "docs", "brand", "octobot-icon-rounded.png");
     if (fs.existsSync(rounded)) app.dock?.setIcon(nativeImage.createFromPath(rounded));
   }
+  if (process.platform === "win32") {
+    win.unmaximize();
+    win.center();
+    win.setAlwaysOnTop(true);
+  }
   win.show();
   win.focus();
+  if (process.platform === "win32") {
+    setTimeout(() => {
+      if (!win.isDestroyed()) win.setAlwaysOnTop(false);
+    }, 2000);
+  }
   waitForServer().finally(() => {
     const load = () => {
       if (!win.isDestroyed()) win.loadURL(URL);
