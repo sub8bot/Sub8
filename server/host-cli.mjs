@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { appRoot, dataDir } from "./paths.mjs";
 import * as vault from "./vault.mjs";
+import * as ctx from "./context.mjs";
 
 export function extraPath() {
   const home = process.env.HOME || os.homedir() || "";
@@ -127,15 +128,14 @@ ${envLines}
   return home;
 }
 
-export async function runHostCli({ provider, model, userText, signal, bot, emit, internalToken, port }) {
+export async function runHostCli({ provider, model, userText, signal, bot, settings, hidden = false, emit, internalToken, port }) {
   const box = bot?.vm?.container;
   if (!box) return "This harness only runs after the Bot computer is up.";
   const work = await fs.mkdtemp(path.join(os.tmpdir(), `sub8-${provider}-`));
-  const ident = `You are the Bot named "${bot.name}". ${bot.description || ""}`.trim();
-  const extra = bot.instructions?.trim() ? `\nStanding instructions:\n${bot.instructions.trim()}` : "";
+  const extra = await ctx.agentsExtra({ bot, settings, hidden });
   const rules = `${await fs.readFile(path.join(appRoot, "prompts", "grok-build-vm.txt"), "utf8")}
-${ident}${extra}
-${await vault.promptBlock(bot.id)}
+${await fs.readFile(path.join(appRoot, "prompts", "capabilities.txt"), "utf8")}
+${extra}
 
 You are NOT on the user's Mac. Drive the Linux desktop only through MCP tools named computer, shell, vault_list, and vault_fill.
 Never use host Bash/Edit/Read on this Mac. Screenshot, then click, then vault_fill for passwords.

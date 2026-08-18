@@ -303,7 +303,7 @@ export async function promptBlock(botId) {
   if (!rows.length) {
     return `
 ## Password vault
-You have no saved logins. If you need to sign in, ask the user to add the account in the vault (lock icon) and grant this Bot access. Never invent passwords. Never ask them to paste a password into chat.
+You have no saved logins yet. To sign in: (1) ask them to add the account in the vault (lock icon) and grant this Bot, or (2) ask them to press Take control and sign in themselves, or (3) register a new account if they asked you to, then have them save it in the vault. Never invent a password for an account they already have. Never ask them to paste a password into chat.
 `;
   }
   const lines = rows.map((a) => `- ${a.label} (${a.site || "site unknown"}) id=${a.id} username=${a.username || "(none)"}`);

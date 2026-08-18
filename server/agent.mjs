@@ -8,6 +8,7 @@ import { isHumanControl } from "./control.mjs";
 import * as vault from "./vault.mjs";
 import * as hostCli from "./host-cli.mjs";
 import { detectLocalHarnesses, localSpec } from "./local-llm.mjs";
+import * as ctx from "./context.mjs";
 
 const COMPUTER_ACTIONS = [
   "screenshot",
@@ -332,18 +333,23 @@ export async function pingHarness(settings, bot) {
   };
 }
 
-async function loadSystemPrompt(bot) {
-  const adapter = await fs.readFile(path.join(appRoot, "prompts", "local-adapter.txt"), "utf8");
-  const computer = await fs.readFile(path.join(appRoot, "prompts", "computer-control.txt"), "utf8");
-  const core = await fs.readFile(path.join(appRoot, "prompts", "grok-bot-system.txt"), "utf8");
-  const extra = bot.instructions?.trim() ? `\n\n## Standing instructions for this Bot\n${bot.instructions.trim()}\n` : "";
-  const ident = `\nYou are the Bot named "${bot.name}". ${bot.description || ""}\n`;
-  return `${adapter}\n${computer}\n${ident}${extra}${routines.promptBlock(bot)}\n${core}
+async function loadSystemPrompt(bot, settings, { hidden = false } = {}) {
+  const [adapter, computer, capabilities, voice] = await Promise.all([
+    ctx.readPrompt("local-adapter.txt"),
+    ctx.readPrompt("computer-control.txt"),
+    ctx.readPrompt("capabilities.txt"),
+    ctx.readPrompt("voice.txt"),
+  ]);
+  const live = await ctx.liveContext({ bot, settings, hidden });
+  return `${live}
+${adapter}
+${capabilities}
+${computer}
+${routines.promptBlock(bot)}
+${voice}
 
-## Sub8 override (this wins)
-You already know the machine. Do not spend the first turns on \`pwd\`, \`whoami\`, \`ls /home\`, or hunting /workspace.
+## Sub8
 After send_message, if the user asked for something on the desktop (research, Chrome, files they can see, clicks): call \`computer\` screenshot next, then click like a human.
-Use \`shell\` only for a concrete command you already know belongs on this computer (write a file under /config, run a known binary). Never explore the filesystem to "discover" where you are.
 web_search is available for facts. Prefer it over opening Google unless the user asked to use the browser.
 Routines: ONE standing job, and only when the user asked to keep doing something on a clock (every N minutes, hourly, daily). "Check again", "try again", "resume", and one-shot desktop work are NOT routines — do the work now, do not upsert. "Run" / "resume" means execute, not rewrite. Never replace a long brief with the chat line. Never delete the only routine unless they said delete.
 If a submit already landed or the UI is still loading, do not submit the same thing again. If a click fails twice, stop repeating it.
@@ -396,7 +402,7 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
       return bot;
     }
   }
-  const system = await loadSystemPrompt(bot);
+  const system = await loadSystemPrompt(bot, settings, { hidden });
 
   if (persistUser) {
     if (!hidden) {
@@ -419,12 +425,19 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
     ...bot.messages
       .filter((m) => m.role === "user" || m.role === "assistant" || m.role === "tool")
       .filter((m) => m.kind !== "activity" && m.kind !== "think")
+      .filter((m) => !/^That failed: 400/.test(String(m.content || "")))
       .slice(-30)
       .map((m) => {
         if (m.role === "tool") return { role: "tool", tool_call_id: m.toolCallId, content: m.content };
         return { role: m.role === "user" || m.role === "assistant" ? m.role : "user", content: m.content };
       }),
   ];
+  if (!persistUser && userText) {
+    const last = history.at(-1);
+    if (!(last?.role === "user" && last.content === userText)) {
+      history.push({ role: "user", content: userText });
+    }
+  }
   if (images.length) {
     history.push({
       role: "user",
@@ -457,6 +470,8 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
       userText,
       signal,
       bot,
+      settings,
+      hidden,
       emit,
       internalToken: settings.__internalToken,
       port: settings.__port,
@@ -485,7 +500,7 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
     };
     bot.messages.push(work);
     emit("message", work);
-    const text = await runGrokBuild(harness, grokText, signal, bot, emit);
+    const text = await runGrokBuild(harness, grokText, signal, bot, emit, { settings, hidden });
     const msg = { id: `a${Date.now()}`, role: "assistant", content: text, ts: Date.now() };
     bot.messages.push(msg);
     emit("message", msg);
@@ -554,15 +569,13 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
           : "The user sent a chat message while you were working. It was already answered in chat. If they asked to stop or change course, follow that. If they asked you to do the thing now, do it. Otherwise continue the same computer work.",
       });
     }
-    const resp = await harness.client.chat.completions.create(
-      {
-        model: harness.model,
-        messages: history,
-        tools: TOOLS,
-        tool_choice: "auto",
-      },
-      signal ? { signal } : undefined,
-    );
+    const local = harness.provider === "ollama" || harness.provider === "lmstudio";
+    const resp = local
+      ? await completeLocal(harness, history, userText, signal)
+      : await harness.client.chat.completions.create(
+          { model: harness.model, messages: history, tools: TOOLS, tool_choice: "auto" },
+          signal ? { signal } : undefined,
+        );
     const msg = resp.choices?.[0]?.message;
     if (!msg) break;
 
@@ -646,6 +659,57 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
     }
   }
   return bot;
+}
+
+/** Qwen 3.x jinja dies on long / consecutive-user histories ("No user query found"). */
+function qwenSafeMessages(history, userText) {
+  const sys = [];
+  const compact = [];
+  for (const m of history || []) {
+    if (!m?.role) continue;
+    if (m.role === "system") {
+      sys.push({ role: "system", content: String(m.content || "") });
+      continue;
+    }
+    const content = typeof m.content === "string" ? m.content : "";
+    if (m.role === "tool") continue;
+    if (m.role === "user" && (content.startsWith("[routine]") || !content.trim())) continue;
+    if (m.role === "assistant" && !content.trim() && !m.tool_calls) continue;
+    if (compact.at(-1)?.role === m.role && !m.tool_calls) {
+      compact.at(-1).content = content.slice(-4000);
+      continue;
+    }
+    compact.push({ role: m.role, content: content.slice(-4000) });
+  }
+  while (compact.at(-1)?.role === "user") compact.pop();
+  const query = String(userText || "").trim() || "Continue.";
+  let tail = compact.slice(-4);
+  // Qwen 3.x jinja fails if the first message after system is assistant.
+  while (tail[0]?.role === "assistant") tail.shift();
+  tail.push({ role: "user", content: query });
+  return [...sys, ...tail];
+}
+
+async function completeLocal(harness, history, userText, signal) {
+  const query = String(userText || "").trim() || "Continue.";
+  const attempts = [
+    qwenSafeMessages(history, query),
+    [...(history || []).filter((m) => m.role === "system"), { role: "user", content: query }],
+  ];
+  let lastErr;
+  for (const messages of attempts) {
+    try {
+      return await harness.client.chat.completions.create(
+        { model: harness.model, messages, tools: TOOLS, tool_choice: "auto" },
+        signal ? { signal } : undefined,
+      );
+    } catch (err) {
+      lastErr = err;
+      const msg = String(err?.message || err);
+      if (!/No user query found|jinja template/i.test(msg)) throw err;
+    }
+  }
+  throw lastErr;
 }
 
 function toolSummary(name, args = {}, result = "") {
@@ -1057,7 +1121,7 @@ function emitGrokToolActivity(bot, emit, seen, evt) {
   emit("message", activity);
 }
 
-function runGrokBuild(harness, userText, signal, bot, emit) {
+function runGrokBuild(harness, userText, signal, bot, emit, { settings, hidden = false } = {}) {
   const box = bot?.vm?.container || (bot?.id ? vm.containerName(bot.id) : "");
   if (!box) {
     return Promise.resolve(
@@ -1072,10 +1136,10 @@ function runGrokBuild(harness, userText, signal, bot, emit) {
     } catch {
       /* still try */
     }
-    const ident = `You are the Bot named "${bot.name}". ${bot.description || ""}`.trim();
-    const extra = bot.instructions?.trim() ? `\nStanding instructions:\n${bot.instructions.trim()}` : "";
-    await vm.installAgentsMd(box, `${ident}${extra}`);
-    const rules = `${await fs.readFile(path.join(appRoot, "prompts", "grok-build-vm.txt"), "utf8")}\n${ident}${extra}\n`;
+    const extra = await ctx.agentsExtra({ bot, settings, hidden });
+    await vm.installAgentsMd(box, extra);
+    const caps = await ctx.readPrompt("capabilities.txt");
+    const rules = `${await fs.readFile(path.join(appRoot, "prompts", "grok-build-vm.txt"), "utf8")}\n${caps}\n${extra}\n`;
     const exists = await grokSessionOnDisk(box, sessionId);
     const recap = recapForGrok(bot);
     const prompt = exists

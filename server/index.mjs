@@ -501,6 +501,17 @@ app.post("/api/bots/:id/control", async (req, res) => {
   broadcast("message", { botId: bot.id, ...note });
   broadcast("control", { botId: bot.id, on });
   res.json({ ok: true, on });
+  if (!on) {
+    enqueueTurn(bot.id, () =>
+      runUserTurn(
+        bot.id,
+        "The user released the computer. Screenshot and continue what you were doing. If you were idle, just confirm you have the desktop again.",
+        false,
+        [],
+        { persistUser: false },
+      ),
+    );
+  }
 });
 
 app.post("/api/bots/:id/stop", async (req, res) => {
@@ -522,6 +533,18 @@ app.post("/api/bots/:id/stop", async (req, res) => {
   const live = await store.getBot(bot.id);
   broadcast("bot", toClient(live));
   res.json({ ok: true, stopped: wasBusy });
+});
+
+app.delete("/api/bots/:id/messages/:mid", async (req, res) => {
+  const extra = String(req.query.ids || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const ids = [...new Set([req.params.mid, ...extra].filter(Boolean))];
+  const bot = await store.deleteMessages(req.params.id, ids);
+  if (!bot) return res.status(404).json({ error: "not found" });
+  broadcast("bot", toClient(bot));
+  res.json(toClient(bot));
 });
 
 app.post("/api/bots/:id/messages", async (req, res) => {

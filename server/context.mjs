@@ -1,0 +1,143 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { appRoot } from "./paths.mjs";
+import * as vault from "./vault.mjs";
+
+const TZ_HINTS = [
+  [/^America\//, "en-US", "USD", "United States"],
+  [/^Pacific\/Honolulu/, "en-US", "USD", "United States"],
+  [/^Europe\/London/, "en-GB", "GBP", "United Kingdom"],
+  [/^Europe\/Dublin/, "en-IE", "EUR", "Ireland"],
+  [/^Europe\//, "en-GB", "EUR", "Europe"],
+  [/^Asia\/Tokyo/, "ja-JP", "JPY", "Japan"],
+  [/^Asia\/Seoul/, "ko-KR", "KRW", "South Korea"],
+  [/^Asia\/Shanghai|^Asia\/Hong_Kong/, "zh-CN", "CNY", "China"],
+  [/^Asia\/Singapore/, "en-SG", "SGD", "Singapore"],
+  [/^Asia\/Bangkok/, "th-TH", "THB", "Thailand"],
+  [/^Australia\//, "en-AU", "AUD", "Australia"],
+  [/^Pacific\/Auckland/, "en-NZ", "NZD", "New Zealand"],
+  [/^Africa\/Johannesburg/, "en-ZA", "ZAR", "South Africa"],
+];
+
+export function resolveZone(settings) {
+  const raw =
+    settings?.userTimeZoneOverride ||
+    process.env.TZ ||
+    Intl.DateTimeFormat().resolvedOptions().timeZone ||
+    "America/New_York";
+  try {
+    Intl.DateTimeFormat("en-US", { timeZone: raw }).format(new Date());
+    return raw;
+  } catch {
+    return "America/New_York";
+  }
+}
+
+export function localeForZone(zone) {
+  const hit = TZ_HINTS.find(([re]) => re.test(zone));
+  if (hit) return { locale: hit[1], currency: hit[2], region: hit[3] };
+  return { locale: "en-US", currency: "USD", region: "United States" };
+}
+
+function fmt(zone, locale, date, opts) {
+  return new Intl.DateTimeFormat(locale, { timeZone: zone, ...opts }).format(date);
+}
+
+function ymd(zone, date = new Date()) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: zone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+function dateFromYmd(ymdStr) {
+  const [y, m, d] = ymdStr.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+}
+
+function addDaysYmd(ymdStr, days) {
+  const dt = dateFromYmd(ymdStr);
+  dt.setUTCDate(dt.getUTCDate() + days);
+  const y = dt.getUTCFullYear();
+  const m = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(dt.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+export function clockBlock(settings = {}, { hidden = false } = {}) {
+  const zone = resolveZone(settings);
+  const { locale, currency, region } = localeForZone(zone);
+  const now = new Date();
+  const today = ymd(zone, now);
+  const tomorrowYmd = addDaysYmd(today, 1);
+  const when = fmt(zone, locale, now, {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZoneName: "short",
+  });
+  const tomorrow = fmt("UTC", locale, dateFromYmd(tomorrowYmd), {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  const lines = [
+    "## Now",
+    `${when} (${zone}).`,
+    `Today is ${today}. Tomorrow is ${tomorrow} (${tomorrowYmd}).`,
+    `Locale: ${region}, ${locale}. Currency: ${currency}. Use this for prices, dates, and sites unless the user says otherwise.`,
+  ];
+  if (hidden) {
+    lines.push(
+      "This turn is a scheduled routine fire, not a new user message. Stay quiet if nothing material changed.",
+    );
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+export function harnessLine(settings, bot) {
+  const local = bot?.harness || {};
+  const global = settings?.harness || {};
+  const provider = local.provider && local.provider !== "default" ? local.provider : global.provider || "grok-build";
+  const model = (local.model && String(local.model).trim()) || (global.provider === provider ? global.model : "") || "";
+  const names = {
+    "grok-build": "Grok Build",
+    claude: "Claude",
+    codex: "Codex",
+    ollama: "Ollama",
+    lmstudio: "LM Studio",
+    spacexai: "SpaceXAI",
+  };
+  const label = names[provider] || provider;
+  return model ? `You are running as ${label} (${model}) on this Bot's Linux computer.` : `You are running as ${label} on this Bot's Linux computer.`;
+}
+
+export async function readPrompt(name) {
+  return fs.readFile(path.join(appRoot, "prompts", name), "utf8");
+}
+
+export async function liveContext({ bot, settings, hidden = false } = {}) {
+  const ident = `You are the Bot named "${bot?.name || "Bot"}". ${bot?.description || ""}`.trim();
+  const extra = bot?.instructions?.trim() ? `\n\n## Standing instructions for this Bot\n${bot.instructions.trim()}\n` : "";
+  return `${clockBlock(settings, { hidden })}
+${harnessLine(settings, bot)}
+${ident}
+${extra}`;
+}
+
+export async function agentsExtra({ bot, settings, hidden = false } = {}) {
+  const ident = `You are the Bot named "${bot?.name || "Bot"}". ${bot?.description || ""}`.trim();
+  const extra = bot?.instructions?.trim() ? `\nStanding instructions:\n${bot.instructions.trim()}` : "";
+  return `${clockBlock(settings, { hidden })}
+${harnessLine(settings, bot)}
+${ident}${extra}
+${await vault.promptBlock(bot?.id)}
+`;
+}
