@@ -63,6 +63,30 @@ export async function saveConversation(id, messages) {
   return merged;
 }
 
+export async function replaceConversation(id, messages) {
+  await ensure();
+  const rows = (messages || []).filter((m) => m?.id);
+  await fs.writeFile(conversationPath(id), JSON.stringify(rows, null, 2));
+  return rows;
+}
+
+export async function deleteMessages(botId, ids) {
+  const drop = new Set((ids || []).filter(Boolean));
+  if (!drop.size) return null;
+  return withBots(async () => {
+    const bots = await loadBotsUnlocked();
+    const bot = bots.find((b) => b.id === botId);
+    if (!bot) return null;
+    const fileMsgs = await loadConversation(botId);
+    const before = unionMessages(bot.messages, fileMsgs);
+    bot.messages = before.filter((m) => !drop.has(m.id));
+    bot.updatedAt = Date.now();
+    await replaceConversation(botId, bot.messages);
+    await fs.writeFile(botsPath, JSON.stringify(bots, null, 2));
+    return bot;
+  });
+}
+
 function looksLocalModel(model) {
   const m = String(model || "");
   return /[:/]/.test(m) || /qwen3\.\d|gemma4|\bmlx\b|lmstudio|ollama/i.test(m);

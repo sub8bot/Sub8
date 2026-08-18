@@ -534,6 +534,10 @@ body {
   line-height: 1.45;
   white-space: pre-wrap;
 }
+.bubble[data-mid],
+.tool-list[data-mids] {
+  cursor: context-menu;
+}
 .bubble.user {
   align-self: flex-end;
   background: var(--bubble-user);

@@ -324,6 +324,7 @@ function unionClientMessages(a = [], b = []) {
 }
 
 const forgottenBots = new Set();
+const forgottenMessages = new Set();
 
 function adoptBot(next) {
   if (!next?.id || forgottenBots.has(next.id)) return next;
@@ -334,7 +335,9 @@ function adoptBot(next) {
     return next;
   }
   const prev = state.bots[i];
-  next.messages = unionClientMessages(next.messages, prev.messages);
+  next.messages = unionClientMessages(next.messages, prev.messages).filter(
+    (m) => !forgottenMessages.has(`${next.id}:${m.id}`),
+  );
   state.bots[i] = { ...prev, ...next, messages: next.messages };
   if (typeof next.busy === "boolean") state.bots[i].busy = next.busy;
   return state.bots[i];
@@ -394,7 +397,7 @@ function paintChat(bot) {
   for (let i = 0; i < rows.length; ) {
     const m = rows[i];
     if (m.role === "user") {
-      html.push(`<div class="bubble user">${escapeHtml(m.content)}</div>`);
+      html.push(`<div class="bubble user" data-mid="${escapeHtml(m.id || "")}">${escapeHtml(m.content)}</div>`);
       i += 1;
       continue;
     }
@@ -411,7 +414,7 @@ function paintChat(bot) {
       continue;
     }
     if (String(m.content || "").trim()) {
-      html.push(`<div class="bubble">${formatChatText(m.content)}</div>`);
+      html.push(`<div class="bubble" data-mid="${escapeHtml(m.id || "")}">${formatChatText(m.content)}</div>`);
     }
     i += 1;
   }
@@ -462,7 +465,8 @@ function renderActivity(batch, openLast) {
       <div class="thought-body">${formatChatText(body)}</div>
     </details>`);
   }
-  return `<div class="tool-list">${parts.join("")}</div>`;
+  const mids = batch.map((m) => m.id).filter(Boolean).join(",");
+  return `<div class="tool-list" data-mids="${escapeHtml(mids)}">${parts.join("")}</div>`;
 }
 
 function formatChatText(raw) {
@@ -1108,6 +1112,14 @@ function paintCtxMenu() {
     host.innerHTML = `<div class="ctx-menu" style="top:${top}px;left:${left}px">
       <button type="button" class="ctx-item" data-act="ctx-rename-section-open" data-sec="${escapeHtml(sec.id)}">${ctxIcon("edit")}<span>Rename section</span></button>
       <button type="button" class="ctx-item ctx-danger" data-act="ctx-delete-section" data-sec="${escapeHtml(sec.id)}">${ctxIcon("del")}<span>Delete section</span></button>
+    </div>`;
+    return;
+  }
+  if (ctx.type === "message") {
+    const left = Math.min(ctx.x, window.innerWidth - 220);
+    const top = Math.min(ctx.y, window.innerHeight - 80);
+    host.innerHTML = `<div class="ctx-menu" style="top:${top}px;left:${left}px">
+      <button type="button" class="ctx-item ctx-danger" data-act="ctx-del-msg">${ctxIcon("del")}<span>Delete message</span></button>
     </div>`;
     return;
   }
@@ -2004,6 +2016,19 @@ function bindDelegated() {
     render();
   });
   document.addEventListener("contextmenu", (e) => {
+    const msg = e.target.closest(".bubble[data-mid], .tool-list[data-mids]");
+    if (msg && (msg.dataset.mid || msg.dataset.mids)) {
+      e.preventDefault();
+      state.ctx = {
+        type: "message",
+        mid: msg.dataset.mid || "",
+        mids: msg.dataset.mids || "",
+        x: e.clientX,
+        y: e.clientY,
+      };
+      paintCtxMenu();
+      return;
+    }
     const sec = e.target.closest(".rail-sec");
     if (sec && isNamedSection(sec.dataset.sec)) {
       e.preventDefault();
@@ -2402,6 +2427,15 @@ function bindDelegated() {
       api("/api/settings", { method: "PUT", body: { sidebarSections: sections } }).then(refreshSettings);
       state.ctx = null;
       render();
+      return;
+    }
+    if (act === "ctx-del-msg") {
+      const ids = [state.ctx?.mid, ...(String(state.ctx?.mids || "").split(","))]
+        .map((s) => String(s || "").trim())
+        .filter(Boolean);
+      state.ctx = null;
+      paintCtxMenu();
+      if (ids.length) deleteMessages(ids);
       return;
     }
     if (act === "ctx-delete-section") {
@@ -3157,6 +3191,25 @@ async function saveBot() {
   });
   state.botEdit = false;
   await refresh();
+}
+
+async function deleteMessages(ids) {
+  const bot = state.bots.find((b) => b.id === state.selected);
+  if (!bot || !ids?.length) return;
+  const drop = new Set(ids);
+  for (const id of ids) forgottenMessages.add(`${bot.id}:${id}`);
+  bot.messages = (bot.messages || []).filter((m) => !drop.has(m.id));
+  paintChat(bot);
+  try {
+    const q = ids.length > 1 ? `?ids=${encodeURIComponent(ids.slice(1).join(","))}` : "";
+    const next = await api(`/api/bots/${bot.id}/messages/${encodeURIComponent(ids[0])}${q}`, { method: "DELETE" });
+    if (Array.isArray(next?.messages)) bot.messages = next.messages.filter((m) => !drop.has(m.id));
+    paintChat(bot);
+  } catch (err) {
+    for (const id of ids) forgottenMessages.delete(`${bot.id}:${id}`);
+    window.alert(err?.message || "Could not delete the message.");
+    await refresh();
+  }
 }
 
 async function resetVm() {

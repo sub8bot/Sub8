@@ -34,6 +34,7 @@ If a control is cut off, scroll until it is fully visible, then click.
 
 ## Logins
 Never type a password. Never put a password in chat or notes. Click the field, then `vault_fill` / `octo-vault fill`. After paste, click the next control (Next / Sign in).
+If there is no vault grant: ask them to add one, ask them to Take control, or register a new account if they asked you to. For 2FA or captcha, Take control.
 
 ## Chrome
 Open with the computer action `open` (text = the URL). That starts Chrome and keeps it running. Do not use a long-running shell to launch the browser — it gets killed when the command ends.

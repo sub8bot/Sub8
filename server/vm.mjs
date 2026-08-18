@@ -525,9 +525,11 @@ export async function writeFileToContainer(container, dest, text) {
 export async function installAgentsMd(container, extra = "") {
   const host = path.resolve(appRoot, "prompts", "grok-build-vm.txt");
   const control = path.resolve(appRoot, "prompts", "computer-control.txt");
+  const caps = path.resolve(appRoot, "prompts", "capabilities.txt");
   const base = await fs.readFile(host, "utf8").catch(() => "");
   const how = await fs.readFile(control, "utf8").catch(() => "");
-  const body = `${base}\n${how}\n${extra}\n`;
+  const can = await fs.readFile(caps, "utf8").catch(() => "");
+  const body = `${base}\n${can}\n${how}\n${extra}\n`;
   const b64 = Buffer.from(body, "utf8").toString("base64");
   await docker([
     "exec",
