@@ -11,6 +11,7 @@ const pending = new Map();
 const replies = new Map();
 let starting = null;
 const IDLE_MS = 180_000;
+const FIRST_IDLE_MS = 360_000;
 const HARD_MS = 20 * 60_000;
 
 function send(msg) {
@@ -25,6 +26,8 @@ function rpc(method, params = {}, opts = {}) {
   return new Promise((resolve, reject) => {
     let done = false;
     let idleTimer = null;
+    let firstWait = true;
+    const firstIdleMs = opts.firstIdleMs || idleMs;
     const hardTimer = setTimeout(() => fail(new Error(`Hermes ACP ${method} timed out`)), hardMs);
     const clear = () => {
       if (idleTimer) clearTimeout(idleTimer);
@@ -46,8 +49,10 @@ function rpc(method, params = {}, opts = {}) {
     };
     const bump = () => {
       if (!idleMs || done) return;
+      const wait = firstWait ? firstIdleMs : idleMs;
+      firstWait = false;
       if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => fail(new Error(`Hermes ACP ${method} timed out`)), idleMs);
+      idleTimer = setTimeout(() => fail(new Error(`Hermes ACP ${method} timed out`)), wait);
     };
     pending.set(id, { resolve: ok, reject: fail, bump });
     try {
@@ -193,7 +198,7 @@ export async function hermesAcpPrompt({ bot, text, mcpEnv, command, args, signal
         sessionId: sid,
         prompt: [{ type: "text", text }],
       },
-      { idleMs: IDLE_MS, hardMs: HARD_MS },
+      { idleMs: IDLE_MS, firstIdleMs: FIRST_IDLE_MS, hardMs: HARD_MS },
     );
   } catch (err) {
     const partial = (replies.get(sid) || "").trim();
