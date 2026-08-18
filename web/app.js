@@ -185,25 +185,44 @@ function paintUpdateBanner() {
   </div>`;
 }
 
+async function runningAppVersion() {
+  try {
+    const v = await window.sub8Desktop?.version?.();
+    if (v) return String(v);
+  } catch {
+    /* unpackaged or no handler */
+  }
+  return state.appVersion || "";
+}
+
 async function checkForUpdate({ silent = true } = {}) {
   try {
     const desktop = window.sub8Desktop;
-    let info = await api("/api/update");
+    const current = (await runningAppVersion()) || state.appVersion || "";
+    let info = await api(`/api/update${current ? `?current=${encodeURIComponent(current)}` : ""}`);
+    if (current) info = { ...info, currentVersion: current };
     if (desktop?.checkUpdate) {
-      const native = await desktop.checkUpdate().catch(() => null);
+      const native = await Promise.race([
+        desktop.checkUpdate().catch(() => null),
+        new Promise((resolve) => setTimeout(() => resolve(null), 8_000)),
+      ]);
+      if (native?.currentVersion) info.currentVersion = native.currentVersion;
       if (native?.updateAvailable && native.latestVersion) {
-        info = { ...info, ...native, downloadUrl: info.downloadUrl };
+        info = { ...info, ...native, downloadUrl: info.downloadUrl, error: null };
       }
     }
-    state.update = info;
-    if (!silent && !info.updateAvailable) {
-      state.update = { ...info, justChecked: true };
-    }
+    state.update = { ...info, justChecked: !silent };
+    if (info.currentVersion) state.appVersion = info.currentVersion;
     paintUpdateBanner();
     if (state.modal === "settings") paintModal();
     return info;
   } catch (err) {
-    state.update = { currentVersion: state.appVersion || "", updateAvailable: false, error: err.message };
+    state.update = {
+      currentVersion: state.appVersion || "",
+      updateAvailable: false,
+      error: err.message,
+      justChecked: !silent,
+    };
     if (!silent && state.modal === "settings") paintModal();
     return state.update;
   }
@@ -1891,9 +1910,11 @@ function settingsHtml() {
                   ? `Sub8 ${escapeHtml(state.update.latestVersion)} is available`
                   : state.update?.error
                     ? escapeHtml(state.update.error)
-                    : state.update
-                      ? "You're on the latest version"
-                      : "Checks GitHub Releases, same as Xnative"
+                    : state.update?.justChecked
+                      ? `Checked just now. You're on Sub8 ${escapeHtml(state.update.currentVersion || state.appVersion || "")}.`
+                      : state.update
+                        ? `You're on Sub8 ${escapeHtml(state.update.currentVersion || state.appVersion || "")}. Check GitHub Releases for a newer build.`
+                        : "Checks GitHub Releases for a newer Sub8."
               }</div></div>
                 <button class="pill" data-act="check-update">${state.updateBusy ? "Checking…" : "Check for updates"}</button></div>
               ${
@@ -3550,6 +3571,8 @@ function watchStream() {
 
 (async function init() {
   await refreshSettings();
+  const ev = await runningAppVersion();
+  if (ev) state.appVersion = ev;
   await refresh();
   listen();
   render();

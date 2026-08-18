@@ -6,6 +6,11 @@ if ! docker info >/dev/null 2>&1; then
   colima start
 fi
 cd "$(dirname "$0")"
+if [ -f .env ]; then
+  set -a
+  source .env
+  set +a
+fi
 if [ -z "${XAI_API_KEY:-}" ]; then
   echo "warning: XAI_API_KEY is empty — Settings → Harness expects SpaceXAI / grok-4.6"
 fi

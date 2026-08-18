@@ -195,8 +195,9 @@ app.post("/api/internal/emit", async (req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/api/update", async (_req, res) => {
-  res.json(await appUpdate.checkForAppUpdate());
+app.get("/api/update", async (req, res) => {
+  const current = String(req.query.current || "").trim() || undefined;
+  res.json(await appUpdate.checkForAppUpdate({ current }));
 });
 
 app.get("/api/vault", async (_req, res) => {
