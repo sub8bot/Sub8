@@ -171,12 +171,18 @@ function dockerMissingHtml() {
   return `<div class="banner warn" style="margin:0;text-align:left"><strong>Docker is not running.</strong> ${escapeHtml(hint)}</div>`;
 }
 
+const OFFICIAL_SITE = "https://sub8.grok.me";
+
 function releasePageUrl() {
-  return (
-    state.update?.releaseUrl ||
-    state.update?.downloadUrl ||
-    "https://github.com/sub8bot/Sub8/releases"
-  );
+  return state.update?.releaseUrl || "https://github.com/sub8bot/Sub8/releases";
+}
+
+function downloadUrl() {
+  return state.update?.downloadUrl || "";
+}
+
+function siteUrl() {
+  return state.update?.siteUrl || OFFICIAL_SITE;
 }
 
 function dismissedThisUpdate() {
@@ -199,12 +205,14 @@ function paintUpdateBanner() {
     host.hidden = true;
     return;
   }
-  const href = escapeHtml(releasePageUrl());
+  const file = downloadUrl();
+  const label = u.downloadName ? `Download ${u.downloadName}` : "Download";
   host.hidden = false;
   host.innerHTML = `<div class="update-strip">
     <span>Sub8 ${escapeHtml(u.latestVersion || "")} is available
     <span class="muted">(you have ${escapeHtml(u.currentVersion || "")})</span></span>
-    <a class="update-link" href="${href}" target="_blank" rel="noopener">Open release</a>
+    ${file ? `<a class="update-link" href="${escapeHtml(file)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>` : ""}
+    <a class="update-link" href="${escapeHtml(siteUrl())}" target="_blank" rel="noopener">sub8.grok.me</a>
     <button type="button" class="update-x" data-act="dismiss-update" title="Dismiss">×</button>
   </div>`;
 }
@@ -231,9 +239,15 @@ async function checkForUpdate({ silent = true } = {}) {
         new Promise((resolve) => setTimeout(() => resolve(null), 8_000)),
       ]);
       if (native?.currentVersion) info.currentVersion = native.currentVersion;
-      if (native?.updateAvailable && native.latestVersion) {
-        info = { ...info, ...native, downloadUrl: info.downloadUrl, error: null };
+      if (native?.updateAvailable && native.latestVersion && info.downloadUrl) {
+        info = {
+          ...info,
+          latestVersion: native.latestVersion,
+          updateAvailable: true,
+          error: null,
+        };
       }
+      if (!info.downloadUrl) info.updateAvailable = false;
     }
     state.update = { ...info, justChecked: !silent };
     if (info.currentVersion) state.appVersion = info.currentVersion;
@@ -252,8 +266,21 @@ async function checkForUpdate({ silent = true } = {}) {
   }
 }
 
-function openReleasePage() {
-  window.open(releasePageUrl(), "_blank", "noopener");
+function openExternal(url) {
+  if (!url) return;
+  window.open(url, "_blank", "noopener");
+}
+
+function openDownload() {
+  openExternal(downloadUrl() || releasePageUrl());
+  if (state.modal) {
+    state.modal = null;
+    render();
+  }
+}
+
+function openOfficialSite() {
+  openExternal(siteUrl());
   if (state.modal) {
     state.modal = null;
     render();
@@ -1943,8 +1970,13 @@ function settingsHtml() {
                 <button class="pill" data-act="check-update">${state.updateBusy ? "Checking…" : "Check for updates"}</button></div>
               ${
                 state.update?.updateAvailable
-                  ? `<div class="row"><div><div class="lbl">Install</div><div class="sub">Opens the GitHub release. Download the installer for this computer.</div></div>
-                <button class="pill primary" data-act="install-update">Open release</button></div>`
+                  ? `<div class="row"><div><div class="lbl">Install</div><div class="sub">Direct download for this computer, or the site at sub8.grok.me.</div></div>
+                <div class="row" style="gap:8px;justify-content:flex-end">
+                  <button class="pill" data-act="open-site">sub8.grok.me</button>
+                  <button class="pill primary" data-act="install-update">${
+                    state.update.downloadName ? `Download ${escapeHtml(state.update.downloadName)}` : "Download"
+                  }</button>
+                </div></div>`
                   : ""
               }
             </div>
@@ -2370,7 +2402,11 @@ function bindDelegated() {
       return;
     }
     if (act === "install-update") {
-      openReleasePage();
+      openDownload();
+      return;
+    }
+    if (act === "open-site") {
+      openOfficialSite();
       return;
     }
     if (act === "dismiss-update") {

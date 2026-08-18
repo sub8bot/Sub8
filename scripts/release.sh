@@ -41,4 +41,5 @@ echo "==> Checksums"
 )
 ls -lh dist/Sub8-mac-* dist/Sub8-win-* dist/Sub8-linux-* dist/Sub8-"$VERSION"-* dist/latest*.yml 2>/dev/null || true
 echo "==> Release artifacts ready in dist/"
-echo "Upload latest.yml (Windows) and latest-mac.yml (Mac) with the GitHub release so in-app updates work."
+echo "Create the GitHub release as a DRAFT, upload every installer + latest.yml / latest-mac.yml / latest-linux.yml, then publish."
+echo "Never publish the tag before the files are up — that alerts every running app with nothing to download."
