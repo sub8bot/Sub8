@@ -173,19 +173,35 @@ export function inferMood(bot, { preview } = {}) {
   }
 
   if (bot?.busy || bot?.vm?.status === "starting") {
+    if (bot?.id) idleMoodByBot.delete(bot.id);
     const usingDesk = Boolean(lastTool && (!lastAsst || (lastTool.ts || 0) >= (lastAsst.ts || 0) - 2000));
     return pack(avatar.expression, reduce ? "none" : usingDesk ? "look" : "talk");
   }
 
   if (lastAsst && asstAge < DONE_MS && userAge < DONE_MS + 4000) {
+    if (bot?.id) idleMoodByBot.delete(bot.id);
     return pack(avatar.expression === "neutral" ? "happy" : avatar.expression, reduce ? "none" : "nod");
   }
 
   const quietFor = Math.min(userAge, asstAge);
-  if (quietFor > 12 * 60_000) return pack("sleepy", reduce ? "none" : "sleep");
+  if (quietFor > 12 * 60_000) return idleMoodFor(bot?.id, reduce);
   if (quietFor > 6 * 60_000) return pack(avatar.expression, reduce ? "none" : "idle");
 
   return pack(avatar.expression, reduce ? "none" : avatar.animation || "idle");
+}
+
+function idleMoodFor(botId, reduce) {
+  const key = botId || "unknown";
+  const cached = idleMoodByBot.get(key);
+  if (cached) return cached;
+  const faces = IDLE_FACES.filter((id) => EXPRESSIONS[id]);
+  const anims = reduce ? ["none"] : IDLE_ANIMS.filter((id) => ANIMATIONS[id]);
+  const mood = pack(
+    faces[Math.floor(Math.random() * faces.length)] || "happy",
+    anims[Math.floor(Math.random() * anims.length)] || "idle",
+  );
+  idleMoodByBot.set(key, mood);
+  return mood;
 }
 
 function pack(expression, animation) {
@@ -427,6 +443,38 @@ export function faceList() {
 
 const HAPPY_FACES = ["happy", "blush", "grin", "beam", "laugh", "joy", "wink", "love", "hearts", "star", "yum"];
 const HAPPY_ANIMS = ["bounce", "cheer", "pulse", "excited"];
+const IDLE_FACES = [
+  "slight",
+  "happy",
+  "blush",
+  "grin",
+  "beam",
+  "wink",
+  "smirk",
+  "love",
+  "hearts",
+  "yum",
+  "tongue",
+  "think",
+  "raised",
+  "unamused",
+  "deadpan",
+  "oops",
+  "cool",
+  "relieved",
+  "pensive",
+  "confused",
+  "wow",
+  "flushed",
+  "zany",
+  "shush",
+  "eyeroll",
+  "star",
+  "kiss",
+  "winkTongue",
+];
+const IDLE_ANIMS = ["idle", "sway", "peek", "look"];
+const idleMoodByBot = new Map();
 
 export function isSleepingMood(mood) {
   const e = mood?.expression || "";

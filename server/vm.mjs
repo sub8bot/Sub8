@@ -70,18 +70,36 @@ function dockerEnv() {
 }
 
 function run(cmd, args, opts = {}) {
+  const { timeout, ...spawnOpts } = opts;
   return new Promise((resolve) => {
     const child = spawn(cmd, args, {
       env: dockerEnv(),
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
-      ...opts,
+      ...spawnOpts,
     });
     let out = "";
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = timeout
+      ? setTimeout(() => {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            /* ignore */
+          }
+          finish({ ok: false, out: "timeout", code: 124 });
+        }, timeout)
+      : null;
     child.stdout?.on("data", (d) => (out += d.toString()));
     child.stderr?.on("data", (d) => (out += d.toString()));
-    child.on("error", (err) => resolve({ ok: false, out: String(err), code: 1 }));
-    child.on("close", (code) => resolve({ ok: code === 0, out: out.trim(), code }));
+    child.on("error", (err) => finish({ ok: false, out: String(err), code: 1 }));
+    child.on("close", (code) => finish({ ok: code === 0, out: out.trim(), code }));
   });
 }
 
@@ -304,7 +322,7 @@ export async function ensureImage(onLog = () => {}) {
   if (!pull.ok) throw new Error(`docker pull failed: ${pull.out.slice(-800)}`);
 }
 
-function configVolume(bot) {
+export function configVolume(bot) {
   return bot.vm?.volume || `localbot-config-${String(bot.id || "bot").slice(0, 8)}`;
 }
 
@@ -524,32 +542,44 @@ export async function installAgentsMd(container, extra = "") {
   ]);
 }
 
-export async function stopVm(bot) {
+export async function stopVm(bot, { wipe = false } = {}) {
   const name = bot.vm?.container || (bot.id ? containerName(bot.id) : null);
-  if (!name) return;
-  await docker(["rm", "-f", name]);
+  if (name) await docker(["rm", "-f", name]);
+  if (wipe && bot?.id) {
+    const volume = configVolume(bot);
+    await docker(["volume", "rm", "-f", volume]);
+  }
 }
 
-/** Remove localbot-* containers that do not belong to a known bot. */
-export async function sweepOrphans(keepNames = []) {
+/** Remove localbot-* containers and config volumes that do not belong to a known bot. */
+export async function sweepOrphans(keepNames = [], keepVolumes = []) {
   const keep = new Set(keepNames.filter(Boolean));
+  const keepVol = new Set(keepVolumes.filter(Boolean));
   // Empty bot list = new data dir. Never delete every computer.
-  if (keep.size === 0) return [];
-  const listed = await docker(["ps", "-aq", "--filter", "name=localbot-"]);
-  if (!listed.ok || !listed.out.trim()) return [];
-  const inspect = await docker([
-    "ps",
-    "-a",
-    "--filter",
-    "name=localbot-",
-    "--format",
-    "{{.Names}}",
-  ]);
+  if (keep.size === 0 && keepVol.size === 0) return [];
   const removed = [];
-  for (const name of inspect.out.split("\n").map((s) => s.trim()).filter(Boolean)) {
-    if (!name.startsWith("localbot-") || keep.has(name)) continue;
-    await docker(["rm", "-f", name]);
-    removed.push(name);
+  if (keep.size) {
+    const inspect = await docker([
+      "ps",
+      "-a",
+      "--filter",
+      "name=localbot-",
+      "--format",
+      "{{.Names}}",
+    ]);
+    for (const name of inspect.out.split("\n").map((s) => s.trim()).filter(Boolean)) {
+      if (!name.startsWith("localbot-") || keep.has(name)) continue;
+      await docker(["rm", "-f", name]);
+      removed.push(name);
+    }
+  }
+  if (keepVol.size) {
+    const vols = await docker(["volume", "ls", "-q"]);
+    for (const name of (vols.out || "").split("\n").map((s) => s.trim()).filter(Boolean)) {
+      if (!name.startsWith("localbot-config-") || keepVol.has(name)) continue;
+      const drop = await docker(["volume", "rm", "-f", name]);
+      if (drop.ok) removed.push(name);
+    }
   }
   return removed;
 }

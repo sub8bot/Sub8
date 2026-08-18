@@ -1,7 +1,7 @@
 {
   "name": "sub8bot",
   "productName": "Sub8",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
@@ -58,7 +58,8 @@
     ],
     "asarUnpack": [
       "vm/**/*",
-      "prompts/**/*"
+      "prompts/**/*",
+      "server/mcp-sub8.mjs"
     ],
     "extraResources": [
       {

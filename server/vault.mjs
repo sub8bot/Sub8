@@ -342,7 +342,10 @@ export async function pushListToBot(bot) {
 async function handleVaultRequest(bot) {
   const box = bot?.vm?.container;
   if (!box) return;
-  const peek = await vm.docker(["exec", "-u", "abc", box, "bash", "-lc", "cat /tmp/sub8-vault-req.json 2>/dev/null || true"]);
+  const peek = await vm.docker(
+    ["exec", "-u", "abc", box, "bash", "-lc", "cat /tmp/sub8-vault-req.json 2>/dev/null || true"],
+    { timeout: 2500 },
+  );
   const raw = String(peek.out || "").trim();
   if (!raw) return;
   await vm.docker(["exec", "-u", "abc", box, "rm", "-f", "/tmp/sub8-vault-req.json"]);
@@ -371,14 +374,24 @@ async function handleVaultRequest(bot) {
 }
 
 export function startVaultBridge(loadBots) {
+  let ticking = false;
   const tick = async () => {
-    const bots = await loadBots();
-    for (const bot of bots) {
-      if (bot.vm?.status !== "running" || !bot.vm.container) continue;
-      await handleVaultRequest(bot).catch(() => {});
+    if (ticking) return;
+    ticking = true;
+    try {
+      const bots = await loadBots();
+      for (const bot of bots) {
+        // octo-vault file drops are only used by Grok Build inside the VM.
+        const provider = bot.harness?.provider;
+        if (provider && provider !== "default" && provider !== "grok-build") continue;
+        if (bot.vm?.status !== "running" || !bot.vm.container) continue;
+        await handleVaultRequest(bot).catch(() => {});
+      }
+    } finally {
+      ticking = false;
     }
   };
-  setInterval(() => tick().catch(() => {}), 400);
+  setInterval(() => tick().catch(() => {}), 2000);
   return tick;
 }
 

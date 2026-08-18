@@ -6,6 +6,8 @@ import * as routines from "./routines.mjs";
 import { appRoot } from "./paths.mjs";
 import { isHumanControl } from "./control.mjs";
 import * as vault from "./vault.mjs";
+import * as hostCli from "./host-cli.mjs";
+import { detectLocalHarnesses, localSpec } from "./local-llm.mjs";
 
 const COMPUTER_ACTIONS = [
   "screenshot",
@@ -204,9 +206,48 @@ export async function orchestratorReply({ bot, settings, userText }) {
   return text || null;
 }
 
-export function resolveClient(settings) {
-  const h = settings.harness || {};
+export const HARNESS_PROVIDERS = [
+  { id: "grok-build", label: "Grok Build", kind: "cli-vm" },
+  { id: "claude", label: "Claude", kind: "cli-host" },
+  { id: "codex", label: "Codex", kind: "cli-host" },
+  { id: "ollama", label: "Ollama", kind: "openai-local" },
+  { id: "lmstudio", label: "LM Studio", kind: "openai-local" },
+  { id: "spacexai", label: "SpaceXAI", kind: "openai" },
+];
+
+export function normalizeProvider(p) {
+  const id = String(p || "").trim();
+  if (HARNESS_PROVIDERS.some((x) => x.id === id)) return id;
+  return "grok-build";
+}
+
+export function harnessFor(bot, settings) {
+  const global = settings?.harness || {};
+  const local = bot?.harness || {};
+  const provider = normalizeProvider(local.provider && local.provider !== "default" ? local.provider : global.provider);
+  const model = (local.model && String(local.model).trim()) || (global.provider === provider ? global.model : "") || "";
+  return { ...global, provider, model };
+}
+
+export function resolveClient(settings, bot) {
+  const h = harnessFor(bot, settings);
   const key = (h.apiKey && h.apiKey.trim()) || process.env[h.apiKeyEnv || "XAI_API_KEY"] || process.env.XAI_API_KEY;
+  if (h.provider === "claude" || h.provider === "codex") {
+    return { kind: "cli-host", provider: h.provider, model: h.model };
+  }
+  const local = localSpec(h.provider);
+  if (local) {
+    return {
+      kind: "openai",
+      provider: h.provider,
+      model: h.model,
+      baseUrl: h.baseUrl && !/api\.x\.ai/i.test(h.baseUrl) ? h.baseUrl : local.baseUrl,
+      client: new OpenAI({
+        apiKey: (h.apiKey && h.apiKey.trim()) || local.key,
+        baseURL: h.baseUrl && !/api\.x\.ai/i.test(h.baseUrl) ? h.baseUrl : local.baseUrl,
+      }),
+    };
+  }
   if ((h.provider || "spacexai") === "grok-build") {
     if (key) {
       return {
@@ -231,9 +272,13 @@ export function resolveClient(settings) {
 }
 
 /** Cheap live check that the configured harness (default SpaceXAI) answers. */
-export async function pingHarness(settings) {
-  const harness = resolveClient(settings);
-  const provider = settings.harness?.provider || "spacexai";
+export async function pingHarness(settings, bot) {
+  const harness = resolveClient(settings, bot);
+  const provider = harness.provider || settings.harness?.provider || "spacexai";
+  if (harness.kind === "cli-host") {
+    const r = await hostCli.pingHostCli(harness.provider);
+    return { ...r, provider: harness.provider, kind: "cli-host", model: harness.model };
+  }
   if (harness.kind === "grok-build") {
     const ps = await vm.docker(["ps", "--format", "{{.Names}}", "--filter", "name=localbot-"]);
     const box = (ps.out || "").split("\n").map((s) => s.trim()).find(Boolean);
@@ -257,22 +302,33 @@ export async function pingHarness(settings) {
       sample: (sample || "").slice(0, 240),
     };
   }
+  if ((harness.provider === "ollama" || harness.provider === "lmstudio") && !harness.model) {
+    const found = await detectLocalHarnesses();
+    const models = found[harness.provider]?.models || [];
+    if (!models.length) {
+      return {
+        ok: false,
+        provider: harness.provider,
+        kind: "openai",
+        error: `${harness.provider === "lmstudio" ? "LM Studio" : "Ollama"} is not running or has no models loaded.`,
+      };
+    }
+    harness.model = models[0];
+  }
   const resp = await harness.client.chat.completions.create({
     model: harness.model,
-    messages: [
-      { role: "system", content: "Reply with only the word PONG." },
-      { role: "user", content: "ping" },
-    ],
-    max_tokens: 8,
+    messages: [{ role: "user", content: "Reply with only the word PONG." }],
+    max_tokens: 64,
   });
-  const sample = (resp.choices?.[0]?.message?.content || "").trim();
+  const msg = resp.choices?.[0]?.message || {};
+  const sample = String(msg.content || msg.reasoning_content || "").trim();
   return {
-    ok: /pong/i.test(sample),
+    ok: /pong/i.test(sample) || Boolean(sample),
     provider,
     kind: harness.kind,
     model: harness.model,
     baseUrl: harness.baseUrl,
-    sample,
+    sample: sample.slice(0, 240),
   };
 }
 
@@ -324,7 +380,22 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
     if (routine) await Promise.resolve(emit("routine", { routine, merged, rejected }));
   }
 
-  const harness = resolveClient(settings);
+  const harness = resolveClient(settings, bot);
+  if ((harness.provider === "ollama" || harness.provider === "lmstudio") && !harness.model) {
+    const found = await detectLocalHarnesses();
+    harness.model = found[harness.provider]?.models?.[0] || "";
+    if (!harness.model) {
+      const out = {
+        id: `a${Date.now()}`,
+        role: "assistant",
+        content: `${harness.provider === "lmstudio" ? "LM Studio" : "Ollama"} is not running or has no model loaded.`,
+        ts: Date.now(),
+      };
+      bot.messages.push(out);
+      emit("message", out);
+      return bot;
+    }
+  }
   const system = await loadSystemPrompt(bot);
 
   if (persistUser) {
@@ -365,6 +436,35 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
         })),
       ],
     });
+  }
+
+  if (harness.kind === "cli-host") {
+    emit("tool", { name: "computer", args: { action: "screenshot" } });
+    const work = {
+      id: `tl${Date.now()}cli`,
+      role: "activity",
+      kind: "tool",
+      name: "computer",
+      action: "screenshot",
+      summary: `Working via ${harness.provider}`,
+      ts: Date.now(),
+    };
+    bot.messages.push(work);
+    emit("message", work);
+    const text = await hostCli.runHostCli({
+      provider: harness.provider,
+      model: harness.model,
+      userText,
+      signal,
+      bot,
+      emit,
+      internalToken: settings.__internalToken,
+      port: settings.__port,
+    });
+    const msg = { id: `a${Date.now()}`, role: "assistant", content: text, ts: Date.now() };
+    bot.messages.push(msg);
+    emit("message", msg);
+    return bot;
   }
 
   if (harness.kind === "grok-build") {
