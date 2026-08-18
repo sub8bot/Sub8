@@ -118,8 +118,30 @@ async function runComputer(args) {
       ],
     };
   }
-  if (action === "open") await vm.openChrome(bot, args.text || "");
-  else if (action === "left_click") await vm.click(bot, args.x, args.y, 1, 1);
+  if (action === "open") {
+    await vm.openChrome(bot, args.text || "");
+    await vm.wait(1200);
+    await emit("message", {
+      id: `tl${Date.now()}mcp`,
+      role: "activity",
+      kind: "tool",
+      name: "computer",
+      action: "open",
+      summary: "Opened Chrome",
+      ts: Date.now(),
+    });
+    const shot = await vm.screenshot(bot);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Opened ${String(args.text || "Chrome").slice(0, 160)}. Screenshot ${shot.width}x${shot.height}. Click the next control or type.`,
+        },
+        { type: "image", data: shot.buf.toString("base64"), mimeType: "image/png" },
+      ],
+    };
+  }
+  if (action === "left_click") await vm.click(bot, args.x, args.y, 1, 1);
   else if (action === "right_click") await vm.click(bot, args.x, args.y, 3, 1);
   else if (action === "double_click") await vm.click(bot, args.x, args.y, 1, 2);
   else if (action === "mouse_move") await vm.mouseMove(bot, args.x, args.y);
