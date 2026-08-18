@@ -730,10 +730,9 @@ function qwenSafeMessages(history, userText) {
     compact.push({ role: m.role, content: content.slice(-4000) });
   }
   while (compact.at(-1)?.role === "user") compact.pop();
-  const lastNudge = [...(history || [])].reverse().find((m) => m.role === "user" && typeof m.content === "string" && m.content !== userText);
   const bits = [String(userText || "").trim() || "Continue."];
   if (toolNotes.length) bits.push(`Last tool results:\n${toolNotes.slice(-4).join("\n")}`);
-  if (lastNudge?.content) bits.push(String(lastNudge.content).slice(-800));
+  bits.push("Do only the latest user message. Do not continue an earlier Gmail or login job unless they asked for it this turn.");
   bits.push("Do the next real desktop step. Do not only say you will do it.");
   let tail = compact.slice(-4);
   while (tail[0]?.role === "assistant") tail.shift();
