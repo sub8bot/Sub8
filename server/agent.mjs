@@ -208,7 +208,8 @@ export async function orchestratorReply({ bot, settings, userText }) {
 }
 
 export const HARNESS_PROVIDERS = [
-  { id: "grok-build", label: "Grok Build", kind: "cli-vm" },
+  { id: "grok-build", label: "Grok Build", kind: "cli-host" },
+  { id: "hermes", label: "Hermes", kind: "cli-host" },
   { id: "claude", label: "Claude", kind: "cli-host" },
   { id: "codex", label: "Codex", kind: "cli-host" },
   { id: "ollama", label: "Ollama", kind: "openai-local" },
@@ -233,8 +234,8 @@ export function harnessFor(bot, settings) {
 export function resolveClient(settings, bot) {
   const h = harnessFor(bot, settings);
   const key = (h.apiKey && h.apiKey.trim()) || process.env[h.apiKeyEnv || "XAI_API_KEY"] || process.env.XAI_API_KEY;
-  if (h.provider === "claude" || h.provider === "codex") {
-    return { kind: "cli-host", provider: h.provider, model: h.model };
+  if (h.provider === "claude" || h.provider === "codex" || h.provider === "hermes" || h.provider === "grok-build") {
+    return { kind: "cli-host", provider: h.provider, model: h.provider === "grok-build" ? h.model || "grok-4.6" : h.model };
   }
   const local = localSpec(h.provider);
   if (local) {
@@ -249,19 +250,6 @@ export function resolveClient(settings, bot) {
       }),
     };
   }
-  if ((h.provider || "spacexai") === "grok-build") {
-    if (key) {
-      return {
-        kind: "openai",
-        grokBuild: true,
-        model: h.model || "grok-4.6",
-        provider: "grok-build",
-        baseUrl: h.baseUrl || "https://api.x.ai/v1",
-        client: new OpenAI({ apiKey: key, baseURL: h.baseUrl || "https://api.x.ai/v1" }),
-      };
-    }
-    return { kind: "grok-build", command: h.grokBuildCommand || "grok", model: h.model || "grok-4.6" };
-  }
   if (!key) throw new Error("No API key. Set XAI_API_KEY or paste a key in Settings → Harness.");
   return {
     kind: "openai",
@@ -273,9 +261,27 @@ export function resolveClient(settings, bot) {
 }
 
 /** Cheap live check that the configured harness (default SpaceXAI) answers. */
-export async function pingHarness(settings, bot) {
-  const harness = resolveClient(settings, bot);
-  const provider = harness.provider || settings.harness?.provider || "spacexai";
+export async function pingHarness(settings, bot, providerOverride) {
+  const prev = settings?.harness || {};
+  const cli =
+    providerOverride === "hermes" ||
+    providerOverride === "claude" ||
+    providerOverride === "codex" ||
+    providerOverride === "grok-build";
+  const forced = providerOverride
+    ? {
+        ...settings,
+        harness: {
+          ...prev,
+          provider: providerOverride,
+          // Do not leak the default Grok model onto Claude / Codex / Hermes.
+          model: cli ? "" : providerOverride === prev.provider ? prev.model || "" : "",
+        },
+      }
+    : settings;
+  // A Settings tab test is about that engine, not the selected Bot's harness.
+  const harness = resolveClient(forced, providerOverride ? null : bot);
+  const provider = harness.provider || forced.harness?.provider || "spacexai";
   if (harness.kind === "cli-host") {
     const r = await hostCli.pingHostCli(harness.provider);
     return { ...r, provider: harness.provider, kind: "cli-host", model: harness.model };
@@ -451,6 +457,22 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
     });
   }
 
+  let savedLogin = null;
+  if (!hidden && !isHumanControl(bot.id)) {
+    savedLogin = await maybeRunSavedLogin(bot, userText, emit, signal);
+    if (savedLogin?.did) {
+      history.push({
+        role: "user",
+        content: savedLogin.imageB64
+          ? [
+              { type: "text", text: savedLogin.brief },
+              { type: "image_url", image_url: { url: `data:image/png;base64,${savedLogin.imageB64}` } },
+            ]
+          : savedLogin.brief,
+      });
+    }
+  }
+
   if (harness.kind === "cli-host") {
     emit("tool", { name: "computer", args: { action: "screenshot" } });
     const work = {
@@ -467,7 +489,7 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
     const text = await hostCli.runHostCli({
       provider: harness.provider,
       model: harness.model,
-      userText,
+      userText: savedLogin?.did ? `${userText}\n\n${savedLogin.brief}` : userText,
       signal,
       bot,
       settings,
@@ -485,9 +507,11 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
   if (harness.kind === "grok-build") {
     if (!bot.grokSessionId) bot.grokSessionId = bot.id;
     const desktop = looksLikeDesktopTask(userText);
-    const grokText = desktop
-      ? `${userText}\n\nUse the desktop this turn. To open Chrome: nohup /usr/local/bin/chrome-desktop 'https://…' >/tmp/chrome.log 2>&1 &\nThen look at the screen. Do not only send a text plan.`
-      : userText;
+    const grokText = savedLogin?.did
+      ? `${userText}\n\n${savedLogin.brief}`
+      : desktop
+        ? `${userText}\n\nUse the desktop this turn. To open Chrome: nohup /usr/local/bin/chrome-desktop 'https://…' >/tmp/chrome.log 2>&1 &\nThen look at the screen. Do not only send a text plan.`
+        : userText;
     emit("tool", { name: "computer", args: { action: "screenshot" } });
     const work = {
       id: `tl${Date.now()}gb`,
@@ -533,7 +557,8 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
   }
 
   let steps = 0;
-  let usedComputer = false;
+  let usedComputer = Boolean(savedLogin?.did);
+  let usedVaultFill = Boolean(savedLogin?.did);
   let lastVisible = "";
   const maxSteps = 32;
 
@@ -586,6 +611,15 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
       const out = { id: `a${Date.now()}`, role: "assistant", content: lastVisible, ts: Date.now() };
       bot.messages.push(out);
       emit("message", out);
+      if (loginNeedle(userText) && !usedVaultFill && steps < maxSteps - 1) {
+        history.push({ role: "assistant", content: lastVisible });
+        history.push({
+          role: "user",
+          content:
+            "Do not only say you will sign in. Call vault_list, click the username field, vault_fill field=username, press Return, then vault_fill field=password. Do not open the site again unless it is not on screen.",
+        });
+        continue;
+      }
       if (usedComputer && steps < maxSteps - 1 && !isDone(lastVisible)) {
         history.push({ role: "assistant", content: lastVisible });
         history.push({
@@ -632,6 +666,7 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
       }
       emit("tool", { name, args });
       if (name === "computer") usedComputer = true;
+      if (name === "vault_fill") usedVaultFill = true;
       const result = await execTool(bot, name, args, emit, settings);
       if (name !== "send_message") {
         const activity = {
@@ -665,14 +700,27 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
 function qwenSafeMessages(history, userText) {
   const sys = [];
   const compact = [];
+  const toolNotes = [];
+  let lastImage = null;
   for (const m of history || []) {
     if (!m?.role) continue;
     if (m.role === "system") {
       sys.push({ role: "system", content: String(m.content || "") });
       continue;
     }
+    if (m.role === "tool") {
+      const note = String(m.content || "").replace(/\s+/g, " ").trim();
+      if (note) toolNotes.push(note.slice(0, 400));
+      continue;
+    }
+    if (Array.isArray(m.content)) {
+      const texts = m.content.filter((p) => p?.type === "text").map((p) => String(p.text || "")).join(" ");
+      const img = m.content.find((p) => p?.type === "image_url");
+      if (img) lastImage = img;
+      if (texts.trim()) compact.push({ role: m.role, content: texts.slice(-4000) });
+      continue;
+    }
     const content = typeof m.content === "string" ? m.content : "";
-    if (m.role === "tool") continue;
     if (m.role === "user" && (content.startsWith("[routine]") || !content.trim())) continue;
     if (m.role === "assistant" && !content.trim() && !m.tool_calls) continue;
     if (compact.at(-1)?.role === m.role && !m.tool_calls) {
@@ -682,11 +730,22 @@ function qwenSafeMessages(history, userText) {
     compact.push({ role: m.role, content: content.slice(-4000) });
   }
   while (compact.at(-1)?.role === "user") compact.pop();
-  const query = String(userText || "").trim() || "Continue.";
+  const lastNudge = [...(history || [])].reverse().find((m) => m.role === "user" && typeof m.content === "string" && m.content !== userText);
+  const bits = [String(userText || "").trim() || "Continue."];
+  if (toolNotes.length) bits.push(`Last tool results:\n${toolNotes.slice(-4).join("\n")}`);
+  if (lastNudge?.content) bits.push(String(lastNudge.content).slice(-800));
+  bits.push("Do the next real desktop step. Do not only say you will do it.");
   let tail = compact.slice(-4);
-  // Qwen 3.x jinja fails if the first message after system is assistant.
   while (tail[0]?.role === "assistant") tail.shift();
-  tail.push({ role: "user", content: query });
+  const query = bits.join("\n\n");
+  if (lastImage) {
+    tail.push({
+      role: "user",
+      content: [{ type: "text", text: query }, lastImage],
+    });
+  } else {
+    tail.push({ role: "user", content: query });
+  }
   return [...sys, ...tail];
 }
 
@@ -759,9 +818,99 @@ function isDone(text) {
 }
 
 function looksLikeDesktopTask(text) {
-  return /\b(chrome|browser|click|desktop|computer|screenshot|flight|google|open |type |search|x\.com|twitter|post|tab)\b/i.test(
+  return /\b(chrome|browser|click|desktop|computer|screenshot|flight|google|open |type |search|x\.com|twitter|post|tab|log\s*in|sign\s*in|gmail)\b/i.test(
     String(text || ""),
   );
+}
+
+export function loginNeedle(text) {
+  const t = String(text || "").trim();
+  if (!/\b(log\s*in|sign\s*in|signin|sign into)\b/i.test(t)) return "";
+  const m = t.match(/\b(?:log\s*in|sign\s*in|signin|sign into)\s+(?:to\s+)?(.+)$/i);
+  return (m ? m[1] : "").trim().toLowerCase().replace(/[.?!\s]+$/g, "");
+}
+
+export function scoreVaultAccount(acc, needle) {
+  const blob = `${acc?.label || ""} ${acc?.site || ""} ${acc?.username || ""}`.toLowerCase();
+  const n = String(needle || "").toLowerCase();
+  if (!n || !blob.trim()) return 0;
+  if (/\bgmail\b|google mail|mail\.google/.test(n) || n === "google") {
+    return /gmail|mail\.google|google/.test(blob) ? 3 : 0;
+  }
+  const host = n.replace(/^https?:\/\//, "").split("/")[0];
+  if (host && blob.includes(host)) return 2;
+  if (blob.includes(n)) return 2;
+  return 0;
+}
+
+function loginUrlFor(acc, needle) {
+  const site = String(acc?.site || "").trim();
+  if (/^https?:\/\//i.test(site)) return site;
+  if (/gmail|mail\.google/i.test(`${site} ${needle}`)) return "https://mail.google.com";
+  if (site) return site.includes(".") ? `https://${site.replace(/^\/+/, "")}` : "";
+  if (/\bgmail\b/i.test(needle)) return "https://mail.google.com";
+  return "";
+}
+
+function emitActivity(bot, emit, name, action, summary) {
+  const activity = {
+    id: `tl${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
+    role: "activity",
+    kind: "tool",
+    name,
+    action,
+    summary,
+    ts: Date.now(),
+  };
+  bot.messages.push(activity);
+  emit("message", activity);
+}
+
+async function maybeRunSavedLogin(bot, userText, emit, signal) {
+  const needle = loginNeedle(userText);
+  if (!needle || isHumanControl(bot.id)) return null;
+  if (bot.vm?.status !== "running") return null;
+  if (bot.vm?.setup && bot.vm.setup.ready === false) return null;
+  const rows = await vault.grantedAccounts(bot.id);
+  const ranked = rows.map((a) => ({ a, s: scoreVaultAccount(a, needle) })).filter((x) => x.s > 0).sort((x, y) => y.s - x.s);
+  const acc = ranked[0]?.a;
+  if (!acc) return null;
+  const url = loginUrlFor(acc, needle);
+  if (!url) return null;
+  const ack = {
+    id: `a${Date.now()}`,
+    role: "assistant",
+    content: `Signing into ${acc.label} with the saved login.`,
+    ts: Date.now(),
+  };
+  bot.messages.push(ack);
+  emit("message", ack);
+  emit("tool", { name: "computer", args: { action: "open", text: url } });
+  await computerAction(bot, { action: "open", text: url }, emit);
+  emitActivity(bot, emit, "computer", "open", `Opened ${url}`);
+  if (signal?.aborted) return { did: true, brief: "Stopped before filling the login." };
+  await vm.wait(1600);
+  emit("tool", { name: "vault_fill", args: { account_id: acc.id, field: "username" } });
+  const user = await vault.fillIntoDesktop(bot, acc.id, "username");
+  emitActivity(bot, emit, "vault_fill", "vault_fill", toolSummary("vault_fill", { field: "username" }));
+  await computerAction(bot, { action: "key", keys: "Return" }, emit);
+  emitActivity(bot, emit, "computer", "key", "Pressed Return");
+  await vm.wait(1800);
+  if (signal?.aborted) return { did: true, brief: "Stopped after the username." };
+  emit("tool", { name: "vault_fill", args: { account_id: acc.id, field: "password" } });
+  const pass = await vault.fillIntoDesktop(bot, acc.id, "password");
+  emitActivity(bot, emit, "vault_fill", "vault_fill", toolSummary("vault_fill", { field: "password" }));
+  await computerAction(bot, { action: "key", keys: "Return" }, emit);
+  emitActivity(bot, emit, "computer", "key", "Pressed Return");
+  await vm.wait(1600);
+  const shot = await computerAction(bot, { action: "screenshot" }, emit);
+  emitActivity(bot, emit, "computer", "screenshot", "Looked at the screen");
+  const brief =
+    `Sub8 opened ${url} and pasted the saved ${acc.label} username${user.ok ? "" : " (username paste failed)"} ` +
+    `then password${pass.ok ? "" : " (password paste failed)"}. Look at the screenshot. ` +
+    `If this is the inbox or the signed-in home, tell the user you're in. ` +
+    `If you see 2FA, a Choose-an-account picker, or a wrong field, click that. Do not open Gmail again from scratch.`;
+  return { did: true, brief, imageB64: shot.imageB64 || null };
 }
 
 const lastThinkAt = new Map();
@@ -1136,6 +1285,10 @@ function runGrokBuild(harness, userText, signal, bot, emit, { settings, hidden =
     } catch {
       /* still try */
     }
+    const signed = await vm.grokSignedIn(box);
+    if (!signed.ok) {
+      return "Grok Build is not signed in on this computer. Open Settings → Harness → Grok Build and sign in on this Mac. That session is copied into the Bot computer.";
+    }
     const extra = await ctx.agentsExtra({ bot, settings, hidden });
     await vm.installAgentsMd(box, extra);
     const caps = await ctx.readPrompt("capabilities.txt");
@@ -1189,12 +1342,28 @@ function runGrokBuild(harness, userText, signal, bot, emit, { settings, hidden =
       const child = vm.dockerSpawn(args);
       let buf = "";
       let reply = "";
+      let tail = "";
       const seenTools = new Set();
       let done = false;
+      const IDLE_MS = 180_000;
+      const HARD_MS = 20 * 60_000;
+      let idleTimer = null;
+      const bumpIdle = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(
+          () =>
+            finish(
+              reply.trim() ||
+                `Grok Build went silent for 3 minutes inside the computer.${tail ? ` Last line: ${tail}` : ""} Try again or Stop.`,
+            ),
+          IDLE_MS,
+        );
+      };
       const finish = (text) => {
         if (done) return;
         done = true;
-        clearTimeout(timer);
+        if (idleTimer) clearTimeout(idleTimer);
+        clearTimeout(hardTimer);
         try {
           if (!child.killed) child.kill("SIGTERM");
         } catch {
@@ -1205,23 +1374,37 @@ function runGrokBuild(harness, userText, signal, bot, emit, { settings, hidden =
       const takeLine = (line) => {
         const raw = String(line || "").trim();
         if (!raw) return;
-        if (raw[0] !== "{") return;
+        if (raw[0] !== "{") {
+          tail = raw.slice(-400);
+          return;
+        }
         let evt;
         try {
           evt = JSON.parse(raw);
         } catch {
+          tail = raw.slice(-400);
           return;
         }
-        if (evt.type === "text" && typeof evt.data === "string") reply += evt.data;
-        if (evt.type === "tool_call") emitGrokToolActivity(bot, emit, seenTools, evt);
+        const text =
+          (evt.type === "text" && typeof evt.data === "string" && evt.data) ||
+          (typeof evt.text === "string" && evt.text) ||
+          (typeof evt.result === "string" && evt.result) ||
+          "";
+        if (text) reply += text;
+        if (evt.type === "tool_call" || evt.type === "tool" || evt.tool) emitGrokToolActivity(bot, emit, seenTools, evt);
       };
       const onChunk = (chunk) => {
+        bumpIdle();
         buf += chunk.toString();
         const lines = buf.split(/\r?\n/);
         buf = lines.pop() || "";
         for (const line of lines) takeLine(line);
       };
-      const timer = setTimeout(() => finish("Grok Build timed out inside the computer."), 180_000);
+      bumpIdle();
+      const hardTimer = setTimeout(
+        () => finish(reply.trim() || "Grok Build hit the 20-minute limit inside the computer."),
+        HARD_MS,
+      );
       signal?.addEventListener("abort", () => finish("Stopped."));
       child.stdout.on("data", onChunk);
       child.stderr.on("data", onChunk);

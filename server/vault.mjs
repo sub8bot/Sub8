@@ -129,10 +129,15 @@ async function writeVault(data) {
   const key = await loadOrCreateKey();
   await fs.mkdir(dataDir, { recursive: true });
   const body = seal(JSON.stringify(data), key);
-  const tmp = `${VAULT_PATH}.${process.pid}.tmp`;
+  const tmp = `${VAULT_PATH}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
   await fs.writeFile(tmp, body, { mode: 0o600 });
   await fs.chmod(tmp, 0o600).catch(() => {});
-  await fs.rename(tmp, VAULT_PATH);
+  try {
+    await fs.rename(tmp, VAULT_PATH);
+  } catch (err) {
+    await fs.unlink(tmp).catch(() => {});
+    throw err;
+  }
 }
 
 export function publicAccount(acc) {
@@ -271,15 +276,17 @@ export async function revealAccount(id) {
 }
 
 export async function fieldForBot(botId, accountId, field) {
-  const v = await readVault();
-  const acc = accountForBot(v, botId, accountId);
-  if (!acc) return { ok: false, error: "This Bot cannot use that login." };
-  const key = field === "username" ? "username" : "password";
-  const value = String(acc[key] || "");
-  if (!value) return { ok: false, error: `No ${key} saved for ${acc.label}.` };
-  acc.lastUsedAt = Date.now();
-  await writeVault(v);
-  return { ok: true, account: publicAccount(acc), field: key, value };
+  return withLock(async () => {
+    const v = await readVault();
+    const acc = accountForBot(v, botId, accountId);
+    if (!acc) return { ok: false, error: "This Bot cannot use that login." };
+    const key = field === "username" ? "username" : "password";
+    const value = String(acc[key] || "");
+    if (!value) return { ok: false, error: `No ${key} saved for ${acc.label}.` };
+    acc.lastUsedAt = Date.now();
+    await writeVault(v);
+    return { ok: true, account: publicAccount(acc), field: key, value };
+  });
 }
 
 export async function listSecrets() {

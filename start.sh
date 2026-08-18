@@ -12,7 +12,7 @@ if [ -f .env ]; then
   set +a
 fi
 if [ -z "${XAI_API_KEY:-}" ]; then
-  echo "warning: XAI_API_KEY is empty — Settings → Harness expects SpaceXAI / grok-4.6"
+  echo "note: XAI_API_KEY is empty — only needed for SpaceXAI, not Grok Build"
 fi
 SERVER=""
 if curl -sf -m 2 http://127.0.0.1:8787/api/health | grep -q '"ok":true'; then

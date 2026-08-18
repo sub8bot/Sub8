@@ -109,6 +109,7 @@ export function harnessLine(settings, bot) {
   const model = (local.model && String(local.model).trim()) || (global.provider === provider ? global.model : "") || "";
   const names = {
     "grok-build": "Grok Build",
+    hermes: "Hermes",
     claude: "Claude",
     codex: "Codex",
     ollama: "Ollama",
@@ -126,10 +127,19 @@ export async function readPrompt(name) {
 export async function liveContext({ bot, settings, hidden = false } = {}) {
   const ident = `You are the Bot named "${bot?.name || "Bot"}". ${bot?.description || ""}`.trim();
   const extra = bot?.instructions?.trim() ? `\n\n## Standing instructions for this Bot\n${bot.instructions.trim()}\n` : "";
+  const setup = bot?.vm?.setup;
+  const boot =
+    bot?.vm?.status === "starting" || (setup && setup.ready === false)
+      ? `\nThe Linux computer is still bootstrapping${
+          setup?.step
+            ? ` (step ${setup.step} of ${setup.total}: ${setup.label})`
+            : ""
+        }. Do not open Chrome or sign in until setup says ready.\n`
+      : "";
   return `${clockBlock(settings, { hidden })}
 ${harnessLine(settings, bot)}
 ${ident}
-${extra}`;
+${boot}${extra}`;
 }
 
 export async function agentsExtra({ bot, settings, hidden = false } = {}) {
