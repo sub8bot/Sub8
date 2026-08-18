@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { parseLocalbotPs } from "../server/vm.mjs";
+import { parseLocalbotPs, urlLooksOpen } from "../server/vm.mjs";
 
 const states = parseLocalbotPs(
   [
@@ -16,4 +16,7 @@ assert.equal(states.get("localbot-438716ea")?.status, "paused");
 assert.equal(states.get("localbot-deadbeef")?.status, "exited");
 assert.equal(states.has("clicklab-fresh"), false);
 assert.equal(parseLocalbotPs("").size, 0);
+assert.equal(urlLooksOpen("Example Domain - Google Chrome", "https://mail.google.com"), false);
+assert.equal(urlLooksOpen("Inbox - aikabotto@gmail.com - Google Chrome", "https://mail.google.com"), true);
+assert.equal(urlLooksOpen("Octopus - Wikipedia - Google Chrome", "https://en.wikipedia.org/wiki/Octopus"), true);
 console.log("ok vm-status");

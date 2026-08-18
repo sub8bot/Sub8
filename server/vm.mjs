@@ -1510,6 +1510,24 @@ export async function wait(ms) {
   await new Promise((r) => setTimeout(r, Math.max(0, Math.min(15000, ms))));
 }
 
+/** True if wmctrl/xdotool window text already shows this URL. */
+export function urlLooksOpen(windowText, dest) {
+  const d = String(dest || "").trim();
+  if (!d) return true;
+  const host = d
+    .replace(/^https?:\/\//i, "")
+    .split("/")[0]
+    .replace(/^www\./i, "")
+    .split(":")[0];
+  if (!host) return false;
+  const t = String(windowText || "");
+  const esc = host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (new RegExp(esc, "i").test(t)) return true;
+  if (/mail\.google\.com/i.test(host) && /gmail/i.test(t)) return true;
+  if (/wikipedia\.org/i.test(host) && /wikipedia/i.test(t)) return true;
+  return false;
+}
+
 export async function openChrome(bot, url = "") {
   requireVm(bot, "open");
   const dest = String(url || "").trim();
@@ -1524,6 +1542,34 @@ export async function openChrome(bot, url = "") {
     `${displayEnv(bot)}; nohup /usr/local/bin/chrome-desktop ${arg} >/tmp/chrome-desktop.log 2>&1 & echo OPENED:$!; sleep 0.8`,
   ]);
   if (!r.ok) throw new Error(`open Chrome failed: ${r.out.slice(-400)}`);
+  if (dest) {
+    const titles = await docker([
+      "exec",
+      "-u",
+      "abc",
+      bot.vm.container,
+      "bash",
+      "-lc",
+      `${displayEnv(bot)}; wmctrl -l 2>/dev/null; xdotool search --name . getwindowname %@ 2>/dev/null | head -40`,
+    ]);
+    const seen = String(titles.out || "");
+    if (/chrome|chromium/i.test(seen) && !urlLooksOpen(seen, dest)) {
+      await docker([
+        "exec",
+        "-u",
+        "abc",
+        bot.vm.container,
+        "bash",
+        "-lc",
+        `${displayEnv(bot)}; wmctrl -a Chrome 2>/dev/null || wmctrl -a Chromium 2>/dev/null || xdotool search --name Chrome windowactivate 2>/dev/null || true; sleep 0.2`,
+      ]);
+      await key(bot, "ctrl+l");
+      await wait(150);
+      await typeText(bot, dest);
+      await key(bot, "Return");
+      await wait(400);
+    }
+  }
   return { text: dest ? `opened ${dest}` : "opened Chrome", out: r.out };
 }
 
