@@ -35,6 +35,13 @@ const state = {
   dockerGateDismissed: false,
   update: null,
   updateBusy: false,
+  updateDismissed: (() => {
+    try {
+      return localStorage.getItem("sub8.updateDismissed") || "";
+    } catch {
+      return "";
+    }
+  })(),
   appVersion: "",
   teach: null,
   teachFrames: [],
@@ -83,6 +90,7 @@ function ensureShell() {
   $("#app").innerHTML = `
     <div class="frame" id="shell-root">
       <div class="titlebar" id="titlebar"></div>
+      <div id="update-banner" hidden></div>
       <div class="shell">
         <div class="rail" id="rail"></div>
         <div class="main">
@@ -163,25 +171,41 @@ function dockerMissingHtml() {
   return `<div class="banner warn" style="margin:0;text-align:left"><strong>Docker is not running.</strong> ${escapeHtml(hint)}</div>`;
 }
 
+function releasePageUrl() {
+  return (
+    state.update?.releaseUrl ||
+    state.update?.downloadUrl ||
+    "https://github.com/sub8bot/Sub8/releases"
+  );
+}
+
+function dismissedThisUpdate() {
+  const latest = String(state.update?.latestVersion || "").trim();
+  return Boolean(latest && state.updateDismissed === latest);
+}
+
 function paintUpdateBanner() {
   let host = $("#update-banner");
   if (!host) {
+    const bar = $("#titlebar");
     host = document.createElement("div");
     host.id = "update-banner";
-    document.body.appendChild(host);
+    if (bar?.parentNode) bar.after(host);
+    else document.body.appendChild(host);
   }
   const u = state.update;
-  if (!u?.updateAvailable) {
+  if (!u?.updateAvailable || dismissedThisUpdate()) {
     host.innerHTML = "";
     host.hidden = true;
     return;
   }
+  const href = escapeHtml(releasePageUrl());
   host.hidden = false;
   host.innerHTML = `<div class="update-strip">
-    Sub8 ${escapeHtml(u.latestVersion || "")} is available
-    <span class="muted">(you have ${escapeHtml(u.currentVersion || "")})</span>
-    <button type="button" class="pill primary" data-act="install-update">${state.updateBusy ? "Working…" : "Download update"}</button>
-    <button type="button" class="pill" data-act="dismiss-update">Later</button>
+    <span>Sub8 ${escapeHtml(u.latestVersion || "")} is available
+    <span class="muted">(you have ${escapeHtml(u.currentVersion || "")})</span></span>
+    <a class="update-link" href="${href}" target="_blank" rel="noopener">Open release</a>
+    <button type="button" class="update-x" data-act="dismiss-update" title="Dismiss">×</button>
   </div>`;
 }
 
@@ -228,25 +252,25 @@ async function checkForUpdate({ silent = true } = {}) {
   }
 }
 
-async function installUpdate() {
-  const u = state.update;
-  state.updateBusy = true;
-  paintUpdateBanner();
-  try {
-    const desktop = window.sub8Desktop;
-    if (desktop?.downloadUpdate && desktop?.installUpdate) {
-      const dl = await desktop.downloadUpdate();
-      if (dl?.ok) {
-        await desktop.installUpdate();
-        return;
-      }
-    }
-    if (u?.downloadUrl) window.open(u.downloadUrl, "_blank");
-    else if (u?.releaseUrl) window.open(u.releaseUrl, "_blank");
-  } finally {
-    state.updateBusy = false;
-    paintUpdateBanner();
+function openReleasePage() {
+  window.open(releasePageUrl(), "_blank", "noopener");
+  if (state.modal) {
+    state.modal = null;
+    render();
   }
+}
+
+function dismissUpdateBanner() {
+  const latest = String(state.update?.latestVersion || "").trim();
+  if (latest) {
+    state.updateDismissed = latest;
+    try {
+      localStorage.setItem("sub8.updateDismissed", latest);
+    } catch {
+      /* ignore quota / private mode */
+    }
+  }
+  paintUpdateBanner();
 }
 
 function paintDockerGate() {
@@ -1919,8 +1943,8 @@ function settingsHtml() {
                 <button class="pill" data-act="check-update">${state.updateBusy ? "Checking…" : "Check for updates"}</button></div>
               ${
                 state.update?.updateAvailable
-                  ? `<div class="row"><div class="lbl">Install</div>
-                <button class="pill primary" data-act="install-update">Download ${escapeHtml(state.update.downloadName || "update")}</button></div>`
+                  ? `<div class="row"><div><div class="lbl">Install</div><div class="sub">Opens the GitHub release. Download the installer for this computer.</div></div>
+                <button class="pill primary" data-act="install-update">Open release</button></div>`
                   : ""
               }
             </div>
@@ -2094,7 +2118,7 @@ function bindDelegated() {
     const el = e.target.closest("[data-act]");
     // Overlay carries data-act only as a fallback; inner modal clicks must not inherit it.
     if (!el || el.classList.contains("overlay")) return;
-    if (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA" && el.tagName !== "SELECT") {
+    if (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA" && el.tagName !== "SELECT" && el.tagName !== "A") {
       e.preventDefault();
     }
     const act = el.dataset.act;
@@ -2346,15 +2370,11 @@ function bindDelegated() {
       return;
     }
     if (act === "install-update") {
-      installUpdate();
+      openReleasePage();
       return;
     }
     if (act === "dismiss-update") {
-      const host = $("#update-banner");
-      if (host) {
-        host.innerHTML = "";
-        host.hidden = true;
-      }
+      dismissUpdateBanner();
       return;
     }
     if (act === "reload-vm") {

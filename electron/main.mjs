@@ -267,7 +267,10 @@ async function setupAutoUpdate() {
   });
   ipcMain.handle("update-download", async () => {
     try {
-      await autoUpdater.downloadUpdate();
+      await Promise.race([
+        autoUpdater.downloadUpdate(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Download timed out")), 20_000)),
+      ]);
       return { ok: true };
     } catch (err) {
       return { ok: false, error: String(err?.message || err) };
