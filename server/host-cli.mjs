@@ -364,23 +364,21 @@ export async function runHostCli({ provider, model, userText, signal, bot, setti
   if (!box) return "This harness only runs after the Bot computer is up.";
   const work = await fs.mkdtemp(path.join(os.tmpdir(), `sub8-${provider}-`));
   const extra = await ctx.agentsExtra({ bot, settings, hidden });
-  const rules = `${await fs.readFile(path.join(appRoot, "prompts", "grok-build-vm.txt"), "utf8")}
-${await fs.readFile(path.join(appRoot, "prompts", "capabilities.txt"), "utf8")}
+  const rules = `${await fs.readFile(path.join(appRoot, "prompts", "capabilities.txt"), "utf8")}
 ${extra}
 
-You are NOT on the user's Mac. Drive the Linux desktop only through MCP tools named computer, shell, vault_list, and vault_fill.
-Never use host Bash/Edit/Read on this Mac. Screenshot, then click, then vault_fill for passwords.
-`;
-  const prompt =
-    provider === "codex"
-      ? `${userText}
-
-You have an MCP server named "sub8". Its tools are computer, shell, vault_list, and vault_fill. They drive the Bot Linux desktop, not this Mac.
+You are Sub8 on this Bot's Linux desktop (display :1, home /config). Call it "my computer". Never say box, container, Docker, VM, or Mac in user-facing replies.
+Drive the desktop only through MCP tools named computer, shell, vault_list, and vault_fill.
 To open a site: computer action=open text=https://…
 To see the screen: computer action=screenshot
 To click: computer action=left_click with x,y from the screenshot.
-To sign in: vault_fill. Do not use browser-use or host Bash. If sub8 MCP is missing, say "sub8 MCP not connected" — do not pretend Chrome opened.`
-      : `${userText}\n\nUse the desktop if this is computer work. Do not only send a plan.`;
+To type: computer action=type. To press a key: computer action=key.
+To sign in: vault_fill. Never print a password.
+Do not drive Chrome with xdotool, wmctrl, octo-click, or host Bash. If sub8 MCP is missing, say "sub8 MCP not connected".
+`;
+  const prompt = `${userText}
+
+You have an MCP server named "sub8". Use computer action=open to go to a URL. Do not only send a plan.`;
   const mcpEnv = {
     SUB8BOT_BOT_ID: bot.id,
     SUB8BOT_DATA: dataDir,
