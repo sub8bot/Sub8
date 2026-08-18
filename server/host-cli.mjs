@@ -40,6 +40,81 @@ export function codexBin() {
   return whichCmd("codex");
 }
 
+export function hermesBin() {
+  const home = process.env.HOME || os.homedir() || "";
+  return whichCmd("hermes", [path.join(home, ".hermes", "hermes-agent", "venv", "bin", "hermes")]);
+}
+
+export function grokBin() {
+  const home = process.env.HOME || os.homedir() || "";
+  return whichCmd("grok", [path.join(home, ".grok", "bin", "grok")]);
+}
+
+export function hermesConfigPath() {
+  return path.join(os.homedir(), ".hermes", "config.yaml");
+}
+
+const HERMES_MIN_CTX = 131072;
+
+export function withHermesContextLength(cfg, n = HERMES_MIN_CTX) {
+  let out = String(cfg || "");
+  if (!/(?:^|\n)model:\s*\n/.test(out)) {
+    out = `model:\n  context_length: ${n}\n  provider: lmstudio\n  base_url: http://127.0.0.1:1234/v1\n` + out;
+  } else if (/(?:^|\n)model:\s*\n(?:  .+\n)*?  context_length:\s*/.test(out)) {
+    out = out.replace(/((?:^|\n)model:\s*\n(?:  .+\n)*?  context_length:\s*)\d+/, `$1${n}`);
+  } else {
+    out = out.replace(/((?:^|\n)model:\s*\n)/, `$1  context_length: ${n}\n`);
+  }
+  // Oneshoot / isolated HERMES_HOME re-probes LM Studio and sees ~4k.
+  // The CLI has a cache; this is the override Hermes documents.
+  if (/(?:^|\n)auxiliary:\s*\n[\s\S]*?\n  compression:\s*\n[\s\S]*?\n    context_length:\s*\d+/.test(out)) {
+    out = out.replace(/((?:^|\n)  compression:\s*\n(?:    .+\n)*?    context_length:\s*)\d+/, `$1${n}`);
+  } else if (/(?:^|\n)  compression:\s*\n/.test(out) && /(?:^|\n)auxiliary:\s*\n/.test(out)) {
+    out = out.replace(/((?:^|\n)  compression:\s*\n)/, `$1    context_length: ${n}\n`);
+  } else if (/(?:^|\n)auxiliary:\s*\n/.test(out)) {
+    out = out.replace(
+      /((?:^|\n)auxiliary:\s*\n)/,
+      `$1  compression:\n    context_length: ${n}\n    provider: auto\n    model: ''\n`,
+    );
+  } else {
+    out += `\nauxiliary:\n  compression:\n    context_length: ${n}\n    provider: auto\n    model: ''\n`;
+  }
+  return out;
+}
+
+export function readHermesModel() {
+  try {
+    const cfg = fsSync.readFileSync(hermesConfigPath(), "utf8");
+    const m = cfg.match(/(?:^|\n)model:\s*\n(?:  .+\n)*?  default:\s*["']?([^\n#]+)/);
+    return m ? m[1].trim().replace(/^["']|["']$/g, "") : "";
+  } catch {
+    return "";
+  }
+}
+
+export async function setHermesModel(model) {
+  const name = String(model || "").trim();
+  if (!name) throw new Error("model required");
+  const file = hermesConfigPath();
+  let cfg = "";
+  try {
+    cfg = await fs.readFile(file, "utf8");
+  } catch {
+    cfg = "model:\n  provider: lmstudio\n  base_url: http://127.0.0.1:1234/v1\n  default: qwen3.8-27b\n";
+  }
+  if (/(?:^|\n)model:\s*\n(?:  .+\n)*?  default:\s*/.test(cfg)) {
+    cfg = cfg.replace(/((?:^|\n)model:\s*\n(?:  .+\n)*?  default:\s*)([^\n#]+)/, `$1${name}`);
+  } else if (/(?:^|\n)model:\s*\n/.test(cfg)) {
+    cfg = cfg.replace(/((?:^|\n)model:\s*\n)/, `$1  default: ${name}\n`);
+  } else {
+    cfg = `model:\n  provider: lmstudio\n  base_url: http://127.0.0.1:1234/v1\n  default: ${name}\n` + cfg;
+  }
+  cfg = withHermesContextLength(cfg);
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(file, cfg);
+  return { ok: true, model: name, contextLength: HERMES_MIN_CTX };
+}
+
 export function nodeBin() {
   if (process.env.ELECTRON_RUN_AS_NODE || path.basename(process.execPath).toLowerCase().includes("electron")) {
     return process.execPath;
@@ -100,6 +175,26 @@ function parseCodexStream(line, acc) {
   }
 }
 
+function parseGrokStream(line, acc) {
+  let evt;
+  try {
+    evt = JSON.parse(line);
+  } catch {
+    return;
+  }
+  const text =
+    (evt.type === "text" && typeof evt.data === "string" && evt.data) ||
+    (typeof evt.text === "string" && evt.text) ||
+    (typeof evt.result === "string" && evt.result) ||
+    (typeof evt.message === "string" && evt.message) ||
+    "";
+  if (text) acc.reply += text;
+  const update = evt.params?.update || evt.update || {};
+  const kind = update.sessionUpdate || update.session_update || evt.method || "";
+  const chunk = update.content?.text || update.content?.content || "";
+  if (/agent_message/i.test(kind) && chunk) acc.reply += chunk;
+}
+
 export async function writeCodexHome(work, mcpEnv) {
   const home = path.join(work, "codex-home");
   await fs.mkdir(home, { recursive: true });
@@ -107,11 +202,16 @@ export async function writeCodexHome(work, mcpEnv) {
   if (fsSync.existsSync(srcAuth)) {
     await fs.copyFile(srcAuth, path.join(home, "auth.json"));
   }
-  const envLines = Object.entries(mcpEnv)
+  const envLines = Object.entries({ PATH: hostEnv().PATH, ...mcpEnv })
     .filter(([, v]) => v != null && String(v))
     .map(([k, v]) => `${k} = ${JSON.stringify(String(v))}`)
     .join("\n");
+  const cwd = path.resolve(work);
   const toml = `approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+[projects.${JSON.stringify(cwd)}]
+trust_level = "trusted"
 
 [plugins."browser-use@openai-bundled"]
 enabled = false
@@ -119,6 +219,83 @@ enabled = false
 [mcp_servers.sub8]
 command = ${JSON.stringify(nodeBin())}
 args = [${JSON.stringify(mcpScript())}]
+startup_timeout_sec = 30
+enabled = true
+
+[mcp_servers.sub8.env]
+${envLines}
+`;
+  await fs.writeFile(path.join(home, "config.toml"), toml);
+  return home;
+}
+
+export async function writeHermesHome(work, mcpEnv) {
+  const src = path.join(os.homedir(), ".hermes");
+  const home = path.join(work, "hermes-home");
+  await fs.mkdir(home, { recursive: true });
+  for (const name of ["config.yaml", "auth.json", ".env"]) {
+    const from = path.join(src, name);
+    if (fsSync.existsSync(from)) await fs.copyFile(from, path.join(home, name));
+  }
+  // CLI caches LM Studio context here. Without it, oneshot re-probes /v1/models
+  // and Hermes rejects Qwen at the advertised ~4k window.
+  for (const name of ["models_dev_cache.json", "ollama_cloud_models_cache.json"]) {
+    const from = path.join(src, name);
+    const to = path.join(home, name);
+    if (!fsSync.existsSync(from)) continue;
+    try {
+      await fs.symlink(from, to);
+    } catch {
+      await fs.copyFile(from, to).catch(() => {});
+    }
+  }
+  const mcp = {
+    command: nodeBin(),
+    args: [mcpScript()],
+    env: Object.fromEntries(Object.entries(mcpEnv).filter(([, v]) => v != null && String(v))),
+  };
+  const block = [
+    "",
+    "mcp_servers:",
+    "  sub8:",
+    `    command: ${JSON.stringify(mcp.command)}`,
+    "    args:",
+    ...mcp.args.map((a) => `      - ${JSON.stringify(a)}`),
+    "    env:",
+    ...Object.entries(mcp.env).map(([k, v]) => `      ${k}: ${JSON.stringify(String(v))}`),
+    "",
+  ].join("\n");
+  const cfgPath = path.join(home, "config.yaml");
+  let cfg = "";
+  try {
+    cfg = await fs.readFile(cfgPath, "utf8");
+  } catch {
+    cfg = "model:\n  provider: auto\n";
+  }
+  cfg = cfg.replace(/\nmcp_servers:\n[\s\S]*?(?=\n[a-z_][a-z0-9_]*:|\s*$)/i, "\n");
+  cfg = withHermesContextLength(cfg);
+  await fs.writeFile(cfgPath, `${cfg.trimEnd()}\n${block}`);
+  return home;
+}
+
+export async function writeGrokHome(botId, mcpEnv) {
+  const home = path.join(dataDir, "grok-host", String(botId || "bot"));
+  await fs.mkdir(home, { recursive: true });
+  const srcAuth = path.join(os.homedir(), ".grok", "auth.json");
+  if (fsSync.existsSync(srcAuth)) {
+    await fs.copyFile(srcAuth, path.join(home, "auth.json"));
+  }
+  const envLines = Object.entries(mcpEnv)
+    .filter(([, v]) => v != null && String(v))
+    .map(([k, v]) => `${k} = ${JSON.stringify(String(v))}`)
+    .join("\n");
+  const toml = `[ui]
+permission_mode = "always-approve"
+
+[mcp_servers.sub8]
+command = ${JSON.stringify(nodeBin())}
+args = [${JSON.stringify(mcpScript())}]
+enabled = true
 startup_timeout_sec = 20
 
 [mcp_servers.sub8.env]
@@ -126,6 +303,17 @@ ${envLines}
 `;
   await fs.writeFile(path.join(home, "config.toml"), toml);
   return home;
+}
+
+function grokSessionExists(home, id) {
+  const root = path.join(home, "sessions");
+  if (!id || !fsSync.existsSync(root)) return false;
+  try {
+    const names = fsSync.readdirSync(root);
+    return names.some((n) => n.includes(id));
+  } catch {
+    return false;
+  }
 }
 
 export async function runHostCli({ provider, model, userText, signal, bot, settings, hidden = false, emit, internalToken, port }) {
@@ -144,7 +332,11 @@ Never use host Bash/Edit/Read on this Mac. Screenshot, then click, then vault_fi
     provider === "codex"
       ? `${userText}
 
-Open Chrome or drive the desktop with the MCP tool "computer" (action=open, screenshot, left_click, type). Do not use browser-use, browser automation skills, or host Bash. If a tool is missing, say so — do not pretend Chrome opened.`
+You have an MCP server named "sub8". Its tools are computer, shell, vault_list, and vault_fill. They drive the Bot Linux desktop, not this Mac.
+To open a site: computer action=open text=https://…
+To see the screen: computer action=screenshot
+To click: computer action=left_click with x,y from the screenshot.
+To sign in: vault_fill. Do not use browser-use or host Bash. If sub8 MCP is missing, say "sub8 MCP not connected" — do not pretend Chrome opened.`
       : `${userText}\n\nUse the desktop if this is computer work. Do not only send a plan.`;
   const mcpEnv = {
     SUB8BOT_BOT_ID: bot.id,
@@ -187,6 +379,61 @@ Open Chrome or drive the desktop with the MCP tool "computer" (action=open, scre
       bot.id,
     ];
     if (model) args.push("--model", model);
+  } else if (provider === "grok-build") {
+    const home = await writeGrokHome(bot.id, mcpEnv);
+    spawnEnv.GROK_HOME = home;
+    bin = grokBin();
+    args = [
+      "-p",
+      prompt,
+      "--output-format",
+      "streaming-json",
+      "--permission-mode",
+      "bypassPermissions",
+      "--always-approve",
+      "--no-alt-screen",
+      "--max-turns",
+      "32",
+      "--rules",
+      rules,
+      "--cwd",
+      work,
+    ];
+    if (model) args.push("-m", model);
+    if (grokSessionExists(home, bot.id)) args.push("--resume", bot.id);
+    else args.push("--session-id", bot.id);
+  } else if (provider === "hermes") {
+    const { hermesAcpPrompt } = await import("./hermes-acp.mjs");
+    try {
+      const text = await hermesAcpPrompt({
+        bot,
+        text: `${rules}\n\n${prompt}`,
+        mcpEnv,
+        command: nodeBin(),
+        args: [mcpScript()],
+        signal,
+        bin: hermesBin(),
+        env: spawnEnv,
+      });
+      if (text) return text;
+    } catch (err) {
+      const msg = String(err.message || err);
+      console.error("hermes acp", msg);
+      if (/silent|timed out|still working/i.test(msg)) return msg;
+      /* fall back to a one-shot only if ACP never came up */
+    }
+    const home = await writeHermesHome(work, mcpEnv);
+    spawnEnv.HERMES_HOME = home;
+    spawnEnv.HERMES_ACCEPT_HOOKS = "1";
+    bin = hermesBin();
+    args = [
+      "-z",
+      `${rules}\n\n${prompt}`,
+      "--yolo",
+      "--accept-hooks",
+    ];
+    const hermesModel = model || readHermesModel();
+    if (hermesModel) args.push("-m", hermesModel);
   } else {
     const home = await writeCodexHome(work, mcpEnv);
     spawnEnv.CODEX_HOME = home;
@@ -215,12 +462,27 @@ Open Chrome or drive the desktop with the MCP tool "computer" (action=open, scre
     const acc = { reply: "" };
     let buf = "";
     let done = false;
+    const IDLE_MS = 180_000;
+    const HARD_MS = 20 * 60_000;
+    let idleTimer = null;
+    const bumpIdle = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(
+        () => finish(`${provider} went silent for 3 minutes. Send another message to continue.`),
+        IDLE_MS,
+      );
+    };
+    const hardTimer = setTimeout(
+      () => finish(`${provider} hit the 20 minute limit. Send another message to continue.`),
+      HARD_MS,
+    );
     const finish = async (text) => {
       if (done) return;
       done = true;
-      clearTimeout(timer);
+      if (idleTimer) clearTimeout(idleTimer);
+      clearTimeout(hardTimer);
       try {
-        if (!child.killed) child.killed || child.kill("SIGTERM");
+        if (!child.killed) child.kill("SIGTERM");
       } catch {
         /* ignore */
       }
@@ -237,18 +499,22 @@ Open Chrome or drive the desktop with the MCP tool "computer" (action=open, scre
       resolve(out);
     };
     const onChunk = (chunk) => {
+      bumpIdle();
       buf += chunk.toString();
       const lines = buf.split(/\r?\n/);
       buf = lines.pop() || "";
       for (const line of lines) {
         if (provider === "claude") parseClaudeStream(line, acc);
-        else parseCodexStream(line, acc);
+        else if (provider === "codex") parseCodexStream(line, acc);
+        else if (provider === "grok-build") parseGrokStream(line, acc);
+        else acc.reply += (acc.reply ? "\n" : "") + line;
       }
     };
-    const timer = setTimeout(() => finish(`${provider} timed out.`), 180_000);
+    bumpIdle();
     signal?.addEventListener("abort", () => finish("Stopped."));
     child.stdout.on("data", onChunk);
     child.stderr.on("data", (d) => {
+      bumpIdle();
       const s = d.toString();
       if (/error|fail|not found|ENOENT/i.test(s)) acc.reply += (acc.reply ? "\n" : "") + s.trim();
     });
@@ -256,7 +522,9 @@ Open Chrome or drive the desktop with the MCP tool "computer" (action=open, scre
     child.on("close", () => {
       if (buf.trim()) {
         if (provider === "claude") parseClaudeStream(buf, acc);
-        else parseCodexStream(buf, acc);
+        else if (provider === "codex") parseCodexStream(buf, acc);
+        else if (provider === "grok-build") parseGrokStream(buf, acc);
+        else if (buf.trim()) acc.reply += (acc.reply ? "\n" : "") + buf.trim();
       }
       finish(acc.reply);
     });
@@ -265,6 +533,84 @@ Open Chrome or drive the desktop with the MCP tool "computer" (action=open, scre
 
 export async function pingHostCli(provider) {
   const env = hostEnv();
+  if (provider === "grok-build") {
+    const bin = grokBin();
+    return await new Promise((resolve) => {
+      const child = spawn(
+        bin,
+        [
+          "-p",
+          "Reply with only the word PONG.",
+          "--permission-mode",
+          "bypassPermissions",
+          "--always-approve",
+          "--no-alt-screen",
+          "--output-format",
+          "plain",
+        ],
+        { env, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      let out = "";
+      const t = setTimeout(() => {
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          /* ignore */
+        }
+      }, 90_000);
+      child.stdout.on("data", (d) => (out += d.toString()));
+      child.stderr.on("data", (d) => (out += d.toString()));
+      child.on("error", (e) => {
+        clearTimeout(t);
+        resolve({ ok: false, error: e.message, sample: "", log: e.message, command: bin });
+      });
+      child.on("close", () => {
+        clearTimeout(t);
+        resolve({
+          ok: /pong/i.test(out),
+          sample: out.trim().slice(0, 240),
+          log: out.trim().slice(-400),
+          command: bin,
+          error: /pong/i.test(out) ? null : "Grok CLI did not reply PONG. Sign in with grok login --oauth.",
+        });
+      });
+    });
+  }
+  if (provider === "hermes") {
+    const bin = hermesBin();
+    return await new Promise((resolve) => {
+      const hermesModel = readHermesModel();
+      const args = ["-z", "Reply with only the word PONG.", "--yolo"];
+      if (hermesModel) args.push("-m", hermesModel);
+      const child = spawn(bin, args, {
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let out = "";
+      const t = setTimeout(() => {
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          /* ignore */
+        }
+      }, 90_000);
+      child.stdout.on("data", (d) => (out += d.toString()));
+      child.stderr.on("data", (d) => (out += d.toString()));
+      child.on("error", (e) => {
+        clearTimeout(t);
+        resolve({ ok: false, error: e.message, sample: "", log: e.message, command: bin });
+      });
+      child.on("close", () => {
+        clearTimeout(t);
+        resolve({
+          ok: /\bPONG\b/i.test(out),
+          sample: out.trim().slice(-400),
+          log: out.trim().slice(-2000),
+          command: bin,
+        });
+      });
+    });
+  }
   if (provider === "claude") {
     const bin = claudeBin();
     return await new Promise((resolve) => {
@@ -289,7 +635,7 @@ export async function pingHostCli(provider) {
       });
       child.on("close", () => {
         clearTimeout(t);
-        resolve({ ok: /\bPONG\b/i.test(out), sample: out.trim().slice(-240), command: bin });
+        resolve({ ok: /\bPONG\b/i.test(out), sample: out.trim().slice(-240), log: out.trim().slice(-2000), command: bin });
       });
     });
   }
@@ -316,7 +662,7 @@ export async function pingHostCli(provider) {
     });
     child.on("close", () => {
       clearTimeout(t);
-      resolve({ ok: /\bPONG\b/i.test(out), sample: out.trim().slice(-240), command: bin });
+      resolve({ ok: /\bPONG\b/i.test(out), sample: out.trim().slice(-240), log: out.trim().slice(-2000), command: bin });
     });
   });
 }

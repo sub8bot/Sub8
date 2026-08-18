@@ -297,10 +297,24 @@ if (!gotLock) {
   });
   app.on("activate", () => focusMainWindow());
   app.on("window-all-closed", () => {
-    if (serverProc && !serverProc.killed) serverProc.kill();
     app.quit();
   });
-  app.on("before-quit", () => {
-    if (serverProc && !serverProc.killed) serverProc.kill();
+  let quitting = false;
+  app.on("before-quit", (e) => {
+    if (quitting) {
+      if (serverProc && !serverProc.killed) serverProc.kill();
+      return;
+    }
+    e.preventDefault();
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win && !win.isDestroyed()) win.webContents.send("computers-pausing");
+    const finish = () => {
+      quitting = true;
+      if (serverProc && !serverProc.killed) serverProc.kill();
+      app.quit();
+    };
+    fetch(`${URL}/api/computers/pause-all`, { method: "POST", signal: AbortSignal.timeout(12_000) })
+      .catch(() => {})
+      .finally(finish);
   });
 }

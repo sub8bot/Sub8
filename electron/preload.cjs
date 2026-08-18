@@ -5,4 +5,7 @@ contextBridge.exposeInMainWorld("sub8Desktop", {
   checkUpdate: () => ipcRenderer.invoke("update-check"),
   downloadUpdate: () => ipcRenderer.invoke("update-download"),
   installUpdate: () => ipcRenderer.invoke("update-install"),
+  onPausing: (fn) => {
+    ipcRenderer.on("computers-pausing", fn);
+  },
 });

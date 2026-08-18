@@ -93,7 +93,7 @@ function looksLocalModel(model) {
 }
 
 function normalizeHarness(h = {}) {
-  const allowed = new Set(["grok-build", "claude", "codex", "ollama", "lmstudio", "spacexai", "custom"]);
+  const allowed = new Set(["grok-build", "hermes", "claude", "codex", "ollama", "lmstudio", "spacexai", "custom"]);
   const provider = allowed.has(h.provider) ? h.provider : "grok-build";
   const localBase = provider === "ollama" ? "http://127.0.0.1:11434/v1" : provider === "lmstudio" ? "http://127.0.0.1:1234/v1" : "";
   let model = typeof h.model === "string" ? h.model : "";
@@ -104,7 +104,7 @@ function normalizeHarness(h = {}) {
     baseUrl = baseUrl || "https://api.x.ai/v1";
   } else {
     if (!baseUrl || /127\.0\.0\.1:(11434|1234)/.test(baseUrl)) baseUrl = "https://api.x.ai/v1";
-    if (provider === "claude" || provider === "codex") {
+    if (provider === "claude" || provider === "codex" || provider === "hermes") {
       /* empty model means the CLI default */
     } else if (!model || looksLocalModel(model)) {
       model = "grok-4.6";

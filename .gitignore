@@ -8,6 +8,7 @@ data/.vault.key
 data/screens
 data/conversations
 data/traces
+data/grok-host/
 data/prod-ready-deadline.txt
 data/prod-ready-status.md
 .env

@@ -69,20 +69,24 @@ function dockerEnv() {
   return env;
 }
 
+const dockerKids = new Set();
+
 function run(cmd, args, opts = {}) {
-  const { timeout, ...spawnOpts } = opts;
+  const { timeout, track, env, ...spawnOpts } = opts;
   return new Promise((resolve) => {
     const child = spawn(cmd, args, {
-      env: dockerEnv(),
+      env: env || dockerEnv(),
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
       ...spawnOpts,
     });
+    if (track) track.add(child);
     let out = "";
     let done = false;
     const finish = (result) => {
       if (done) return;
       done = true;
+      if (track) track.delete(child);
       if (timer) clearTimeout(timer);
       resolve(result);
     };
@@ -103,11 +107,27 @@ function run(cmd, args, opts = {}) {
   });
 }
 
-export function docker(args, opts) {
-  return run(dockerBin(), args, opts);
+export function docker(args, opts = {}) {
+  return run(dockerBin(), args, { ...opts, track: dockerKids });
+}
+
+export function killHungDockerClients() {
+  let n = 0;
+  for (const child of [...dockerKids]) {
+    try {
+      child.kill("SIGKILL");
+      n += 1;
+    } catch {
+      /* already gone */
+    }
+  }
+  dockerKids.clear();
+  return n;
 }
 
 let dockerStatusCache = { at: 0, value: null };
+let lastGoodDocker = { at: 0, value: null };
+let dockerFailStreak = 0;
 
 function dockerInstallHint() {
   if (process.platform === "darwin") {
@@ -129,22 +149,187 @@ function dockerDaemonHint() {
   return "Docker is installed but the daemon is not running. Try: sudo systemctl start docker";
 }
 
-export async function dockerStatus() {
+function dockerStuckHint() {
+  if (process.platform === "darwin") {
+    return "Docker stopped answering. Desks are probably still running inside Colima. Recover unsticks it without wiping files.";
+  }
+  return "Docker stopped answering. Desks are probably still running. Recover will retry and restart the engine if needed.";
+}
+
+function timedOut(r) {
+  return Boolean(r && (r.code === 124 || /timeout/i.test(r.out || "")));
+}
+
+function hostBin(name) {
+  const home = process.env.HOME || os.homedir() || "";
+  const candidates = [
+    `/opt/homebrew/bin/${name}`,
+    `/usr/local/bin/${name}`,
+    path.join(home, ".local", "bin", name),
+  ];
+  for (const p of candidates) {
+    if (fsSync.existsSync(p)) return p;
+  }
+  return name;
+}
+
+function invalidateDockerCache() {
+  dockerStatusCache = { at: 0, value: null };
+  containerListCache = { at: 0, value: null };
+  dockerFailStreak = 0;
+}
+
+let dockerStatusInflight = null;
+
+async function dockerStatusFresh() {
   const now = Date.now();
-  if (dockerStatusCache.value && now - dockerStatusCache.at < 4000) return dockerStatusCache.value;
-  const cli = await docker(["version", "--format", "{{.Client.Version}}"]);
+  const cli = await docker(["version", "--format", "{{.Client.Version}}"], { timeout: 8_000 });
   const missing = !cli.ok && /enoent|not found|cannot find|is not recognized/i.test(cli.out || "");
   if (missing) {
-    const value = { ok: false, cli: false, daemon: false, hint: dockerInstallHint() };
+    const value = { ok: false, cli: false, daemon: false, stuck: false, recover: true, hint: dockerInstallHint() };
     dockerStatusCache = { at: now, value };
     return value;
   }
-  const info = await docker(["info", "--format", "{{.ServerVersion}}"]);
+  if (!cli.ok && timedOut(cli)) {
+    return settleDockerStatus({ ok: false, cli: true, daemon: false, stuck: true, recover: true, hint: dockerStuckHint() });
+  }
+  const info = await docker(["info", "--format", "{{.ServerVersion}}"], { timeout: 8_000 });
   const value = info.ok
-    ? { ok: true, cli: true, daemon: true, hint: "", engine: (info.out || "").trim() }
-    : { ok: false, cli: true, daemon: false, hint: dockerDaemonHint() };
-  dockerStatusCache = { at: now, value };
+    ? { ok: true, cli: true, daemon: true, stuck: false, recover: false, hint: "", engine: (info.out || "").trim() }
+    : {
+        ok: false,
+        cli: true,
+        daemon: false,
+        stuck: timedOut(info),
+        recover: true,
+        hint: timedOut(info) ? dockerStuckHint() : dockerDaemonHint(),
+      };
+  return settleDockerStatus(value);
+}
+
+function settleDockerStatus(value) {
+  if (value.ok) {
+    dockerFailStreak = 0;
+    lastGoodDocker = { at: Date.now(), value };
+    dockerStatusCache = { at: Date.now(), value };
+    return value;
+  }
+  dockerFailStreak += 1;
+  const recentlyOk = lastGoodDocker.value && Date.now() - lastGoodDocker.at < 120_000;
+  if (value.stuck && dockerFailStreak < 2 && recentlyOk) {
+    const keep = { ...lastGoodDocker.value, stale: true };
+    dockerStatusCache = { at: Date.now(), value: keep };
+    return keep;
+  }
+  dockerStatusCache = { at: Date.now(), value };
   return value;
+}
+
+export async function dockerStatus() {
+  const now = Date.now();
+  if (dockerStatusCache.value && now - dockerStatusCache.at < 4000) return dockerStatusCache.value;
+  if (dockerStatusInflight) return dockerStatusInflight;
+  dockerStatusInflight = dockerStatusFresh().finally(() => {
+    dockerStatusInflight = null;
+  });
+  return dockerStatusInflight;
+}
+
+export function parseLocalbotPs(out) {
+  const states = new Map();
+  for (const line of String(out || "").split("\n")) {
+    const [name, state, status] = line.split("\t");
+    if (!name || !name.startsWith("localbot-")) continue;
+    const paused = state === "paused" || /paused/i.test(status || "");
+    let st = "exited";
+    if (paused) st = "paused";
+    else if (state === "running") st = "running";
+    else if (state === "dead") st = "missing";
+    else if (state === "created" || state === "exited") st = "exited";
+    else if (state) st = state;
+    states.set(name, { exists: true, status: st, running: st === "running", paused, stuck: false });
+  }
+  return states;
+}
+
+let containerListCache = { at: 0, value: null };
+let containerListInflight = null;
+
+export async function listLocalbotStates({ force = false } = {}) {
+  const now = Date.now();
+  if (!force && dockerStatusCache.value?.stuck && now - dockerStatusCache.at < 4000) {
+    return { ok: false, stuck: true, states: new Map() };
+  }
+  if (!force && containerListCache.value && now - containerListCache.at < 2000) return containerListCache.value;
+  if (containerListInflight) return containerListInflight;
+  containerListInflight = (async () => {
+    const r = await docker(["ps", "-a", "--filter", "name=localbot-", "--format", "{{.Names}}\t{{.State}}\t{{.Status}}"], {
+      timeout: 8_000,
+    });
+    const value = r.ok
+      ? { ok: true, stuck: false, states: parseLocalbotPs(r.out) }
+      : { ok: false, stuck: timedOut(r), states: new Map() };
+    containerListCache = { at: Date.now(), value };
+    return value;
+  })().finally(() => {
+    containerListInflight = null;
+  });
+  return containerListInflight;
+}
+
+export async function recoverDocker() {
+  invalidateDockerCache();
+  const killed = killHungDockerClients();
+  let docker = await dockerStatusFresh();
+  if (docker.ok) return { ok: true, action: "retry", killed, docker };
+
+  if (process.platform === "darwin") {
+    const colima = hostBin("colima");
+    const listed = await run(colima, ["list"], { timeout: 12_000, env: dockerEnv() });
+    const running = /\bRunning\b/i.test(listed.out || "");
+    if (!running) {
+      const start = await run(colima, ["start"], { timeout: 180_000, env: dockerEnv() });
+      invalidateDockerCache();
+      docker = await dockerStatusFresh();
+      return { ok: docker.ok, action: "colima-start", killed, docker, log: (start.out || "").slice(-500) };
+    }
+    const rst = await run(colima, ["ssh", "--", "sudo", "service", "docker", "restart"], {
+      timeout: 60_000,
+      env: dockerEnv(),
+    });
+    await new Promise((r) => setTimeout(r, 2500));
+    invalidateDockerCache();
+    docker = await dockerStatusFresh();
+    if (docker.ok) return { ok: true, action: "docker-restart", killed, docker, log: (rst.out || "").slice(-500) };
+    const cr = await run(colima, ["restart"], { timeout: 180_000, env: dockerEnv() });
+    invalidateDockerCache();
+    docker = await dockerStatusFresh();
+    return { ok: docker.ok, action: "colima-restart", killed, docker, log: (cr.out || "").slice(-500) };
+  }
+
+  if (isWindows()) {
+    const exe = "C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe";
+    if (fsSync.existsSync(exe)) {
+      try {
+        spawn(exe, [], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+      } catch {
+        /* ignore */
+      }
+      await new Promise((r) => setTimeout(r, 8000));
+      invalidateDockerCache();
+      docker = await dockerStatusFresh();
+      return { ok: docker.ok, action: "docker-desktop", killed, docker };
+    }
+  }
+
+  return { ok: false, action: "retry", killed, docker };
+}
+
+export async function startExistingContainer(name) {
+  if (!name) return { ok: false };
+  const r = await docker(["start", name], { timeout: 30_000 });
+  invalidateDockerCache();
+  return { ok: r.ok, out: r.out };
 }
 
 export function containerName(botId) {
@@ -195,7 +380,7 @@ export async function pushHostGrokAuth(container) {
 }
 
 export async function pushHostGrokAuthAll() {
-  const listed = await docker(["ps", "--format", "{{.Names}}", "--filter", "name=localbot-"]);
+  const listed = await docker(["ps", "--format", "{{.Names}}", "--filter", "name=localbot-"], { timeout: 8_000 });
   const names = (listed.out || "")
     .split("\n")
     .map((s) => s.trim())
@@ -237,7 +422,7 @@ export function grokVmArgs(container, grokArgs) {
 
 export async function grokSignedIn(container) {
   await docker(["exec", container, "bash", "-lc", "chown -R abc:abc /config/.grok 2>/dev/null || true"]);
-  const r = await docker(grokVmArgs(container, ["models"]));
+  const r = await docker(grokVmArgs(container, ["models"]), { timeout: 25_000 });
   const t = (r.out || "").toLowerCase();
   if (/not signed in|not logged in|please log in|run `?grok login/i.test(t)) return { ok: false, out: r.out };
   if (r.ok && !/not signed in/i.test(t)) return { ok: true, out: r.out };
@@ -297,7 +482,7 @@ export function grokOAuthStatus(container) {
 }
 
 async function portFree(port) {
-  const published = await docker(["ps", "--format", "{{.Ports}}"]);
+  const published = await docker(["ps", "--format", "{{.Ports}}"], { timeout: 8_000 });
   if (published.ok && new RegExp(`[:.]${port}->`).test(published.out || "")) return false;
   if (isWindows()) {
     const r = await run("cmd.exe", ["/c", `netstat -ano | findstr :${port}`]);
@@ -315,10 +500,10 @@ export async function allocatePort() {
 }
 
 export async function ensureImage(onLog = () => {}) {
-  const inspect = await docker(["image", "inspect", IMAGE]);
+  const inspect = await docker(["image", "inspect", IMAGE], { timeout: 8_000 });
   if (inspect.ok) return;
   onLog(`Pulling desktop image ${IMAGE}…`);
-  const pull = await docker(["pull", "--platform", dockerPlatform(), IMAGE]);
+  const pull = await docker(["pull", "--platform", dockerPlatform(), IMAGE], { timeout: 600_000 });
   if (!pull.ok) throw new Error(`docker pull failed: ${pull.out.slice(-800)}`);
 }
 
@@ -326,31 +511,146 @@ export function configVolume(bot) {
   return bot.vm?.volume || `localbot-config-${String(bot.id || "bot").slice(0, 8)}`;
 }
 
+export function vmNames(bot, computer) {
+  const name = computer?.container || bot.vm?.container || (bot.id ? containerName(bot.id) : null);
+  const volume = computer?.volume || bot.vm?.volume || (bot.id ? configVolume(bot) : null);
+  return { name, volume };
+}
+
+export async function inspectState(name) {
+  if (!name) return { exists: false, status: "missing", running: false, paused: false, stuck: false };
+  const list = await listLocalbotStates();
+  if (list.stuck) return { exists: false, status: "unknown", running: false, paused: false, stuck: true };
+  return list.states.get(name) || { exists: false, status: "missing", running: false, paused: false, stuck: false };
+}
+
+export async function pauseContainer(name) {
+  const st = await inspectState(name);
+  if (st.stuck) return { ok: false, error: "docker stuck", status: "unknown" };
+  if (!st.exists) return { ok: false, error: "missing", status: "missing" };
+  if (st.paused) return { ok: true, status: "paused" };
+  if (!st.running) return { ok: false, error: "not running", status: st.status };
+  const r = await docker(["pause", name], { timeout: 15_000 });
+  if (!r.ok) return { ok: false, error: r.out || "pause failed", status: st.status };
+  invalidateDockerCache();
+  return { ok: true, status: "paused" };
+}
+
+export async function resumeContainer(name) {
+  const st = await inspectState(name);
+  if (st.stuck) return { ok: false, error: "docker stuck", status: "unknown" };
+  if (!st.exists) return { ok: false, error: "missing", status: "missing" };
+  if (!st.paused) return { ok: true, status: st.running ? "running" : st.status };
+  const r = await docker(["unpause", name], { timeout: 15_000 });
+  if (!r.ok) return { ok: false, error: r.out || "unpause failed", status: st.status };
+  invalidateDockerCache();
+  return { ok: true, status: "running" };
+}
+
+export async function rebootContainer(name) {
+  if (!name) return { ok: false, error: "no container", status: "missing" };
+  const st = await inspectState(name);
+  if (st.stuck) return { ok: false, error: "docker stuck", status: "unknown" };
+  if (!st.exists) return { ok: false, error: "missing", status: "missing" };
+  if (st.paused) await docker(["unpause", name], { timeout: 15_000 });
+  const r = await docker(["restart", "-t", "8", name], { timeout: 45_000 });
+  invalidateDockerCache();
+  if (!r.ok) return { ok: false, error: r.out || "restart failed", status: st.status };
+  const port = await detectMappedPort(name);
+  if (port) {
+    try {
+      await waitHttp(`http://127.0.0.1:${port}/`, 60_000, () => {}, async () => false);
+    } catch (err) {
+      return { ok: false, error: err.message || "desktop did not come back", status: "starting", novncPort: port };
+    }
+  }
+  return { ok: true, status: "running", novncPort: port };
+}
+
+export async function stopContainer(name) {
+  if (!name) return { ok: true, status: "missing" };
+  const st = await inspectState(name);
+  if (st.stuck) return { ok: false, error: "docker stuck", status: "unknown" };
+  if (!st.exists) return { ok: true, status: "missing" };
+  if (st.paused) await docker(["unpause", name], { timeout: 15_000 });
+  await docker(["stop", "-t", "8", name], { timeout: 20_000 });
+  await docker(["rm", "-f", name], { timeout: 15_000 });
+  invalidateDockerCache();
+  return { ok: true, status: "exited" };
+}
+
+function memToBytes(raw) {
+  const s = String(raw || "").trim();
+  const m = s.match(/^([\d.]+)\s*([KMGT]i?B)?/i);
+  if (!m) return 0;
+  const n = Number(m[1]) || 0;
+  const u = (m[2] || "").toUpperCase();
+  if (u.startsWith("G")) return n * 1024 * 1024 * 1024;
+  if (u.startsWith("M")) return n * 1024 * 1024;
+  if (u.startsWith("K")) return n * 1024;
+  return n;
+}
+
+export async function containerStats(names = []) {
+  const want = new Set(names.filter(Boolean));
+  if (!want.size) return {};
+  const r = await docker(
+    ["stats", "--no-stream", "--format", "{{.Name}}\t{{.MemUsage}}\t{{.CPUPerc}}", ...want],
+    { timeout: 8_000 },
+  );
+  const out = {};
+  for (const line of (r.out || "").split("\n")) {
+    const [name, mem, cpu] = line.split("\t");
+    if (!name) continue;
+    const [used, limit] = String(mem || "").split("/").map((x) => x.trim());
+    const usedB = memToBytes(used);
+    const limitB = memToBytes(limit);
+    out[name] = {
+      mem: used || mem || "",
+      memLimit: limit || "",
+      memBytes: usedB,
+      limitBytes: limitB,
+      memPct: limitB ? Math.min(100, Math.round((usedB / limitB) * 100)) : 0,
+      cpu: cpu || "",
+    };
+  }
+  return out;
+}
+
 export async function startVm(bot, onLog = () => {}, shouldAbort = async () => false) {
   const dock = await dockerStatus();
   if (!dock.ok) throw new Error(dock.hint);
-  const name = containerName(bot.id);
-  const volume = configVolume(bot);
+  const name = bot.vm?.container || containerName(bot.id);
+  const volume = bot.vm?.volume || configVolume(bot);
   const abortIfGone = async () => {
     if (!(await shouldAbort())) return;
-    await docker(["rm", "-f", name]);
+    await docker(["rm", "-f", name], { timeout: 20_000 });
     throw new Error("bot deleted");
   };
-  const existing = await docker(["inspect", "-f", "{{.State.Running}}", name]);
-  if (existing.ok && existing.out === "true") {
+  const existing = await inspectState(name);
+  if (existing.stuck) throw new Error((await dockerStatus()).hint || "Docker stopped answering.");
+  if (existing.paused) {
+    await resumeContainer(name);
+  }
+  if (existing.exists && (existing.running || existing.paused)) {
     await abortIfGone();
     const port = bot.vm?.novncPort || (await detectMappedPort(name));
-    await ensureTools(name, onLog);
-    await abortIfGone();
-    await ensureApps(name, onLog);
-    await abortIfGone();
-    return { container: name, novncPort: port, status: "running", display: ":1", volume };
+    const chrome = await chromeReady(name);
+    finishDesktopSetup(name, onLog).catch((err) => onLog(String(err.message || err)));
+    return {
+      container: name,
+      novncPort: port,
+      status: chrome ? "running" : "starting",
+      display: ":1",
+      volume,
+      setup: setupProgress(name),
+    };
   }
-  if (existing.ok) await docker(["rm", "-f", name]);
+  if (existing.exists) await docker(["rm", "-f", name], { timeout: 20_000 });
 
   await ensureImage(onLog);
   await abortIfGone();
-  await docker(["volume", "create", volume]);
+  await docker(["volume", "create", volume], { timeout: 20_000 });
   const port = await allocatePort();
   onLog(`Starting computer on port ${port}…`);
   const runr = await docker([
@@ -380,30 +680,133 @@ export async function startVm(bot, onLog = () => {}, shouldAbort = async () => f
     "-p",
     `${port}:3000`,
     IMAGE,
-  ]);
+  ], { timeout: 60_000 });
   if (!runr.ok) throw new Error(`docker run failed: ${runr.out.slice(-800)}`);
   await abortIfGone();
 
   await waitHttp(`http://127.0.0.1:${port}/`, 90_000, onLog, shouldAbort);
   await abortIfGone();
-  await ensureTools(name, onLog);
-  await abortIfGone();
-  await ensureApps(name, onLog);
-  await abortIfGone();
-  await docker([
-    "exec",
-    "-u",
-    "abc",
-    name,
-    "bash",
-    "-lc",
-    `${displayEnv({ vm: { display: ":1" } })}; xrandr --size 1024x768 || true`,
-  ]);
-  return { container: name, novncPort: port, status: "running", display: ":1", volume };
+  setSetup(name, 1, "Starting desktop");
+  onLog(setupLine(setupProgress(name)));
+  finishDesktopSetup(name, onLog).catch((err) => onLog(String(err.message || err)));
+  const chrome = await chromeReady(name);
+  return {
+    container: name,
+    novncPort: port,
+    status: chrome ? "running" : "starting",
+    display: ":1",
+    volume,
+    setup: setupProgress(name),
+  };
 }
 
-async function detectMappedPort(name) {
-  const r = await docker(["port", name, "3000/tcp"]);
+const SETUP_TOTAL = 4;
+const setupJobs = new Map();
+
+function setSetup(name, step, label, ready = false) {
+  const job = setupJobs.get(name) || {};
+  if (job.progress?.ready && !ready) return job.progress;
+  const progress = { step, total: SETUP_TOTAL, label, ready };
+  job.progress = progress;
+  job.ready = ready;
+  setupJobs.set(name, job);
+  return progress;
+}
+
+export function setupProgress(name) {
+  return setupJobs.get(name)?.progress || { step: 0, total: SETUP_TOTAL, label: "", ready: false };
+}
+
+export async function chromeReady(name) {
+  if (!name) return false;
+  const r = await docker(
+    ["exec", name, "bash", "-lc", "command -v google-chrome-stable || command -v google-chrome"],
+    { timeout: 12_000 },
+  );
+  return r.ok && /chrome/i.test(r.out || "");
+}
+
+function setupLine(p) {
+  if (!p) return "Setting up the computer…";
+  if (p.ready) return "Computer is ready.";
+  return `Setting up the computer (${p.step}/${p.total}): ${p.label}`;
+}
+
+async function markReadyIfChrome(name, onLog) {
+  if (setupProgress(name).ready) return true;
+  if (!(await chromeReady(name))) return false;
+  setSetup(name, SETUP_TOTAL, "Ready", true);
+  onLog("Computer is ready.");
+  return true;
+}
+
+async function finishDesktopSetup(name, onLog) {
+  const job = setupJobs.get(name) || {};
+  if (job.running) return job.running;
+  const say = (step, label) => {
+    if (setupProgress(name).ready) return setupProgress(name);
+    const p = setSetup(name, step, label, false);
+    onLog(setupLine(p));
+    return p;
+  };
+  job.running = (async () => {
+    try {
+      say(1, "Starting desktop");
+      say(2, "Installing click tools");
+      await ensureTools(name, onLog);
+      if (await markReadyIfChrome(name, onLog)) {
+        ensureApps(name, onLog).catch((err) => onLog(String(err.message || err)));
+        return;
+      }
+      say(3, "Installing Chrome");
+      const iv = setInterval(() => {
+        markReadyIfChrome(name, onLog).catch(() => {});
+      }, 3000);
+      try {
+        await ensureApps(name, (m) => {
+          if (setupProgress(name).ready) {
+            onLog(m);
+            return;
+          }
+          if (/Installing Google Chrome/i.test(m)) say(3, "Installing Chrome");
+          else if (/RustDesk|Grok Build CLI|extra apps/i.test(m)) say(4, "Installing extra apps");
+          else onLog(m);
+        });
+      } finally {
+        clearInterval(iv);
+      }
+      await docker(
+        [
+          "exec",
+          "-u",
+          "abc",
+          name,
+          "bash",
+          "-lc",
+          `${displayEnv({ vm: { display: ":1" } })}; xrandr --size 1024x768 || true`,
+        ],
+        { timeout: 20_000 },
+      );
+      await markReadyIfChrome(name, onLog);
+      if (!setupProgress(name).ready) {
+        setSetup(name, SETUP_TOTAL, "Ready", true);
+        onLog("Computer is ready.");
+      }
+    } catch (err) {
+      if (!(await markReadyIfChrome(name, onLog))) {
+        setSetup(name, setupProgress(name).step || 3, err.message || "setup failed", false);
+      }
+      throw err;
+    } finally {
+      job.running = null;
+    }
+  })();
+  setupJobs.set(name, job);
+  return job.running;
+}
+
+export async function detectMappedPort(name) {
+  const r = await docker(["port", name, "3000/tcp"], { timeout: 8_000 });
   const m = r.out.match(/:(\d+)/);
   return m ? Number(m[1]) : null;
 }
@@ -425,43 +828,43 @@ async function waitHttp(url, timeoutMs, onLog, shouldAbort) {
 }
 
 async function ensureTools(name, onLog) {
-  const check = await docker(["exec", "-u", "root", name, "bash", "-lc", "command -v xdotool && command -v scrot"]);
+  const check = await docker(["exec", "-u", "root", name, "bash", "-lc", "command -v xdotool && command -v scrot"], {
+    timeout: 20_000,
+  });
   if (check.ok) return;
   onLog("Installing computer-use tools…");
-  const inst = await docker([
-    "exec",
-    "-u",
-    "root",
-    name,
-    "bash",
-    "-lc",
-    "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq xdotool scrot wmctrl x11-apps xclip xsel >/tmp/apt.log 2>&1",
-  ]);
+  const inst = await docker(
+    [
+      "exec",
+      "-u",
+      "root",
+      name,
+      "bash",
+      "-lc",
+      "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq xdotool scrot wmctrl x11-apps xclip xsel >/tmp/apt.log 2>&1",
+    ],
+    { timeout: 120_000 },
+  );
   if (!inst.ok) onLog(`tool install warning: ${inst.out.slice(-300)}`);
 }
 
 async function appsReady(name) {
-  const check = await docker([
-    "exec",
-    "-u",
-    "root",
-    name,
-    "bash",
-    "-lc",
-    "command -v google-chrome-stable >/dev/null && command -v rustdesk >/dev/null && test -f /config/Desktop/RustDesk.desktop && test -f '/config/Desktop/Grok Build.desktop'",
-  ]);
+  const check = await docker(
+    ["exec", "-u", "root", name, "bash", "-lc", "command -v google-chrome-stable >/dev/null || command -v google-chrome >/dev/null"],
+    { timeout: 20_000 },
+  );
   return check.ok;
 }
 
 async function ensureApps(name, onLog) {
-  if (await appsReady(name)) onLog("Updating Grok Build CLI on the computer…");
-  else onLog("Installing Chrome, RustDesk, and Grok Build on the computer…");
+  if (await appsReady(name)) onLog("Chrome is already on the computer.");
+  else onLog("Installing Chrome on the computer…");
   const scriptHost = path.resolve(fileRoot, "vm", "setup-apps.sh");
-  const cp = await docker(["cp", scriptHost, `${name}:/tmp/setup-apps.sh`]);
+  const cp = await docker(["cp", scriptHost, `${name}:/tmp/setup-apps.sh`], { timeout: 15_000 });
   if (!cp.ok) throw new Error(`copy setup-apps failed: ${cp.out}`);
   let last = "";
   for (let attempt = 1; attempt <= 4; attempt++) {
-    const inst = await docker(["exec", "-u", "root", name, "bash", "/tmp/setup-apps.sh"]);
+    const inst = await docker(["exec", "-u", "root", name, "bash", "/tmp/setup-apps.sh"], { timeout: 180_000 });
     last = inst.out || "";
     const tail = last.split("\n").filter(Boolean).slice(-2).join(" | ");
     if (tail) onLog(tail);
@@ -547,9 +950,9 @@ export async function installAgentsMd(container, extra = "") {
 export async function stopVm(bot, { wipe = false } = {}) {
   const name = bot.vm?.container || (bot.id ? containerName(bot.id) : null);
   if (name) await docker(["rm", "-f", name]);
-  if (wipe && bot?.id) {
-    const volume = configVolume(bot);
-    await docker(["volume", "rm", "-f", volume]);
+  if (wipe) {
+    const volume = bot.vm?.volume || (bot?.id ? configVolume(bot) : null);
+    if (volume) await docker(["volume", "rm", "-f", volume]);
   }
 }
 
@@ -674,12 +1077,29 @@ export async function waitForDesktop(bot, { timeoutMs = 90_000, onLog = () => {}
   while (Date.now() - start < timeoutMs) {
     if (await gone()) return { ok: false, reason: "aborted" };
     const h = await streamHealth(bot);
-    if (h.ok) return { ok: true, health: h };
-    const why = !h.running ? "container not running" : !h.http ? "stream not up" : !h.x11 ? "display not ready" : "not ready";
-    onLog(`Waiting for desktop (${why})…`);
+    const box = bot.vm?.container || name;
+    if (h.ok) {
+      if (h.chrome || (await chromeReady(box))) {
+        setSetup(box, SETUP_TOTAL, "Ready", true);
+        return { ok: true, health: { ...h, chrome: true }, setup: setupProgress(box) };
+      }
+      finishDesktopSetup(box, onLog).catch((err) => onLog(String(err.message || err)));
+      const p = setupProgress(box);
+      onLog(p.label ? setupLine(p) : "Setting up the computer: Installing Chrome…");
+    } else {
+      const why = !h.running ? "container not running" : !h.http ? "stream not up" : !h.x11 ? "display not ready" : "not ready";
+      onLog(`Waiting for desktop (${why})…`);
+    }
     await new Promise((r) => setTimeout(r, 1500));
   }
-  return { ok: false, reason: "Desktop did not become ready in time. Open the computer pane or try again." };
+  const p = setupProgress(bot.vm?.container || name);
+  return {
+    ok: false,
+    reason: p.label
+      ? `Still ${setupLine(p)}. Chrome is not ready yet.`
+      : "Desktop did not become ready in time. Open the computer pane or try again.",
+    setup: p,
+  };
 }
 
 export async function resetVm(bot, onLog) {
@@ -760,6 +1180,32 @@ async function takeScreenshotPng(bot, name, dest) {
 
 function missingShotTool(out = "") {
   return /scrot:.*(not found|command not found)|import:.*(not found|command not found)|command not found: (scrot|import)/i.test(out);
+}
+
+export function computerPreviewPath(id) {
+  return path.resolve(dataDir, "screens", `computer-${id}.png`);
+}
+
+export async function screenshotContainer(name, hostPath) {
+  if (!name) return { ok: false, error: "no container" };
+  const dest = `/tmp/cprev-${Date.now()}.png`;
+  const r = await docker(
+    [
+      "exec",
+      "-u",
+      "abc",
+      name,
+      "bash",
+      "-lc",
+      `export DISPLAY=:1 HOME=/config; mkdir -p /tmp; scrot -p -o ${dest} 2>/tmp/scrot.err || import -window root ${dest}`,
+    ],
+    { timeout: 15_000 },
+  );
+  if (!r.ok) return { ok: false, error: r.out || "scrot failed" };
+  await fs.mkdir(path.dirname(hostPath), { recursive: true });
+  const cp = await docker(["cp", `${name}:${dest}`, hostPath], { timeout: 10_000 });
+  if (!cp.ok) return { ok: false, error: cp.out || "copy failed" };
+  return { ok: true, path: hostPath };
 }
 
 export async function screenshot(bot) {

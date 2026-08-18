@@ -40,7 +40,7 @@ You also need Docker (Colima on a Mac, or Docker Desktop) so each Bot can have a
 
 - Isolated Linux XFCE desktops per Bot — the assistant never touches the host
 - Two tunnels: outside computer-use (screenshot / click / type) and inside `docker exec` shell
-- SpaceXAI (`grok-4.6`) or Grok Build (OAuth once on this machine, session copied into each VM)
+- SpaceXAI (`grok-4.6`) or Grok Build (host CLI, drives the Bot computer through Sub8 tools)
 - Live desktop view, mid-task chat, Stop, standing routines
 - Cute octopus avatars with faces and motions — browse them at `/tool.html`
 

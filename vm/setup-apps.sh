@@ -26,17 +26,16 @@ apt_retry() {
 }
 
 need_chrome=0
-need_rustdesk=0
 command -v google-chrome >/dev/null 2>&1 || command -v google-chrome-stable >/dev/null 2>&1 || need_chrome=1
-command -v rustdesk >/dev/null 2>&1 || need_rustdesk=1
+# RustDesk and Grok Build CLI are not installed by default.
 
 apt_retry wget ca-certificates curl desktop-file-utils xdg-utils fonts-liberation libnss3 libatk-bridge2.0-0 libgtk-3-0 libxss1 libasound2t64 libasound2 \
   || apt_retry wget ca-certificates curl desktop-file-utils xdg-utils fonts-liberation
 
 arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
 case "$arch" in
-  amd64|x86_64) chrome_deb="google-chrome-stable_current_amd64.deb"; rustdesk_deb="rustdesk-1.4.9-x86_64.deb" ;;
-  *) chrome_deb="google-chrome-stable_current_arm64.deb"; rustdesk_deb="rustdesk-1.4.9-aarch64.deb" ;;
+  amd64|x86_64) chrome_deb="google-chrome-stable_current_amd64.deb" ;;
+  *) chrome_deb="google-chrome-stable_current_arm64.deb" ;;
 esac
 
 fetch_deb() {
@@ -55,34 +54,17 @@ if [ "$need_chrome" = 1 ]; then
   rm -f /tmp/chrome.deb
 fi
 
-if [ "$need_rustdesk" = 1 ]; then
-  echo "Installing RustDesk 1.4.9 ($arch)…"
-  fetch_deb "https://github.com/rustdesk/rustdesk/releases/download/1.4.9/${rustdesk_deb}" /tmp/rustdesk.deb
-  wait_apt
-  apt-get install -y -qq --fix-missing /tmp/rustdesk.deb || { dpkg -i /tmp/rustdesk.deb || true; wait_apt; apt-get install -f -y -qq; }
-  rm -f /tmp/rustdesk.deb
-fi
-
-echo "Installing latest Grok Build CLI…"
-curl -fsSL https://x.ai/cli/install.sh | bash || true
-src=$(find /root/.grok/bin /root/.local/bin /root/.grok/downloads /config/.grok/bin /config/.grok/downloads -type f \( -name grok -o -name 'grok-linux-*' \) 2>/dev/null | head -1 || true)
-if [ -z "$src" ]; then
-  src=$(find /root /config /usr/local -name 'grok-linux-*' -o -name grok -type f 2>/dev/null | head -1 || true)
-fi
-if [ -n "$src" ]; then
-  target=$(readlink -f /usr/local/bin/grok 2>/dev/null || true)
-  srcabs=$(readlink -f "$src" 2>/dev/null || echo "$src")
-  if [ "$srcabs" != "$target" ]; then
-    install -m 755 "$src" /usr/local/bin/grok
-  fi
-  ln -sfn /usr/local/bin/grok /usr/bin/grok
-  ln -sfn /usr/local/bin/grok /usr/local/bin/agent
-fi
-# abc's login PATH is often /usr/bin only
-if [ -x /usr/local/bin/grok ]; then
-  grep -q '/usr/local/bin' /config/.profile 2>/dev/null || echo 'export PATH="/usr/local/bin:$PATH"' >> /config/.profile
-  chown abc:abc /config/.profile 2>/dev/null || true
-fi
+# if [ "$need_rustdesk" = 1 ]; then
+#   echo "Installing RustDesk 1.4.9 ($arch)…"
+#   fetch_deb "https://github.com/rustdesk/rustdesk/releases/download/1.4.9/${rustdesk_deb}" /tmp/rustdesk.deb
+#   wait_apt
+#   apt-get install -y -qq --fix-missing /tmp/rustdesk.deb || { dpkg -i /tmp/rustdesk.deb || true; wait_apt; apt-get install -f -y -qq; }
+#   rm -f /tmp/rustdesk.deb
+# fi
+#
+# echo "Installing latest Grok Build CLI…"
+# curl -fsSL https://x.ai/cli/install.sh | bash || true
+# … grok CLI install omitted; Grok Build harness runs on the host via Sub8 tools.
 
 mkdir -p /config/Desktop /usr/share/applications
 cat > /usr/local/bin/chrome-desktop << 'EOF'
@@ -104,34 +86,10 @@ Terminal=false
 Categories=Network;WebBrowser;
 EOF
 
-cat > /config/Desktop/RustDesk.desktop << 'EOF'
-[Desktop Entry]
-Version=1.0
-Type=Application
-Name=RustDesk
-Comment=Remote desktop
-Exec=rustdesk
-Icon=rustdesk
-Terminal=false
-Categories=Network;RemoteAccess;
-EOF
-
-cat > /config/Desktop/Grok\ Build.desktop << 'EOF'
-[Desktop Entry]
-Version=1.0
-Type=Application
-Name=Grok Build
-Comment=Grok Build CLI (not the app harness)
-Exec=xfce4-terminal --title=Grok Build -e "bash -lc 'grok --version; echo; exec bash'"
-Icon=utilities-terminal
-Terminal=false
-Categories=Development;Utility;
-EOF
+# RustDesk.desktop and Grok Build.desktop omitted on purpose.
 
 chmod +x /config/Desktop/*.desktop
 chown -R abc:abc /config/Desktop
 sudo -u abc -H env DISPLAY=:1 HOME=/config gio set "/config/Desktop/Google Chrome.desktop" "metadata::trusted" true 2>/dev/null || true
-sudo -u abc -H env DISPLAY=:1 HOME=/config gio set "/config/Desktop/RustDesk.desktop" "metadata::trusted" true 2>/dev/null || true
-sudo -u abc -H env DISPLAY=:1 HOME=/config gio set "/config/Desktop/Grok Build.desktop" "metadata::trusted" true 2>/dev/null || true
 update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
-echo "APPS_OK chrome=$(command -v google-chrome-stable || command -v google-chrome) rustdesk=$(command -v rustdesk) grok=$(command -v grok || echo missing)"
+echo "APPS_OK chrome=$(command -v google-chrome-stable || command -v google-chrome)"

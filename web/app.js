@@ -55,6 +55,33 @@ const state = {
     lmstudio: { ok: false, models: [] },
     grok: { ok: true, models: ["grok-4.6", "grok-4.5", "grok-4.3", "grok-build-0.1"] },
   },
+  harnessStatus: null,
+  harnessTab: "grok-build",
+  harnessTests: {},
+  harnessBannerDismissed: {},
+  computers: [],
+  computerId: null,
+  computerStats: {},
+  computerAttach: false,
+  computerView: (() => {
+    try {
+      return localStorage.getItem("sub8.computerView") || "grid";
+    } catch {
+      return "grid";
+    }
+  })(),
+  computerSort: (() => {
+    try {
+      return localStorage.getItem("sub8.computerSort") || "name";
+    } catch {
+      return "name";
+    }
+  })(),
+  deleteBotId: null,
+  pausingQuit: false,
+  previewTick: 0,
+  chatFollow: true,
+  chatFollowBot: null,
 };
 
 async function api(path, opts) {
@@ -91,6 +118,7 @@ function ensureShell() {
     <div class="frame" id="shell-root">
       <div class="titlebar" id="titlebar"></div>
       <div id="update-banner" hidden></div>
+      <div id="harness-banner" hidden></div>
       <div class="shell">
         <div class="rail" id="rail"></div>
         <div class="main">
@@ -109,16 +137,57 @@ function ensureShell() {
   }
 }
 
+function needsDesk(bot) {
+  return Boolean(bot) && !bot.vm?.computerId && Boolean(bot.vm?.detached);
+}
+
+function noComputerHtml(bot) {
+  const free = (state.computers || []).filter((c) => !c.attachedBotId);
+  const list = free
+    .map(
+      (c) =>
+        `<button type="button" class="pill" data-act="computer-attach" data-id="${c.id}" data-bot="${bot.id}">${escapeHtml(c.name)}</button>`,
+    )
+    .join("");
+  return `<div class="screen-status desk-empty">
+    <div>
+      <strong>No computer attached</strong>
+      <span>This Bot has no Linux desk. Attach one you already have, or start a new one.</span>
+    </div>
+    <div class="desk-empty-acts">
+      <button type="button" class="pill primary" data-act="desk-start-new">Start a new computer</button>
+      ${
+        free.length
+          ? `<div class="desk-empty-attach"><span class="muted">Or attach</span>${list}</div>`
+          : `<span class="muted">No unattached desks. Start a new one, or detach one in Computers.</span>`
+      }
+    </div>
+  </div>`;
+}
+
 function attachLiveFrame(bot) {
   const wrap = $("#screen-wrap");
   if (!wrap) return;
-  if (!bot?.vm?.novncPort) {
-    wrap.innerHTML = `<div class="screen-status">${
-      dockerMissing()
-        ? dockerMissingHtml()
-        : `<div><strong>${escapeHtml(vmStatusTitle(bot))}</strong><span>${escapeHtml(vmStatusDetail(bot))}</span></div>`
-    }</div>`;
+  if (needsDesk(bot)) {
+    wrap.innerHTML = dockerMissing() ? `<div class="screen-status desk-empty">${dockerMissingHtml()}</div>` : noComputerHtml(bot);
     liveFrameKey = null;
+    if (!dockerMissing()) {
+      loadComputers().then(() => {
+        const live = state.bots.find((b) => b.id === bot.id);
+        if (needsDesk(live) && $("#screen-wrap")) $("#screen-wrap").innerHTML = noComputerHtml(live);
+      });
+    }
+    return;
+  }
+  if (!bot?.vm?.novncPort) {
+    liveFrameKey = null;
+    if (dockerMissing()) {
+      wrap.innerHTML = `<div class="screen-status desk-empty">${dockerMissingHtml()}</div>`;
+      return;
+    }
+    wrap.innerHTML = `<div class="screen-status desk-empty"><div><strong>${escapeHtml(vmStatusTitle(bot))}</strong><span>${escapeHtml(
+      vmStatusDetail(bot),
+    )}</span></div></div>`;
     return;
   }
   const key = `${bot.id}:${bot.vm.novncPort}`;
@@ -136,6 +205,10 @@ function isTransientVmError(msg) {
 }
 
 function vmStatusDetail(bot) {
+  const setup = bot?.vm?.setup;
+  if (setup && setup.ready === false && setup.step) {
+    return `Setting up the computer (${setup.step}/${setup.total}): ${setup.label}`;
+  }
   const hint = String(bot?.vm?.hint || "").trim();
   if (hint) return hint;
   if (isTransientVmError(bot?.vm?.error)) return "Installing Chrome and tools. This can take a minute on a new computer.";
@@ -147,28 +220,51 @@ function vmStatusDetail(bot) {
 function paintScreenStatus(bot) {
   const wrap = $("#screen-wrap");
   if (!wrap) return;
-  const warming = bot?.vm?.status === "starting" || (bot?.vm?.hint && bot.vm.status !== "running");
-  const hardErr = bot?.vm?.status === "error" && bot.vm.error && !isTransientVmError(bot.vm.error);
-  let host = wrap.querySelector(".screen-status");
-  if (!warming && !hardErr) {
-    host?.remove();
+  const iframe = wrap.querySelector("iframe");
+  const st = bot?.vm?.status || "";
+  const hardErr = st === "error" && bot.vm.error && !isTransientVmError(bot.vm.error);
+  const boot = Boolean(bot?.vm?.setup && bot.vm.setup.ready === false);
+  const installing = st === "starting" || boot;
+  wrap.querySelector(".screen-status:not(.desk-empty)")?.remove();
+  let chip = wrap.querySelector(".screen-chip");
+  if (!iframe) {
+    chip?.remove();
     return;
   }
-  if (!host) {
-    host = document.createElement("div");
-    host.className = "screen-status";
-    wrap.appendChild(host);
+  if (!installing && !hardErr) {
+    chip?.remove();
+    return;
   }
-  host.innerHTML = `<div><strong>${escapeHtml(vmStatusTitle(bot))}</strong><span>${escapeHtml(vmStatusDetail(bot))}</span></div>`;
+  if (!chip) {
+    chip = document.createElement("div");
+    chip.className = "screen-chip";
+    wrap.appendChild(chip);
+  }
+  chip.textContent = vmStatusDetail(bot) || "Starting…";
+  chip.classList.toggle("err", Boolean(hardErr));
 }
 
 function dockerMissing() {
   return state.docker && state.docker.ok === false;
 }
 
+function dockerStuck() {
+  return Boolean(state.docker?.stuck);
+}
+
 function dockerMissingHtml() {
-  const hint = state.docker?.hint || "Please start Docker. Sub8 needs it so each Bot can have a computer.";
-  return `<div class="banner warn" style="margin:0;text-align:left"><strong>Docker is not running.</strong> ${escapeHtml(hint)}</div>`;
+  const stuck = dockerStuck();
+  const hint =
+    state.docker?.hint ||
+    (stuck
+      ? "Docker stopped answering. Desks are probably still running."
+      : "Please start Docker. Sub8 needs it so each Bot can have a computer.");
+  return `<div class="banner warn" style="margin:0;text-align:left"><strong>${
+    stuck ? "Docker is stuck." : "Docker is not running."
+  }</strong> ${escapeHtml(hint)}
+    <button type="button" class="pill" data-act="recover-docker" ${state.dockerBusy ? "disabled" : ""}>${
+      state.dockerBusy ? "Recovering…" : "Recover"
+    }</button></div>`;
 }
 
 const OFFICIAL_SITE = "https://sub8.grok.me";
@@ -319,16 +415,23 @@ function paintDockerGate() {
     return;
   }
   host.hidden = false;
+  const stuck = dockerStuck();
   host.innerHTML = `<div class="overlay docker-gate-overlay">
     <div class="modal" style="max-width:440px" data-modal="1">
       <div class="sbody" style="width:100%">
         <button type="button" class="close" data-act="dismiss-docker-gate">×</button>
-        <h2>Start Docker</h2>
-        <p>A Bot’s computer needs Docker (Colima on a Mac, or Docker Desktop). Chat still works without it.</p>
+        <h2>${stuck ? "Docker is stuck" : "Start Docker"}</h2>
+        <p>${
+          stuck
+            ? "Your desks are probably still running. Docker (Colima on this Mac, or Docker Desktop) stopped answering, so Sub8 cannot see them."
+            : "A Bot’s computer needs Docker (Colima on a Mac, or Docker Desktop). Chat still works without it."
+        }</p>
         <p class="muted">${escapeHtml(state.docker?.hint || "")}</p>
-        <p class="muted">Start Colima or Docker Desktop and the computer will come up on its own.</p>
         <div class="routine-editor-foot">
-          <button type="button" class="pill primary" data-act="dismiss-docker-gate">Continue anyway</button>
+          <button type="button" class="pill primary" data-act="recover-docker" ${state.dockerBusy ? "disabled" : ""}>${
+            state.dockerBusy ? "Recovering…" : "Recover Docker"
+          }</button>
+          <button type="button" class="pill" data-act="dismiss-docker-gate">Continue anyway</button>
         </div>
       </div>
     </div>
@@ -340,25 +443,84 @@ function streamUrl(bot) {
   return `http://127.0.0.1:${bot.vm.novncPort}/?autoconnect=1&reconnect=1&reconnect_delay=1500&resize=scale&t=${t}`;
 }
 
+const lastGoodScreen = new Map();
+
+function bindStill(img, botId) {
+  if (!img) return;
+  img.addEventListener("load", () => {
+    if (img.naturalWidth > 1) {
+      lastGoodScreen.set(botId, img.currentSrc || img.src);
+      img.hidden = false;
+      img.classList.remove("broken");
+    }
+  });
+  img.addEventListener("error", () => {
+    const keep = lastGoodScreen.get(botId);
+    if (keep && img.src !== keep) {
+      img.src = keep;
+      return;
+    }
+    img.removeAttribute("src");
+    img.hidden = true;
+    img.classList.add("broken");
+  });
+}
+
+async function refreshStill(img, botId) {
+  if (!img || !botId) return;
+  try {
+    const res = await fetch(`/api/bots/${botId}/screen?t=${Date.now()}`);
+    if (!res.ok) throw new Error("no still");
+    const blob = await res.blob();
+    if (!blob.size || blob.size < 80) throw new Error("empty still");
+    const url = URL.createObjectURL(blob);
+    const prev = lastGoodScreen.get(botId);
+    lastGoodScreen.set(botId, url);
+    img.src = url;
+    img.hidden = false;
+    img.classList.remove("broken", "hidden");
+    if (prev && prev.startsWith("blob:") && prev !== url) {
+      setTimeout(() => URL.revokeObjectURL(prev), 4000);
+    }
+  } catch {
+    const keep = lastGoodScreen.get(botId);
+    if (keep) {
+      if (img.src !== keep) img.src = keep;
+      img.hidden = false;
+    } else {
+      img.removeAttribute("src");
+      img.hidden = true;
+    }
+  }
+}
+
 function mountLiveFrame(bot) {
   const wrap = $("#screen-wrap");
   if (!wrap || !bot?.vm?.novncPort) return;
   const key = `${bot.id}:${bot.vm.novncPort}`;
   liveFrameKey = key;
   delete wrap.dataset.empty;
-  const t = Date.now();
-  wrap.innerHTML = `<img class="screen-still" alt="" src="/api/bots/${bot.id}/screen?t=${t}" /><iframe data-key="${key}" src="${streamUrl(bot)}" allow="clipboard-read; clipboard-write"></iframe>`;
+  delete wrap.dataset.streamReady;
+  const keep = lastGoodScreen.get(bot.id) || "";
+  wrap.innerHTML = `<img class="screen-still${keep ? "" : " hidden"}" alt="" ${
+    keep ? `src="${keep}"` : ""
+  } /><iframe data-key="${key}" src="${streamUrl(bot)}" allow="clipboard-read; clipboard-write"></iframe>`;
   const iframe = wrap.querySelector("iframe");
   const still = wrap.querySelector(".screen-still");
+  bindStill(still, bot.id);
+  if (keep) still.hidden = false;
+  refreshStill(still, bot.id);
   const label = $("#screen-label");
   iframe?.addEventListener("load", () => {
+    wrap.dataset.streamReady = "1";
     if (label) label.textContent = `${bot.name}'s screen`;
+    const live = state.bots.find((b) => b.id === bot.id) || bot;
+    paintScreenStatus(live);
     setTimeout(() => {
       if (still?.parentNode === wrap) still.classList.add("hidden");
     }, 1400);
   });
   iframe?.addEventListener("error", () => scheduleStreamRetry(bot, 1600));
-  // Selkies drops the previous viewer when a new one attaches. Kick once after open.
   if (!wrap.dataset.kicked) {
     wrap.dataset.kicked = "1";
     scheduleStreamRetry(bot, 2200);
@@ -371,6 +533,17 @@ function scheduleStreamRetry(bot, ms) {
   clearTimeout(streamRetry);
   streamRetry = setTimeout(() => {
     if (state.selected !== bot.id || !bot.vm?.novncPort) return;
+    const wrap = $("#screen-wrap");
+    const iframe = wrap?.querySelector("iframe");
+    if (iframe) {
+      iframe.src = streamUrl(bot);
+      const still = wrap.querySelector(".screen-still");
+      if (still) {
+        still.classList.remove("hidden");
+        refreshStill(still, bot.id);
+      }
+      return;
+    }
     liveFrameKey = null;
     mountLiveFrame(bot);
   }, ms);
@@ -457,7 +630,10 @@ function paintChat(bot) {
   const thread = $("#thread");
   if (!thread || !bot) return;
   if (!Array.isArray(bot.messages)) bot.messages = [];
-  const nearBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 80;
+  if (state.chatFollowBot !== bot.id) {
+    state.chatFollowBot = bot.id;
+    state.chatFollow = true;
+  }
   const rows = bot.messages.filter((m) => !m.hidden && m.role !== "tool");
   if (!rows.length && !bot.busy) {
     thread.innerHTML = `<div class="empty">Message ${escapeHtml(bot.name)} to put it to work.</div>`;
@@ -492,7 +668,7 @@ function paintChat(bot) {
     html.push(`<div class="working"><span class="working-dot"></span>Working…</div>`);
   }
   thread.innerHTML = html.join("");
-  if (nearBottom || bot.busy) thread.scrollTop = thread.scrollHeight;
+  if (state.chatFollow) thread.scrollTop = thread.scrollHeight;
   const go = $(".composer-go");
   const halt = $(".composer [data-act=stop-turn]");
   if (go) go.hidden = false;
@@ -575,6 +751,7 @@ function render() {
   paintTeach(bot);
   paintCtxMenu();
   paintGrokAuth();
+  paintHarnessBanner();
   syncEditorChips(bot);
   refreshAvatars();
 }
@@ -753,6 +930,10 @@ function iconLock() {
   return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>`;
 }
 
+function iconComputer() {
+  return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>`;
+}
+
 function iconGear() {
   return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9c.3.7 1 1.2 1.7 1.3H21a2 2 0 1 1 0 4h-.2a1.7 1.7 0 0 0-1.4 1.7z"/></svg>`;
 }
@@ -801,7 +982,7 @@ function resolvedHarness(bot) {
   let model = (local.model && String(local.model).trim()) || "";
   if (!model && global.provider === provider) model = String(global.model || "").trim();
   if (!model) {
-    if (provider === "claude" || provider === "codex") model = "default";
+    if (provider === "claude" || provider === "codex" || provider === "hermes") model = "default";
     else if (provider === "grok-build" || provider === "spacexai") model = "grok-4.6";
     else model = provider;
   }
@@ -812,8 +993,9 @@ function paintTitle(bot) {
   const { provider, model } = resolvedHarness(bot);
   const bar = $("#titlebar");
   const collapsed = !state.showComputer && !state.botEdit && state.deskSize !== "full";
-  const stamp = `${bot?.id || ""}|${state.botEdit ? "1" : "0"}|${state.deskSize}|${collapsed ? "1" : "0"}`;
-  if (bar.dataset.stamp === stamp && bar.querySelector("[data-act=vault]")) {
+  const runningN = (state.computers || []).filter((c) => c.status === "running").length;
+  const stamp = `${bot?.id || ""}|${state.botEdit ? "1" : "0"}|${state.deskSize}|${collapsed ? "1" : "0"}|c${runningN}`;
+  if (bar.dataset.stamp === stamp && bar.querySelector("[data-act=vault]") && bar.querySelector("[data-act=computers]")) {
     const name = bar.querySelector(".botname-btn .bot-label");
     if (name && bot) name.textContent = bot.name;
     const chip = bar.querySelector(".harness-chip");
@@ -835,6 +1017,9 @@ function paintTitle(bot) {
     </div>
     <div class="spacer"></div>
     <div class="title-actions">
+      <button class="iconbtn computer-btn" data-act="computers" title="Computers">${iconComputer()}${
+        runningN ? `<span class="computer-badge">${runningN}</span>` : ""
+      }</button>
       <button class="iconbtn" data-act="vault" title="Password vault">${iconLock()}</button>
       ${
         !bot
@@ -1034,7 +1219,7 @@ function paintChatPane(bot) {
     chat.innerHTML = `<div class="empty">Create a Bot to get started.</div>`;
     return;
   }
-  if (!$("#thread") || !$(".composer-mic") || !$(".chat-head") || $(".chat-stop") || document.querySelector("[data-act=picker]")) {
+  if (!$("#thread") || !$("#send textarea[name=q]") || !$(".composer-mic") || !$(".chat-head") || $(".chat-stop") || document.querySelector("[data-act=picker]")) {
     chat.innerHTML = `
       <div class="chat-head">
         <span class="chat-head-name">${escapeHtml(bot.name)}</span>
@@ -1046,16 +1231,35 @@ function paintChatPane(bot) {
       <div class="composer">
         <form class="input" id="send">
           <button type="button" class="composer-plus" data-act="plus-menu" title="Add">${iconPlus()}</button>
-          <input name="q" placeholder="Message ${escapeHtml(bot.name)}" autocomplete="off" />
+          <textarea name="q" rows="1" placeholder="Message ${escapeHtml(bot.name)}"></textarea>
           <button type="button" class="composer-send composer-stop" data-act="stop-turn" hidden title="Stop">${iconStop()}</button>
           <button type="button" class="composer-mic" data-act="dictate" title="Speak">${iconMic()}</button>
           <button type="submit" class="composer-send composer-go" title="Send">${iconSend()}</button>
         </form>
+        <div class="composer-hint">Enter to send · Shift+Enter for a new line</div>
         <input id="attach-file" type="file" multiple hidden />
       </div>
       <div id="picker-host"></div>`;
     $("#send").addEventListener("submit", onSend);
     $("#attach-file")?.addEventListener("change", onAttachFiles);
+    const box = $("#send")?.q;
+    if (box) {
+      box.addEventListener("keydown", onComposerKey);
+      box.addEventListener("input", sizeComposer);
+    }
+    const thread = $("#thread");
+    if (thread && !thread.dataset.followBound) {
+      thread.dataset.followBound = "1";
+      thread.addEventListener(
+        "scroll",
+        () => {
+          const gap = thread.scrollHeight - thread.scrollTop - thread.clientHeight;
+          state.chatFollow = gap < 80;
+        },
+        { passive: true },
+      );
+    }
+    sizeComposer();
   } else {
     const input = $("#send")?.q;
     if (input) input.placeholder = `Message ${bot.name}`;
@@ -1277,13 +1481,30 @@ function paintLivePane(bot) {
     <div class="pane-head" id="pane-head"></div>
     <div id="computer-stack">
       <div class="screen-wrap" id="screen-wrap"></div>
-      <button class="open-desk" data-act="open-desk" type="button">${iconExpand()} Open</button>
+      <div class="desk-actions">
+        <button class="pill" data-act="refresh-stream" type="button">Refresh stream</button>
+        <button class="pill" data-act="reboot-vm" type="button">Reboot</button>
+        <button class="pill" data-act="open-desk" type="button">${iconExpand()} Open</button>
+      </div>
       <div class="screen-label" id="screen-label"></div>
       <div class="section-h">Routines <button class="iconbtn add-routine" data-act="add-routine" type="button" title="Add routine">+</button></div>
       <div id="routine-list"></div>
       <p class="error" id="vm-error"></p>
     </div>
     <div id="bot-editor" class="bot-editor" hidden></div>`;
+  }
+  {
+    let row = $(".desk-actions");
+    if (!row && $("#screen-wrap")) {
+      row = document.createElement("div");
+      row.className = "desk-actions";
+      $("#screen-wrap").after(row);
+    }
+    if (row) {
+      row.innerHTML = `<button class="pill" data-act="refresh-stream" type="button">Refresh stream</button>
+        <button class="pill" data-act="reboot-vm" type="button">Reboot</button>
+        <button class="pill" data-act="open-desk" type="button">${iconExpand()} Open</button>`;
+    }
   }
   paintPaneHead(bot);
   const computer = $("#computer-stack");
@@ -1465,7 +1686,7 @@ function paintModal() {
   const host = $("#modal-host");
   if (!host) return;
   const bot = state.bots.find((b) => b.id === state.selected);
-  const key = `${state.modal || ""}|${state.section}|${state.editingRoutineId || ""}|${state.selected || ""}|${state.vaultGroup || ""}|${state.vaultEditId || ""}`;
+  const key = `${state.modal || ""}|${state.section}|${state.editingRoutineId || ""}|${state.selected || ""}|${state.vaultGroup || ""}|${state.vaultEditId || ""}|${state.computerId || ""}|${state.computerAttach ? "1" : "0"}|${state.deleteBotId || ""}|${state.computerView}|${state.computerSort}`;
   if (!state.modal) {
     host.innerHTML = "";
     delete host.dataset.key;
@@ -1480,6 +1701,8 @@ function paintModal() {
   host.dataset.key = key;
   if (state.modal === "create") host.innerHTML = createBotHtml();
   else if (state.modal === "vault") host.innerHTML = vaultHtml();
+  else if (state.modal === "computers") host.innerHTML = computersHtml();
+  else if (state.modal === "delete-bot") host.innerHTML = deleteBotHtml();
   else if (state.modal === "settings") host.innerHTML = settingsHtml();
   else if (state.modal === "advanced" && bot) host.innerHTML = advancedHtml(bot);
   else if (state.modal === "routine" && bot) {
@@ -1496,7 +1719,7 @@ function advancedHtml(bot) {
       ? "http://127.0.0.1:1234/v1"
       : local.provider === "ollama"
         ? "http://127.0.0.1:11434/v1"
-        : h.provider === "claude" || h.provider === "codex"
+        : h.provider === "claude" || h.provider === "codex" || h.provider === "hermes"
           ? "host CLI"
           : state.settings?.harness?.baseUrl || "https://api.x.ai/v1";
   const msgs = bot.messages || [];
@@ -1618,6 +1841,7 @@ function harnessProviderOptions(selected) {
   return [
     ["default", "App default"],
     ["grok-build", "Grok Build"],
+    ["hermes", "Hermes"],
     ["claude", "Claude"],
     ["codex", "Codex"],
     ["ollama", "Ollama"],
@@ -1648,8 +1872,10 @@ function modelPickerHtml(provider, selected, { id = "cm" } = {}) {
       <div class="muted">${detected?.ok ? "Running, but no chat models yet." : "Not detected. Start the app, then Refresh."}</div>
       <button type="button" class="pill" data-act="refresh-local-harness">Refresh models</button>`;
   }
-  if (provider === "claude" || provider === "codex") {
-    return `<input class="field" id="${id}" value="${escapeHtml(selected || "")}" placeholder="default" />`;
+  if (provider === "claude" || provider === "codex" || provider === "hermes") {
+    return `<input class="field" id="${id}" value="${escapeHtml(selected || "")}" placeholder="${
+      provider === "hermes" ? "Hermes default" : "default"
+    }" />`;
   }
   if (provider === "default") {
     const def = state.settings?.harness?.model || "app default";
@@ -1683,6 +1909,216 @@ function rebuildCreateModal() {
   if (host) delete host.dataset.key;
   paintModal();
   refreshAvatars();
+}
+
+function computerStateLabel(st, row) {
+  if (row?.stuck || row?.stale) return st === "running" ? "Running?" : "Can't see";
+  if (st === "running") return "Running";
+  if (st === "paused") return "Paused";
+  if (st === "exited" || st === "stopped") return "Stopped";
+  if (st === "missing") return "Missing";
+  if (st === "unknown") return "Can't see";
+  return st || "Unknown";
+}
+
+function harnessLabel(id) {
+  return (
+    { "grok-build": "Grok Build", hermes: "Hermes", claude: "Claude", codex: "Codex", ollama: "Ollama", lmstudio: "LM Studio", spacexai: "SpaceXAI" }[id] ||
+    id ||
+    ""
+  );
+}
+
+function sortedComputers() {
+  const rows = [...(state.computers || [])];
+  const rank = { running: 0, paused: 1, starting: 2, exited: 3, stopped: 3, missing: 4 };
+  const key = state.computerSort || "name";
+  rows.sort((a, b) => {
+    if (key === "mem") {
+      const am = state.computerStats[a.container]?.memBytes || 0;
+      const bm = state.computerStats[b.container]?.memBytes || 0;
+      return bm - am;
+    }
+    if (key === "status") return (rank[a.status] ?? 9) - (rank[b.status] ?? 9) || a.name.localeCompare(b.name);
+    if (key === "bot") return String(a.attachedBotName || "zzz").localeCompare(String(b.attachedBotName || "zzz"));
+    if (key === "harness") return String(a.harness?.label || "zzz").localeCompare(String(b.harness?.label || "zzz"));
+    return String(a.name || "").localeCompare(String(b.name || ""));
+  });
+  return rows;
+}
+
+function memBarHtml(container, compact = false) {
+  const st = state.computerStats[container];
+  const pct = Math.max(0, Math.min(100, Number(st?.memPct) || 0));
+  const label = st?.mem ? st.mem.replace(/iB$/i, "B") : "—";
+  const tone = pct >= 85 ? "hot" : pct >= 60 ? "warm" : "ok";
+  return `<div class="cmem ${compact ? "sm" : ""}" data-cmem="${escapeHtml(container)}">
+    <div class="cmem-top"><span>RAM</span><span data-cmem-label>${escapeHtml(label)}</span></div>
+    <div class="cmem-track"><i class="cmem-fill ${tone}" data-cmem-fill style="width:${pct}%"></i></div>
+  </div>`;
+}
+
+function harnessPill(h) {
+  if (!h?.provider) return `<span class="hpill muted">No harness</span>`;
+  return `<span class="hpill hpill-${escapeHtml(h.provider)}" title="${escapeHtml(h.model || "")}">${escapeHtml(
+    h.label || harnessLabel(h.provider),
+  )}</span>`;
+}
+
+function computerPreviewHtml(c) {
+  const src = c.previewUrl || (c.previewBotId || c.attachedBotId || c.lastBotId ? `/api/bots/${c.previewBotId || c.attachedBotId || c.lastBotId}/screen` : "");
+  const tick = state.previewTick || 0;
+  return `<div class="cprev">
+    ${src ? `<img alt="" src="${src}${src.includes("?") ? "&" : "?"}t=${tick}" onerror="this.style.display='none'" />` : ""}
+    <div class="cprev-empty">${
+      c.stuck || c.stale ? "Can't reach Docker" : c.status === "running" || c.status === "starting" ? "No preview yet" : "Desk is off"
+    }</div>
+  </div>`;
+}
+
+function computerBotLink(c) {
+  if (!c.attachedBotId) return `<span class="crow-meta">Unattached</span>`;
+  return `<button type="button" class="clink" data-act="open-computer-bot" data-id="${escapeHtml(c.attachedBotId)}" title="Open ${escapeHtml(c.attachedBotName || "Bot")}">${escapeHtml(
+    c.attachedBotName || "Bot",
+  )}</button>`;
+}
+
+function computerActions(row) {
+  return `
+    ${
+      row.status === "paused"
+        ? `<button type="button" class="pill primary" data-act="computer-act" data-do="resume" data-id="${row.id}">Resume</button>`
+        : row.status === "running"
+          ? `<button type="button" class="pill" data-act="computer-act" data-do="pause" data-id="${row.id}">Pause</button>`
+          : `<button type="button" class="pill primary" data-act="computer-act" data-do="start" data-id="${row.id}">Start</button>`
+    }
+    ${
+      row.status === "running" || row.status === "paused"
+        ? `<button type="button" class="pill" data-act="computer-act" data-do="reboot" data-id="${row.id}">Reboot</button>
+        <button type="button" class="pill" data-act="computer-act" data-do="stop" data-id="${row.id}">Stop</button>`
+        : ""
+    }
+    ${
+      row.attachedBotId
+        ? `<button type="button" class="pill" data-act="computer-act" data-do="detach" data-id="${row.id}">Detach</button>`
+        : `<button type="button" class="pill" data-act="computer-attach-open" data-id="${row.id}">Attach to…</button>`
+    }
+    <button type="button" class="danger" data-act="computer-act" data-do="destroy" data-id="${row.id}">Destroy</button>`;
+}
+
+function computersHtml() {
+  const rows = sortedComputers();
+  const id = state.computerId || rows[0]?.id || "";
+  const row = rows.find((c) => c.id === id) || rows[0];
+  const view = state.computerView === "list" ? "list" : "grid";
+  const freeBots = state.bots.filter((b) => !b.hidden && !b.vm?.computerId);
+  const attachPicker =
+    row && state.computerAttach
+      ? `<div class="cattach">${
+          freeBots.length
+            ? freeBots
+                .map(
+                  (b) =>
+                    `<button type="button" class="pill" data-act="computer-attach" data-id="${row.id}" data-bot="${b.id}">${escapeHtml(b.name)}</button>`,
+                )
+                .join("")
+            : `<span class="muted">Every Bot already has a computer.</span>`
+        }</div>`
+      : "";
+  const cards = rows
+    .map((c) => {
+      const on = c.id === row?.id ? "on" : "";
+      const st = c.status === "running" ? "ok" : c.status === "paused" ? "warn" : "bad";
+      if (view === "list") {
+        return `<div class="crow ${on}" data-act="computer-select" data-id="${c.id}">
+          <div class="crow-main">
+            <div class="crow-title">${escapeHtml(c.name)}</div>
+            ${computerBotLink(c)}
+          </div>
+          <div class="crow-pills">${harnessPill(c.harness)}<span class="hbadge ${st}">${escapeHtml(computerStateLabel(c.status, c))}</span></div>
+          ${memBarHtml(c.container, true)}
+        </div>`;
+      }
+      return `<div class="ccard ${on}" data-act="computer-select" data-id="${c.id}">
+        ${computerPreviewHtml(c)}
+        <div class="ccard-body">
+          <div class="crow-title">${escapeHtml(c.name)}</div>
+          ${computerBotLink(c)}
+          <div class="crow-pills">${harnessPill(c.harness)}<span class="hbadge ${st}">${escapeHtml(computerStateLabel(c.status, c))}</span></div>
+          ${memBarHtml(c.container, true)}
+        </div>
+      </div>`;
+    })
+    .join("");
+  const detail = row
+    ? `<div class="cdetail">
+        <input class="field" data-computer-name="${row.id}" value="${escapeHtml(row.name)}" />
+        <span class="muted mono">${escapeHtml(row.container || "")}</span>
+        ${row.attachedBotId ? computerBotLink(row) : ""}
+        <div class="cdetail-acts">${computerActions(row)}</div>
+        ${attachPicker}
+      </div>`
+    : `<p class="muted">No computers yet. Start a Bot and it gets a desk.</p>`;
+  return `<div class="overlay">
+    <div class="modal computers-modal" data-modal="1">
+      <div class="sbody" style="width:100%;display:flex;flex-direction:column;min-height:0">
+        <button type="button" class="close" data-act="close-modal" title="Close" aria-label="Close">${iconClose()}</button>
+        <div class="ctool">
+          <div>
+            <h2 style="margin:0">Computers</h2>
+            <p class="muted" style="margin:4px 0 0">Linux desks. Quit pauses them. They wake when you open Sub8.</p>
+          </div>
+          <div class="ctool-right">
+            ${
+              dockerMissing()
+                ? `<button type="button" class="pill primary" data-act="recover-docker" ${state.dockerBusy ? "disabled" : ""}>${
+                    state.dockerBusy ? "Recovering…" : "Recover Docker"
+                  }</button>`
+                : ""
+            }
+            <select class="field csort" data-computer-sort>
+              <option value="name" ${state.computerSort === "name" ? "selected" : ""}>Name</option>
+              <option value="mem" ${state.computerSort === "mem" ? "selected" : ""}>Memory</option>
+              <option value="status" ${state.computerSort === "status" ? "selected" : ""}>State</option>
+              <option value="bot" ${state.computerSort === "bot" ? "selected" : ""}>Bot</option>
+              <option value="harness" ${state.computerSort === "harness" ? "selected" : ""}>Harness</option>
+            </select>
+            <div class="seg">
+              <button type="button" class="seg-btn ${view === "grid" ? "on" : ""}" data-act="computer-view" data-id="grid">Grid</button>
+              <button type="button" class="seg-btn ${view === "list" ? "on" : ""}" data-act="computer-view" data-id="list">List</button>
+            </div>
+          </div>
+        </div>
+        ${dockerMissing() ? dockerMissingHtml() : ""}
+        <div class="cboard ${view}">${cards || `<div class="muted" style="padding:20px">None yet.</div>`}</div>
+        ${detail}
+      </div>
+    </div>
+  </div>`;
+}
+
+function deleteBotHtml() {
+  const bot = state.bots.find((b) => b.id === state.deleteBotId);
+  if (!bot) return "";
+  const desk = (state.computers || []).find((c) => c.id === bot.vm?.computerId || c.attachedBotId === bot.id);
+  return `<div class="overlay">
+    <div class="modal" style="height:auto;max-height:88%;width:min(480px,92%)" data-modal="1">
+      <div class="sbody" style="width:100%">
+        <button class="close" data-act="close-modal">×</button>
+        <h2>Delete ${escapeHtml(bot.name)}?</h2>
+        <p class="muted">The Bot leaves the rail. Choose what happens to its Linux computer${
+          desk ? ` (${escapeHtml(desk.name)})` : ""
+        }.</p>
+        <div class="card" style="display:flex;flex-direction:column;gap:10px;padding:14px">
+          <button type="button" class="pill primary" data-act="delete-bot-go" data-keep="1">Keep the computer</button>
+          <div class="sub">Desk stays under Computers, unattached. Files and logins stay. Attach it to another Bot later.</div>
+          <button type="button" class="danger" data-act="delete-bot-go" data-keep="0">Delete the computer too</button>
+          <div class="sub">The desk and its volume are destroyed. This cannot be undone.</div>
+          <button type="button" class="pill" data-act="close-modal">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
 }
 
 function createBotHtml() {
@@ -1832,6 +2268,12 @@ function grokModels() {
 
 function localModels(provider) {
   if (provider === "grok-build" || provider === "spacexai") return grokModels();
+  if (provider === "hermes") {
+    const lm = state.localHarness?.lmstudio?.models || [];
+    const current = harnessInfo("hermes")?.model || "";
+    const extra = ["qwen3.8-27b", "qwen3.6-27b-mlx"];
+    return [...new Set([current, ...lm, ...extra].filter(Boolean))];
+  }
   return state.localHarness?.[provider]?.models || [];
 }
 
@@ -1844,81 +2286,189 @@ function pickModelForProvider(provider, current = "") {
     if (models.length) return models.includes(current) ? current : models[0];
     return "";
   }
-  if (provider === "claude" || provider === "codex") return "";
+  if (provider === "claude" || provider === "codex" || provider === "hermes") return "";
   return current || "";
 }
 
+function harnessCatalog() {
+  return (
+    state.harnessStatus?.catalog || [
+      { id: "grok-build", label: "Grok Build" },
+      { id: "hermes", label: "Hermes" },
+      { id: "claude", label: "Claude" },
+      { id: "codex", label: "Codex" },
+      { id: "ollama", label: "Ollama" },
+      { id: "lmstudio", label: "LM Studio" },
+      { id: "spacexai", label: "SpaceXAI" },
+    ]
+  );
+}
+
+function harnessInfo(id) {
+  return state.harnessStatus?.harnesses?.[id] || null;
+}
+
+function statusTone(info) {
+  if (!info) return "unknown";
+  if (info.ready) return "ok";
+  if (info.installed && !info.signedIn) return "warn";
+  if (!info.installed) return "bad";
+  return "warn";
+}
+
+function statusLabel(info) {
+  if (!info) return "Checking…";
+  if (info.ready && info.signedIn) return "Signed in";
+  if (info.ready) return "Ready";
+  if (!info.installed) return "Not installed";
+  if (!info.signedIn) return "Not signed in";
+  return "Not ready";
+}
+
+function paintHarnessBanner() {
+  let host = $("#harness-banner");
+  if (!host) {
+    const after = $("#update-banner") || $("#titlebar");
+    host = document.createElement("div");
+    host.id = "harness-banner";
+    if (after?.parentNode) after.after(host);
+    else document.body.appendChild(host);
+  }
+  const bot = state.bots.find((b) => b.id === state.selected);
+  const { provider } = resolvedHarness(bot);
+  if (state.harnessBannerDismissed[provider]) {
+    host.innerHTML = "";
+    host.hidden = true;
+    return;
+  }
+  const info = harnessInfo(provider);
+  if (!info || info.ready) {
+    host.innerHTML = "";
+    host.hidden = true;
+    return;
+  }
+  host.hidden = false;
+  host.innerHTML = `<div class="update-strip harness-strip">
+    <span><strong>${escapeHtml(info.label || provider)}</strong> is not ready.
+    <span class="muted">${escapeHtml(info.detail || "Not signed in.")}</span></span>
+    <button type="button" class="update-link" data-act="open-harness" data-id="${escapeHtml(provider)}">Open Settings</button>
+    <button type="button" class="update-x" data-act="dismiss-harness-banner" data-id="${escapeHtml(provider)}" title="Dismiss">×</button>
+  </div>`;
+}
+
 function harnessHtml(h) {
-  const p = h.provider || "grok-build";
-  const detected = (id) => {
-    const d = state.localHarness?.[id];
-    if (!d) return "";
-    if (d.ok) return ` · ${d.models.length} model${d.models.length === 1 ? "" : "s"}`;
-    return " · not detected";
-  };
-  const hint =
-    p === "claude"
-      ? "Uses Claude Code signed in on this Mac. It only drives the Bot computer, never your files."
-      : p === "codex"
-        ? "Uses Codex signed in on this Mac. It only drives the Bot computer, never your files."
-        : p === "ollama"
-          ? state.localHarness?.ollama?.ok
-            ? `Ollama on :11434 · ${state.localHarness.ollama.models.length} models`
-            : "Ollama not detected. Start the Ollama app."
-          : p === "lmstudio"
-            ? state.localHarness?.lmstudio?.ok
-              ? `LM Studio on :1234 · ${state.localHarness.lmstudio.models.length} models`
-              : "LM Studio not detected. Start the local server."
-          : p === "spacexai"
-            ? "SpaceXAI · api.x.ai"
-            : "Grok Build uses this Mac’s Grok login inside the Bot computer.";
-  const models = localModels(p);
+  const def = h.provider || "grok-build";
+  const tab = state.harnessTab || def;
+  const info = harnessInfo(tab);
+  const tone = statusTone(info);
+  const test = state.harnessTests[tab] || {};
+  const models = localModels(tab);
+  const modelValue =
+    tab === def && h.model
+      ? h.model
+      : info?.model || (tab === "grok-build" || tab === "spacexai" ? "grok-4.6" : "");
+  const tabs = harnessCatalog()
+    .map((item) => {
+      const row = harnessInfo(item.id);
+      const on = tab === item.id ? "on" : "";
+      const used = def === item.id ? " default" : "";
+      return `<button type="button" class="harness-tab ${on}${used}" data-act="harness-tab" data-id="${item.id}">
+        <i class="hdot ${statusTone(row)}"></i>
+        <span>${escapeHtml(item.label)}</span>
+        ${def === item.id ? `<em>default</em>` : ""}
+      </button>`;
+    })
+    .join("");
+  const modelField = models.length
+    ? `<select class="field" data-harness-text="model">${models
+        .map((m) => `<option value="${escapeHtml(m)}" ${modelValue === m ? "selected" : ""}>${escapeHtml(m)}</option>`)
+        .join("")}</select>`
+    : `<input class="field" data-harness-text="model" value="${escapeHtml(tab === def ? h.model || "" : modelValue)}" placeholder="${
+        tab === "claude" || tab === "codex" ? "CLI default" : tab === "hermes" || tab === "ollama" || tab === "lmstudio" ? "start LM Studio to list models" : "grok-4.6"
+      }" />`;
   return `<h2>Harness</h2>
-    <p class="muted" style="margin-top:-8px">Default for new Bots. Each Bot can override this in its settings.</p>
-    <div class="block">
-      <div class="card">
-        <div class="row"><div><div class="lbl">Provider</div><div class="sub">Claude and Codex use signed-in CLIs. Ollama and LM Studio are detected if they are running.</div></div>
-          <div class="seg wrap" role="tablist">
-            <button type="button" class="seg-btn ${p === "grok-build" ? "on" : ""}" data-act="set-harness" data-id="grok-build">Grok Build</button>
-            <button type="button" class="seg-btn ${p === "claude" ? "on" : ""}" data-act="set-harness" data-id="claude">Claude</button>
-            <button type="button" class="seg-btn ${p === "codex" ? "on" : ""}" data-act="set-harness" data-id="codex">Codex</button>
-            <button type="button" class="seg-btn ${p === "ollama" ? "on" : ""}" data-act="set-harness" data-id="ollama">Ollama${detected("ollama")}</button>
-            <button type="button" class="seg-btn ${p === "lmstudio" ? "on" : ""}" data-act="set-harness" data-id="lmstudio">LM Studio${detected("lmstudio")}</button>
-            <button type="button" class="seg-btn ${p === "spacexai" ? "on" : ""}" data-act="set-harness" data-id="spacexai">SpaceXAI</button>
+    <p class="muted" style="margin-top:-8px">One tab per engine. Check login, binary, and a test before you assign it to a Bot.</p>
+    <div class="harness-layout">
+      <div class="harness-tabs" role="tablist">${tabs}</div>
+      <div class="card harness-panel">
+        <div class="row">
+          <div>
+            <div class="lbl">${escapeHtml(info?.label || tab)}</div>
+            <div class="sub">${escapeHtml(info?.detail || "Checking this Mac…")}</div>
           </div>
+          <span class="hbadge ${tone}">${escapeHtml(statusLabel(info))}</span>
         </div>
-        <div class="row"><div class="lbl">Model</div>
-          ${
-            models.length
-              ? `<select class="field" style="max-width:280px" data-harness-text="model">${models
-                  .map((m) => {
-                    const value = models.includes(h.model) ? h.model : p === "grok-build" || p === "spacexai" ? "grok-4.6" : models[0];
-                    return `<option value="${escapeHtml(m)}" ${value === m ? "selected" : ""}>${escapeHtml(m)}</option>`;
-                  })
-                  .join("")}</select>`
-              : `<input class="field" style="max-width:280px" data-harness-text="model" value="${escapeHtml(
-                  p === "grok-build" || p === "spacexai" ? "grok-4.6" : h.model || "",
-                )}" placeholder="${p === "claude" || p === "codex" ? "default" : p === "ollama" || p === "lmstudio" ? "start the app to list models" : "grok-4.6"}" />`
-          }
-        </div>
+        <div class="row"><div class="lbl">Binary</div><span class="muted mono">${escapeHtml(info?.binary || "—")}</span></div>
+        ${info?.version ? `<div class="row"><div class="lbl">Version</div><span class="muted">${escapeHtml(info.version)}</span></div>` : ""}
         ${
-          p === "ollama" || p === "lmstudio"
-            ? `<div class="row"><div class="lbl">Detected</div><div class="sub">${
-                state.localHarness?.[p]?.ok
-                  ? escapeHtml((state.localHarness[p].models || []).join(", ") || "running, no chat models")
-                  : "Not running"
-              }</div>
-              <button type="button" class="pill" data-act="refresh-local-harness">Refresh</button></div>`
+          info?.extra?.email
+            ? `<div class="row"><div class="lbl">Account</div><span class="muted">${escapeHtml(info.extra.email)}</span></div>`
             : ""
         }
         ${
-          p === "spacexai" || p === "custom"
-            ? `<div class="row"><div><div class="lbl">API key</div><div class="sub">Leave blank to use XAI_API_KEY from the environment.</div></div>
+          info?.extra?.hermesProvider
+            ? `<div class="row"><div class="lbl">Hermes provider</div><span class="muted">${escapeHtml(info.extra.hermesProvider)}${
+                info.extra.hermesBaseUrl ? ` · ${escapeHtml(info.extra.hermesBaseUrl)}` : ""
+              }</span></div>`
+            : ""
+        }
+        <div class="row"><div class="lbl">Model</div>${modelField}</div>
+        ${
+          tab === "hermes"
+            ? `<div class="row"><div class="lbl">LM Studio</div><div class="sub">${
+                state.localHarness?.lmstudio?.ok
+                  ? `${(state.localHarness.lmstudio.models || []).length} models on :1234`
+                  : "Not running. Start LM Studio so Hermes can use Qwen 3.8."
+              }</div>
+              <button type="button" class="pill" data-act="refresh-harness-status">Refresh</button></div>`
+            : ""
+        }
+        ${
+          tab === "spacexai"
+            ? `<div class="row"><div><div class="lbl">API key</div><div class="sub">Leave blank to use XAI_API_KEY.</div></div>
           <input class="field" style="max-width:220px" type="password" data-harness-text="apiKey" placeholder="••••" /></div>`
             : ""
         }
-        <div class="row"><div><div class="lbl">Connection</div><div class="sub" id="harness-ping">${hint}</div></div>
-          <button class="pill" data-act="test-harness" type="button">Test</button>
+        ${
+          tab === "ollama" || tab === "lmstudio"
+            ? `<div class="row"><div class="lbl">Detected</div><div class="sub">${escapeHtml(
+                (info?.extra?.models || []).join(", ") || info?.detail || "—",
+              )}</div>
+              <button type="button" class="pill" data-act="refresh-harness-status">Refresh</button></div>`
+            : ""
+        }
+        ${
+          tab === "grok-build"
+            ? `<div class="row"><div><div class="lbl">Login</div><div class="sub">${
+                info?.signedIn
+                  ? "Grok CLI on this Mac. It drives the Bot computer through Sub8 tools, like Claude."
+                  : "Needs a browser login once."
+              }</div></div>
+              <button type="button" class="pill" data-act="grok-oauth">${info?.signedIn ? "Refresh session" : "Sign in"}</button></div>`
+            : ""
+        }
+        ${
+          info?.hint
+            ? `<div class="row"><div class="lbl">Fix</div><div class="sub">${escapeHtml(info.hint)}</div></div>`
+            : ""
+        }
+        <div class="row">
+          <div>
+            <div class="lbl">Test</div>
+            <div class="sub" id="harness-ping">${escapeHtml(test.note || "Sends a one-word ping. Logs stay on this tab.")}</div>
+          </div>
+          <button type="button" class="pill" data-act="test-harness" data-id="${escapeHtml(tab)}" ${test.busy ? "disabled" : ""}>${
+            test.busy ? "Testing…" : "Test"
+          }</button>
+        </div>
+        <pre class="harness-log" id="harness-log">${escapeHtml(test.log || "No test yet.")}</pre>
+        <div class="row">
+          <div class="sub">${def === tab ? "This is the default for new Bots." : "Does not switch the default until you say so."}</div>
+          ${
+            def === tab
+              ? ""
+              : `<button type="button" class="pill primary" data-act="harness-default" data-id="${escapeHtml(tab)}">Use as default</button>`
+          }
         </div>
       </div>
     </div>`;
@@ -1992,7 +2542,13 @@ function settingsHtml() {
                   : state.docker?.engine
                     ? `Running · ${escapeHtml(state.docker.engine)}`
                     : "Required. Each Bot’s computer is a Linux desktop in Docker."
-              }</div></div><span class="muted">${dockerMissing() ? "Not ready" : "Ready"}</span></div>
+              }</div></div>${
+                dockerMissing()
+                  ? `<button type="button" class="pill primary" data-act="recover-docker" ${state.dockerBusy ? "disabled" : ""}>${
+                      state.dockerBusy ? "Recovering…" : "Recover"
+                    }</button>`
+                  : `<span class="muted">Ready</span>`
+              }</div>
               <div class="row"><div><div class="lbl">This Bot's desktop</div><div class="sub">${
                 state.bots.find((b) => b.id === state.selected)?.vm?.status === "running"
                   ? `Running · stream port ${state.bots.find((b) => b.id === state.selected)?.vm?.novncPort || "—"}`
@@ -2257,6 +2813,10 @@ function bindDelegated() {
       paintDockerGate();
       return;
     }
+    if (act === "recover-docker") {
+      recoverDocker();
+      return;
+    }
     if (act === "close-modal") {
       state.modal = null;
       state.botEdit = false;
@@ -2265,6 +2825,10 @@ function bindDelegated() {
     if (act === "sec") {
       state.section = el.dataset.id;
       if (el.dataset.id === "harness") {
+        state.harnessTab = state.settings?.harness?.provider || state.harnessTab || "grok-build";
+        loadHarnessStatus().then(() => {
+          if (state.modal === "settings" && state.section === "harness") paintModal();
+        });
         const h = state.settings?.harness;
         if (h && (h.provider === "grok-build" || h.provider === "spacexai") && !grokModels().includes(h.model)) {
           const harness = { ...h, model: "grok-4.6", baseUrl: "https://api.x.ai/v1" };
@@ -2379,13 +2943,77 @@ function bindDelegated() {
       return;
     }
     if (act === "delete-bot") {
-      const id = el.dataset.id;
-      if (state.confirmDeleteId === id) {
-        deleteBot(id);
-        return;
-      }
-      state.confirmDeleteId = id;
+      state.deleteBotId = el.dataset.id;
+      state.modal = "delete-bot";
+      state.botEdit = false;
+      loadComputers().then(() => render());
       render();
+      return;
+    }
+    if (act === "delete-bot-go") {
+      deleteBot(state.deleteBotId, el.dataset.keep !== "0");
+      return;
+    }
+    if (act === "computers") {
+      state.modal = "computers";
+      state.computerAttach = false;
+      loadComputers().then(() => {
+        if (!state.computerId) state.computerId = state.computers[0]?.id || null;
+        paintModal();
+        refreshComputerPreviews();
+      });
+      render();
+      return;
+    }
+    if (act === "computer-view") {
+      state.computerView = el.dataset.id === "list" ? "list" : "grid";
+      try {
+        localStorage.setItem("sub8.computerView", state.computerView);
+      } catch {
+        /* ignore */
+      }
+      paintModal();
+      return;
+    }
+    if (act === "open-computer-bot") {
+      const id = el.dataset.id;
+      if (!id) return;
+      state.modal = null;
+      state.computerAttach = false;
+      rememberSelected(id);
+      state.picker = false;
+      state.botEdit = false;
+      state.confirmDeleteId = null;
+      state.humanControl = false;
+      const picked = state.bots.find((b) => b.id === id);
+      if (picked?.unread) {
+        picked.unread = false;
+        api(`/api/bots/${picked.id}`, { method: "PATCH", body: { unread: false } });
+      }
+      render();
+      loadBotHistory(id);
+      return;
+    }
+    if (act === "computer-select") {
+      state.computerId = el.dataset.id;
+      state.computerAttach = false;
+      paintModal();
+      return;
+    }
+    if (act === "computer-attach-open") {
+      state.computerId = el.dataset.id;
+      state.computerAttach = true;
+      paintModal();
+      return;
+    }
+    if (act === "computer-attach") {
+      computerAction(el.dataset.id, "attach", { botId: el.dataset.bot });
+      return;
+    }
+    if (act === "computer-act") {
+      const doit = el.dataset.do;
+      if (doit === "destroy" && !confirm("Destroy this computer and its files? This cannot be undone.")) return;
+      computerAction(el.dataset.id, doit);
       return;
     }
     if (act === "reset-vm") {
@@ -2413,8 +3041,16 @@ function bindDelegated() {
       dismissUpdateBanner();
       return;
     }
-    if (act === "reload-vm") {
+    if (act === "reload-vm" || act === "desk-start-new") {
       resumeVm();
+      return;
+    }
+    if (act === "refresh-stream") {
+      reconnectStream();
+      return;
+    }
+    if (act === "reboot-vm") {
+      rebootVm();
       return;
     }
     if (act === "open-vm-browser") {
@@ -2610,7 +3246,12 @@ function bindDelegated() {
       const id = el.dataset.id;
       state.ctx = null;
       paintCtxMenu();
-      if (id && confirm("Delete this Bot and its computer?")) deleteBot(id);
+      if (id) {
+        state.deleteBotId = id;
+        state.modal = "delete-bot";
+        loadComputers().then(() => render());
+        render();
+      }
       return;
     }
     if (act === "set-pref") {
@@ -2623,7 +3264,33 @@ function bindDelegated() {
       });
       return;
     }
-    if (act === "set-harness") {
+    if (act === "harness-tab") {
+      state.harnessTab = el.dataset.id;
+      paintModal();
+      return;
+    }
+    if (act === "refresh-harness-status") {
+      loadHarnessStatus().then(() => {
+        paintModal();
+        paintHarnessBanner();
+      });
+      return;
+    }
+    if (act === "open-harness") {
+      state.modal = "settings";
+      state.section = "harness";
+      state.harnessTab = el.dataset.id || state.harnessTab;
+      render();
+      loadHarnessStatus().then(() => paintModal());
+      return;
+    }
+    if (act === "dismiss-harness-banner") {
+      const id = el.dataset.id;
+      if (id) state.harnessBannerDismissed[id] = true;
+      paintHarnessBanner();
+      return;
+    }
+    if (act === "set-harness" || act === "harness-default") {
       const provider = el.dataset.id;
       const harness = { ...(state.settings?.harness || {}), provider };
       if (provider === "ollama") {
@@ -2632,7 +3299,7 @@ function bindDelegated() {
       } else if (provider === "lmstudio") {
         harness.baseUrl = "http://127.0.0.1:1234/v1";
         harness.model = pickModelForProvider("lmstudio", harness.model);
-      } else if (provider === "claude" || provider === "codex") {
+      } else if (provider === "claude" || provider === "codex" || provider === "hermes") {
         harness.model = "";
         harness.baseUrl = "https://api.x.ai/v1";
       } else {
@@ -2641,11 +3308,14 @@ function bindDelegated() {
         harness.apiKeyEnv = "XAI_API_KEY";
       }
       state.settings = { ...(state.settings || {}), harness };
+      state.harnessTab = provider;
       paintModal();
       api("/api/settings", { method: "PUT", body: { harness } }).then(async () => {
         await refreshSettings();
+        await loadHarnessStatus();
         paintModal();
         render();
+        paintHarnessBanner();
         if (provider === "grok-build") {
           if (state.hasGrokAuth === false) {
             state.grokAuthAsk = true;
@@ -2679,7 +3349,7 @@ function bindDelegated() {
       return;
     }
     if (act === "test-harness") {
-      testHarness();
+      testHarness(el.dataset.id);
       return;
     }
     if (act === "grok-oauth") {
@@ -2715,6 +3385,17 @@ function bindDelegated() {
       await refreshSettings();
     }
     if (el.dataset.harnessText) {
+      const tab = state.harnessTab || state.settings?.harness?.provider;
+      if (tab === "hermes" && el.dataset.harnessText === "model") {
+        await api("/api/harness/hermes", { method: "PUT", body: { model: el.value } });
+        if (state.harnessStatus?.harnesses?.hermes) state.harnessStatus.harnesses.hermes.model = el.value;
+        await loadHarnessStatus();
+        paintModal();
+        return;
+      }
+      if (tab && tab !== (state.settings?.harness?.provider || "grok-build") && el.dataset.harnessText === "model") {
+        return;
+      }
       const harness = { ...state.settings.harness, [el.dataset.harnessText]: el.value };
       await api("/api/settings", { method: "PUT", body: { harness } });
       await refreshSettings();
@@ -2754,6 +3435,21 @@ function bindDelegated() {
     if (el.id === "bm") {
       const bot = state.bots.find((b) => b.id === state.selected);
       if (bot) bot.harness = { ...(bot.harness || {}), model: el.value };
+    }
+    if (el.dataset.computerName) {
+      const id = el.dataset.computerName;
+      const name = el.value.trim();
+      if (!name) return;
+      api(`/api/computers/${id}`, { method: "PATCH", body: { name } }).then(() => loadComputers());
+    }
+    if (el.dataset.computerSort != null || el.classList.contains("csort")) {
+      state.computerSort = el.value || "name";
+      try {
+        localStorage.setItem("sub8.computerSort", state.computerSort);
+      } catch {
+        /* ignore */
+      }
+      paintModal();
     }
   });
   document.addEventListener("click", async (e) => {
@@ -2804,17 +3500,36 @@ async function startGrokOAuth() {
   }
 }
 
-async function testHarness() {
-  const note = $("#harness-ping");
-  if (note) note.textContent = "Testing harness…";
+async function testHarness(provider) {
+  const id = provider || state.harnessTab || state.settings?.harness?.provider || "grok-build";
+  state.harnessTests[id] = { ...(state.harnessTests[id] || {}), busy: true, note: "Testing…" };
+  if (state.modal === "settings" && state.section === "harness") paintModal();
   try {
-    const r = await api("/api/harness/test", { method: "POST", body: { botId: state.selected } });
+    const r = await api("/api/harness/test", { method: "POST", body: { botId: state.selected, provider: id } });
     const line = r.ok
-      ? `OK · ${r.provider} · ${r.model} · ${r.sample || "PONG"}`
-      : `Failed · ${r.error || r.sample || "no reply"}`;
-    if (note) note.textContent = line;
+      ? `OK · ${r.provider || id} · ${r.model || "default"}`
+      : `Failed · ${r.error || "no reply"}`;
+    state.harnessTests[id] = {
+      busy: false,
+      note: line,
+      log: String(r.log || r.sample || r.error || "").trim() || line,
+      ok: Boolean(r.ok),
+      at: r.at || Date.now(),
+    };
   } catch (err) {
-    if (note) note.textContent = `Failed · ${err.message}`;
+    state.harnessTests[id] = { busy: false, note: `Failed · ${err.message}`, log: err.message, ok: false };
+  }
+  if (state.modal === "settings" && state.section === "harness") paintModal();
+}
+
+async function loadHarnessStatus() {
+  try {
+    state.harnessStatus = await api("/api/harness/status");
+    if (state.harnessStatus?.local) state.localHarness = { ...state.localHarness, ...state.harnessStatus.local };
+    paintHarnessBanner();
+    return state.harnessStatus;
+  } catch {
+    return null;
   }
 }
 
@@ -3018,6 +3733,20 @@ async function toggleDictate() {
   setTimeout(() => dictateCtl?.stop(), 30_000);
 }
 
+function sizeComposer() {
+  const ta = $("#send")?.q;
+  if (!ta || ta.tagName !== "TEXTAREA") return;
+  ta.style.height = "auto";
+  ta.style.height = `${Math.min(160, Math.max(24, ta.scrollHeight))}px`;
+}
+
+function onComposerKey(e) {
+  if (e.key !== "Enter") return;
+  if (e.shiftKey) return;
+  e.preventDefault();
+  $("#send")?.requestSubmit?.() || $("#send")?.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+}
+
 async function onSend(e) {
   e.preventDefault();
   const input = e.target.q;
@@ -3027,6 +3756,8 @@ async function onSend(e) {
   input.value = "";
   state.draft = "";
   state.attachments = [];
+  state.chatFollow = true;
+  sizeComposer();
   const images = files.filter((f) => f.dataUrl).map((f) => f.dataUrl);
   const extras = files
     .filter((f) => f.text)
@@ -3170,6 +3901,14 @@ async function confirmCreateBot() {
     state.modal = null;
     state.picker = false;
     await refresh();
+    const live = state.bots.find((b) => b.id === bot.id) || bot;
+    if (live && !live.vm?.detached) {
+      if (!live.vm?.status || live.vm.status === "idle") {
+        live.vm = { ...(live.vm || {}), status: "starting", hint: "Starting the computer…" };
+      }
+      attachLiveFrame(live);
+      if (!live.vm?.novncPort && live.vm?.status !== "starting") resumeVm().catch(() => {});
+    }
   } catch (err) {
     if (btn) {
       btn.disabled = false;
@@ -3228,16 +3967,18 @@ async function toggleRoutine(id) {
   await refresh();
 }
 
-async function deleteBot(id) {
+async function deleteBot(id, keepComputer = true) {
   if (!id) return;
   forgottenBots.add(id);
   state.bots = state.bots.filter((b) => b.id !== id);
   state.confirmDeleteId = null;
+  state.deleteBotId = null;
   state.botEdit = false;
+  state.modal = null;
   if (state.selected === id) rememberSelected(state.bots.find((b) => !b.hidden)?.id || null);
   render();
   try {
-    await api(`/api/bots/${id}`, { method: "DELETE" });
+    await api(`/api/bots/${id}`, { method: "DELETE", body: { keepComputer: Boolean(keepComputer) } });
   } catch (err) {
     forgottenBots.delete(id);
     window.alert(err?.message || "Could not delete the bot.");
@@ -3245,6 +3986,102 @@ async function deleteBot(id) {
     return;
   }
   await refresh();
+  loadComputers();
+}
+
+async function refreshComputerPreviews() {
+  try {
+    await api("/api/computers/previews", { method: "POST", body: {} });
+    state.previewTick = Date.now();
+    if (state.modal === "computers") paintModal();
+  } catch {
+    /* docker may be busy */
+  }
+}
+
+async function recoverDocker() {
+  if (state.dockerBusy) return;
+  state.dockerBusy = true;
+  paintDockerGate();
+  if (state.modal === "computers" || state.modal === "settings") paintModal();
+  try {
+    const r = await api("/api/docker/recover", { method: "POST", body: {} });
+    if (r.docker) state.docker = r.docker;
+    if (Array.isArray(r.computers)) state.computers = r.computers;
+    if (r.ok) state.dockerGateDismissed = false;
+    await refresh();
+    await loadComputers();
+    if (!r.ok) window.alert(r.docker?.hint || r.error || "Docker is still not answering.");
+  } catch (err) {
+    window.alert(err?.message || "Could not recover Docker.");
+  } finally {
+    state.dockerBusy = false;
+    paintDockerGate();
+    if (state.modal === "computers" || state.modal === "settings") paintModal();
+  }
+}
+
+async function loadComputers() {
+  try {
+    const r = await api("/api/computers");
+    state.computers = r.computers || [];
+    if (r.docker) {
+      const was = dockerMissing();
+      state.docker = r.docker;
+      if (was !== dockerMissing()) paintDockerGate();
+    }
+    if (state.computerId && !state.computers.some((c) => c.id === state.computerId)) {
+      state.computerId = state.computers[0]?.id || null;
+    }
+    if (state.modal === "computers") paintModal();
+    const bar = $("#titlebar");
+    if (bar) delete bar.dataset.stamp;
+    paintTitle(state.bots.find((b) => b.id === state.selected));
+    return state.computers;
+  } catch {
+    return state.computers;
+  }
+}
+
+function paintComputerStats() {
+  for (const [name, st] of Object.entries(state.computerStats || {})) {
+    document.querySelectorAll(`[data-cmem="${CSS.escape(name)}"]`).forEach((el) => {
+      const pct = Math.max(0, Math.min(100, Number(st.memPct) || 0));
+      const fill = el.querySelector("[data-cmem-fill]");
+      const lab = el.querySelector("[data-cmem-label]");
+      if (fill) {
+        fill.style.width = `${pct}%`;
+        fill.classList.toggle("hot", pct >= 85);
+        fill.classList.toggle("warm", pct >= 60 && pct < 85);
+        fill.classList.toggle("ok", pct < 60);
+      }
+      if (lab) lab.textContent = (st.mem || "—").replace(/iB$/i, "B");
+    });
+  }
+}
+
+async function loadComputerStats() {
+  if (state.modal !== "computers") return;
+  try {
+    const r = await api("/api/computers/stats");
+    state.computerStats = r.stats || {};
+    paintComputerStats();
+  } catch {
+    /* ignore */
+  }
+}
+
+async function computerAction(id, action, body = {}) {
+  try {
+    const r = await api(`/api/computers/${id}/${action}`, { method: "POST", body });
+    state.computers = r.computers || state.computers;
+    state.computerAttach = false;
+    if (state.modal === "computers") paintModal();
+    await refresh();
+    loadComputerStats();
+  } catch (err) {
+    window.alert(err?.message || "That computer action failed.");
+  }
 }
 
 async function saveBot() {
@@ -3300,27 +4137,76 @@ async function resetVm() {
 function reconnectStream() {
   const bot = state.bots.find((b) => b.id === state.selected);
   if (!bot) return;
-  liveFrameKey = null;
-  if (bot.vm?.novncPort) mountLiveFrame(bot);
+  const wrap = $("#screen-wrap");
+  const iframe = wrap?.querySelector("iframe");
+  const still = wrap?.querySelector(".screen-still");
+  if (still) still.classList.remove("hidden");
+  if (iframe && bot.vm?.novncPort) {
+    iframe.src = streamUrl(bot);
+    if (still) refreshStill(still, bot.id);
+  } else if (bot.vm?.novncPort) {
+    liveFrameKey = null;
+    mountLiveFrame(bot);
+  }
   const label = $("#screen-label");
   if (label) label.textContent = `${bot.name}'s screen`;
+}
+
+async function rebootVm() {
+  if (!state.selected) return;
+  const bot = state.bots.find((b) => b.id === state.selected);
+  if (!bot) return;
+  bot.vm = { ...(bot.vm || {}), status: "starting", hint: "Rebooting the computer…", error: null };
+  paintLivePane(bot);
+  attachLiveFrame(bot);
+  try {
+    const next = await api(`/api/bots/${bot.id}/vm`, { method: "POST", body: { action: "reboot" } });
+    adoptBot(next);
+    liveFrameKey = null;
+    const live = state.bots.find((b) => b.id === bot.id) || next;
+    attachLiveFrame(live);
+    paintLivePane(live);
+  } catch (err) {
+    bot.vm = { ...(bot.vm || {}), status: "error", error: err.message };
+    paintLivePane(bot);
+    window.alert(err.message || "Could not reboot the computer.");
+  }
 }
 
 async function resumeVm() {
   if (!state.selected) return;
   if (dockerMissing()) {
-    const bot = state.bots.find((b) => b.id === state.selected);
-    if (bot) {
-      bot.vm = { ...(bot.vm || {}), status: "error", error: state.docker.hint };
-      paintLivePane(bot);
+    await recoverDocker();
+    if (dockerMissing()) {
+      paintDockerGate();
+      const bot = state.bots.find((b) => b.id === state.selected);
+      if (bot) {
+        bot.vm = { ...(bot.vm || {}), status: "error", error: state.docker.hint };
+        paintLivePane(bot);
+      }
+      return;
     }
-    return;
   }
-  await api(`/api/bots/${state.selected}/vm`, { method: "POST", body: { action: "start" } });
-  await refresh();
-  liveFrameKey = null;
   const bot = state.bots.find((b) => b.id === state.selected);
-  if (bot) mountLiveFrame(bot);
+  if (bot) {
+    bot.vm = { ...(bot.vm || {}), status: "starting", error: null, hint: "Starting the computer…" };
+    paintLivePane(bot);
+  }
+  try {
+    await api(`/api/bots/${state.selected}/vm`, { method: "POST", body: { action: "start" } });
+    await refresh();
+    liveFrameKey = null;
+    const live = state.bots.find((b) => b.id === state.selected);
+    if (live) mountLiveFrame(live);
+  } catch (err) {
+    const live = state.bots.find((b) => b.id === state.selected);
+    if (live) {
+      live.vm = { ...(live.vm || {}), status: "error", error: err.message };
+      paintLivePane(live);
+    } else {
+      window.alert(err.message || "Could not start the computer.");
+    }
+  }
 }
 
 async function refresh() {
@@ -3343,6 +4229,7 @@ async function refreshSettings() {
   applyTheme();
   paintDockerGate();
   await loadLocalHarness();
+  loadHarnessStatus().catch(() => {});
 }
 
 async function loadLocalHarness() {
@@ -3384,7 +4271,7 @@ function paintGrokAuth() {
         <p class="muted">${
           pending
             ? "Finish sign-in in your Mac browser. This sheet closes when Grok is ready."
-            : "Grok Build needs a login on this Mac. Sign in once in your browser — that session is copied into every Bot computer."
+            : "Grok Build needs a login on this Mac. Sign in once in your browser."
         }</p>
         <div class="routine-editor-foot">
           <button type="button" class="pill" data-act="grok-auth-later">Later</button>
@@ -3409,7 +4296,7 @@ async function setHumanControl(on) {
   paintControlChrome();
   if (on) {
     await stopTurn();
-    state.teach = state.teach === "recording" ? state.teach : state.teach;
+    reconnectStream();
   }
   try {
     await api(`/api/bots/${id}/control`, { method: "POST", body: { on } });
@@ -3451,6 +4338,9 @@ function listen() {
       syncBots(JSON.parse(e.data));
       render();
     });
+    es.addEventListener("computers", () => {
+      loadComputers();
+    });
     es.addEventListener("routine", (e) => {
       const { botId, routine } = JSON.parse(e.data);
       if (!routine?.id) return;
@@ -3480,6 +4370,7 @@ function listen() {
         }
         syncEditorChips(selected);
         refreshAvatars();
+        if (bot.id === selected.id && (state.showComputer || state.deskSize === "full")) attachLiveFrame(selected);
       } else render();
     });
     es.addEventListener("control", (e) => {
@@ -3533,11 +4424,29 @@ function listen() {
       state.logs.push(m);
       const bot = state.bots.find((b) => b.id === botId);
       if (!bot) return;
-      bot.vm = { ...(bot.vm || {}), hint: m, status: bot.vm?.status === "running" ? bot.vm.status : "starting" };
+      const setup = /Setting up the computer \((\d+)\/(\d+)\):\s*(.+)/.exec(m);
+      if (setup) {
+        bot.vm = {
+          ...(bot.vm || {}),
+          hint: m,
+          status: "starting",
+          setup: { step: Number(setup[1]), total: Number(setup[2]), label: setup[3].trim(), ready: false },
+        };
+      } else if (/Computer is ready/i.test(m)) {
+        bot.vm = {
+          ...(bot.vm || {}),
+          hint: "",
+          status: "running",
+          setup: { step: 4, total: 4, label: "Ready", ready: true },
+        };
+      } else {
+        const keep = bot.vm?.setup?.ready === false ? false : bot.vm?.status === "running" || bot.vm?.status === "paused";
+        bot.vm = { ...(bot.vm || {}), hint: m, status: keep ? bot.vm.status || "running" : "starting" };
+      }
       if (botId === state.selected) {
         paintScreenStatus(bot);
         const label = $("#screen-label");
-        if (label && bot.vm.status === "starting") label.textContent = m;
+        if (label && bot.vm.status === "starting" && !bot.vm.novncPort) label.textContent = m;
       }
     });
     es.addEventListener("vm-status", (e) => {
@@ -3551,7 +4460,8 @@ function listen() {
       const { botId, url } = JSON.parse(e.data);
       if (botId !== state.selected) return;
       const still = $(".screen-still");
-      if (still && url) still.src = url;
+      if (!still) return;
+      if (url) refreshStill(still, botId);
     });
     es.onerror = () => {
       const label = $("#screen-label");
@@ -3584,7 +4494,11 @@ function watchStream() {
   const label = $("#screen-label");
   if (label) label.textContent = `${bot.name}'s screen`;
   const vm = bot.vm || {};
-  const needsStart = vm.status !== "running" && vm.status !== "starting";
+  if (needsDesk(bot)) {
+    attachLiveFrame(bot);
+    return;
+  }
+  const needsStart = !["running", "starting", "paused", "exited", "stopped"].includes(vm.status || "");
   if (needsStart && !startingVm) {
     startingVm = true;
     resumeVm()
@@ -3602,7 +4516,11 @@ function watchStream() {
         if (was !== dockerMissing()) attachLiveFrame(bot);
       }
       if (h.ok && $("#screen-wrap iframe")) return;
-      if (!h.running && !startingVm) {
+      if (needsDesk(bot)) {
+        attachLiveFrame(bot);
+        return;
+      }
+      if (!h.running && !startingVm && !["paused", "exited", "stopped"].includes(vm.status || "")) {
         startingVm = true;
         resumeVm()
           .catch(() => {})
@@ -3614,6 +4532,10 @@ function watchStream() {
       if (bot.vm?.novncPort) scheduleStreamRetry(bot, 400);
     })
     .catch(() => {
+      if (needsDesk(bot)) {
+        attachLiveFrame(bot);
+        return;
+      }
       if (!startingVm) {
         startingVm = true;
         resumeVm()
@@ -3632,6 +4554,22 @@ function watchStream() {
   await refresh();
   listen();
   render();
+  loadComputers().catch(() => {});
+  setInterval(() => {
+    if (state.modal === "computers") loadComputerStats();
+  }, 4000);
+  if (window.sub8Desktop?.onPausing) {
+    window.sub8Desktop.onPausing(() => {
+      state.pausingQuit = true;
+      let host = $("#quit-pause");
+      if (!host) {
+        host = document.createElement("div");
+        host.id = "quit-pause";
+        document.body.appendChild(host);
+      }
+      host.innerHTML = `<div class="overlay"><div class="modal" style="height:auto;width:min(400px,90%)"><div class="sbody" style="width:100%"><h2>Pausing computers…</h2><p class="muted">They'll wake when you open Sub8 again.</p></div></div></div>`;
+    });
+  }
   document.documentElement.dataset.appReady = "1";
   checkForUpdate({ silent: true }).catch(() => {});
   if (wantsGrokBuild()) {
