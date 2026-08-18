@@ -6,6 +6,7 @@ const OWNER = "sub8bot";
 const REPO = "Sub8";
 const LATEST = `https://api.github.com/repos/${OWNER}/${REPO}/releases/latest`;
 const RELEASES_PAGE = `https://github.com/${OWNER}/${REPO}/releases`;
+export const SITE_URL = "https://sub8.grok.me";
 
 export function appVersion() {
   try {
@@ -33,11 +34,11 @@ export function isNewer(latest, current) {
   return false;
 }
 
-function pickAsset(assets = [], platform = process.platform, arch = process.arch) {
+export function pickAsset(assets = [], platform = process.platform, arch = process.arch) {
   const names = assets
     .map((a) => ({
       name: String(a.name || ""),
-      url: a.browser_download_url,
+      url: a.browser_download_url || a.url,
     }))
     .filter((a) => a.url && !/\.blockmap$|\.sha256$/i.test(a.name));
   const lower = (s) => s.toLowerCase();
@@ -83,6 +84,7 @@ export async function checkForAppUpdate({
         updateAvailable: false,
         releaseUrl: RELEASES_PAGE,
         downloadUrl: null,
+        siteUrl: SITE_URL,
         error: `GitHub returned HTTP ${res.status}`,
       };
     }
@@ -90,16 +92,20 @@ export async function checkForAppUpdate({
     const tag = data.tag_name || "";
     const latest = normalizeVersion(tag);
     const asset = pickAsset(data.assets, platform, arch);
+    const newer = Boolean(latest && isNewer(latest, current));
+    const ready = Boolean(asset?.url);
     return {
       currentVersion: normalizeVersion(current),
       latestVersion: latest || null,
-      updateAvailable: Boolean(latest && isNewer(latest, current)),
+      // Never alert on a published tag with no installer yet.
+      updateAvailable: newer && ready,
       tagName: tag,
       releaseName: data.name || tag,
       releaseUrl: data.html_url || RELEASES_PAGE,
-      downloadUrl: asset?.url || `${RELEASES_PAGE}/latest`,
+      downloadUrl: asset?.url || null,
       downloadName: asset?.name || null,
-      error: null,
+      siteUrl: SITE_URL,
+      error: newer && !ready ? "A newer version is tagged, but the installer is not up yet." : null,
     };
   } catch (err) {
     return {
@@ -108,6 +114,7 @@ export async function checkForAppUpdate({
       updateAvailable: false,
       releaseUrl: RELEASES_PAGE,
       downloadUrl: null,
+      siteUrl: SITE_URL,
       error: err.message || String(err),
     };
   }
