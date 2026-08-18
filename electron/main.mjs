@@ -209,24 +209,44 @@ function focusMainWindow() {
 }
 
 async function setupAutoUpdate() {
-  if (!app.isPackaged) return;
+  ipcMain.handle("app-version", () => app.getVersion());
+  if (!app.isPackaged) {
+    ipcMain.handle("update-check", async () => ({
+      ok: true,
+      packaged: false,
+      updateAvailable: false,
+      currentVersion: app.getVersion(),
+    }));
+    return;
+  }
   let autoUpdater;
   try {
     ({ autoUpdater } = await import("electron-updater"));
   } catch {
+    ipcMain.handle("update-check", async () => ({
+      ok: false,
+      error: "Updater unavailable",
+      currentVersion: app.getVersion(),
+    }));
     return;
   }
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
   ipcMain.handle("update-check", async () => {
     try {
-      const result = await autoUpdater.checkForUpdates();
+      const result = await Promise.race([
+        autoUpdater.checkForUpdates(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Update check timed out")), 12_000)),
+      ]);
       const info = result?.updateInfo;
+      const latest = String(info?.version || "").replace(/^v/i, "");
+      const current = app.getVersion();
       return {
         ok: true,
-        updateAvailable: Boolean(info?.version && info.version !== app.getVersion()),
-        latestVersion: info?.version || null,
-        currentVersion: app.getVersion(),
+        packaged: true,
+        updateAvailable: Boolean(latest && latest !== current),
+        latestVersion: latest || null,
+        currentVersion: current,
       };
     } catch (err) {
       return { ok: false, error: String(err?.message || err), currentVersion: app.getVersion() };
