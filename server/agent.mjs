@@ -822,6 +822,20 @@ function looksLikeDesktopTask(text) {
   );
 }
 
+export function loginUrlFor(acc, needle) {
+  const site = String(acc?.site || "").trim();
+  if (/^https?:\/\//i.test(site) && !/mail\.google\.com\/?$/i.test(site)) return site;
+  if (/gmail|mail\.google/i.test(`${site} ${needle}`)) {
+    return "https://accounts.google.com/ServiceLogin?service=mail&continue=https://mail.google.com/mail/";
+  }
+  if (/^https?:\/\//i.test(site)) return site;
+  if (site) return site.includes(".") ? `https://${site.replace(/^\/+/, "")}` : "";
+  if (/\bgmail\b/i.test(needle)) {
+    return "https://accounts.google.com/ServiceLogin?service=mail&continue=https://mail.google.com/mail/";
+  }
+  return "";
+}
+
 export function loginNeedle(text) {
   const t = String(text || "").trim();
   if (!/\b(log\s*in|sign\s*in|signin|sign into)\b/i.test(t)) return "";
@@ -840,15 +854,6 @@ export function scoreVaultAccount(acc, needle) {
   if (host && blob.includes(host)) return 2;
   if (blob.includes(n)) return 2;
   return 0;
-}
-
-function loginUrlFor(acc, needle) {
-  const site = String(acc?.site || "").trim();
-  if (/^https?:\/\//i.test(site)) return site;
-  if (/gmail|mail\.google/i.test(`${site} ${needle}`)) return "https://mail.google.com";
-  if (site) return site.includes(".") ? `https://${site.replace(/^\/+/, "")}` : "";
-  if (/\bgmail\b/i.test(needle)) return "https://mail.google.com";
-  return "";
 }
 
 function emitActivity(bot, emit, name, action, summary) {
