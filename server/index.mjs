@@ -1120,11 +1120,13 @@ async function runUserTurn(botId, text, hidden, images = [], opts = {}) {
     const setup = bot.vm?.setup;
     if (!chromeOk || bot.vm?.status === "starting" || (setup && setup.ready === false)) {
       const step =
-        setup?.step && setup.total ? ` (${setup.step}/${setup.total}: ${setup.label || "starting"})` : "";
+        !setup?.ready && setup?.step && setup.total ? ` (${setup.step}/${setup.total}: ${setup.label || "starting"})` : "";
       const waitMsg = {
         id: `a${Date.now()}wait`,
         role: "assistant",
-        content: `The computer is still setting up${step}. I'll start as soon as Chrome is ready.`,
+        content: setup?.ready
+          ? "Chrome is not ready yet. I'll start as soon as it is."
+          : `The computer is still setting up${step}. I'll start as soon as Chrome is ready.`,
         ts: Date.now(),
       };
       bot.messages = bot.messages || [];
@@ -1341,7 +1343,8 @@ async function resumePausedByQuit() {
 async function ensureDesktops() {
   const dock = await vm.dockerStatus();
   if (!dock.ok) return dock;
-  const bots = await store.loadBots();
+  const [bots, list] = await Promise.all([store.loadBots(), vm.listLocalbotStates()]);
+  if (list.stuck) return dock;
   for (const bot of bots) {
     if (deletedIds.has(bot.id) || isHumanControl(bot.id) || provisioning.has(bot.id)) continue;
     if (!bot.vm?.computerId) {
@@ -1351,6 +1354,11 @@ async function ensureDesktops() {
     }
     const st = bot.vm?.status;
     const name = bot.vm?.container;
+    const liveBox = name ? list.states.get(name) : null;
+    if (name && (st === "running" || st === "starting") && liveBox && !liveBox.running && !liveBox.paused && liveBox.exists) {
+      provision(bot.id).catch((err) => console.error("ensure desktop", bot.id, err));
+      continue;
+    }
     if (st === "starting" || (bot.vm?.setup && bot.vm.setup.ready === false)) {
       if (name && (await vm.chromeReady(name))) {
         const live = await store.patchBot(bot.id, (b) => {
@@ -1376,7 +1384,7 @@ async function ensureDesktops() {
   return dock;
 }
 
-app.listen(PORT, "127.0.0.1", async () => {
+const httpServer = app.listen(PORT, "127.0.0.1", async () => {
   console.log(`Sub8 http://127.0.0.1:${PORT}`);
   try {
     const bots = await store.loadBots();
@@ -1402,4 +1410,8 @@ app.listen(PORT, "127.0.0.1", async () => {
     ensureDesktops().catch((err) => console.error("ensureDesktops", err));
   }, 12_000);
   vault.startVaultBridge(() => store.loadBots());
+});
+httpServer.on("error", (err) => {
+  console.error(`listen ${PORT}`, err.message || err);
+  process.exit(1);
 });

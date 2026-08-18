@@ -6,6 +6,7 @@ export HOME=/config
 wait_apt() {
   for _ in $(seq 1 30); do
     if ! fuser /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock >/dev/null 2>&1; then
+      dpkg --configure -a >/dev/null 2>&1 || true
       return 0
     fi
     sleep 2
@@ -29,8 +30,10 @@ need_chrome=0
 command -v google-chrome >/dev/null 2>&1 || command -v google-chrome-stable >/dev/null 2>&1 || need_chrome=1
 # RustDesk and Grok Build CLI are not installed by default.
 
-apt_retry wget ca-certificates curl desktop-file-utils xdg-utils fonts-liberation libnss3 libatk-bridge2.0-0 libgtk-3-0 libxss1 libasound2t64 libasound2 \
-  || apt_retry wget ca-certificates curl desktop-file-utils xdg-utils fonts-liberation
+if [ "$need_chrome" = 1 ]; then
+  apt_retry wget ca-certificates curl desktop-file-utils xdg-utils fonts-liberation libnss3 libatk-bridge2.0-0 libgtk-3-0 libxss1 libasound2t64 libasound2 \
+    || apt_retry wget ca-certificates curl desktop-file-utils xdg-utils fonts-liberation
+fi
 
 arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
 case "$arch" in
@@ -48,6 +51,9 @@ fetch_deb() {
 
 if [ "$need_chrome" = 1 ]; then
   echo "Installing Google Chrome ($arch)…"
+  if dpkg -l google-chrome-stable 2>/dev/null | grep -Eq '^.[FHU]'; then
+    dpkg --remove --force-remove-reinstreq google-chrome-stable >/dev/null 2>&1 || true
+  fi
   fetch_deb "https://dl.google.com/linux/direct/${chrome_deb}" /tmp/chrome.deb
   wait_apt
   apt-get install -y -qq --fix-missing /tmp/chrome.deb || { dpkg -i /tmp/chrome.deb || true; wait_apt; apt-get install -f -y -qq; }
