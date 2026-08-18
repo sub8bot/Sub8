@@ -75,7 +75,12 @@ fi
 mkdir -p /config/Desktop /usr/share/applications
 cat > /usr/local/bin/chrome-desktop << 'EOF'
 #!/bin/bash
-exec google-chrome --no-sandbox --disable-dev-shm-usage --disable-gpu --no-first-run --no-default-browser-check --disable-session-crashed-bubble --window-position=0,0 --window-size=1024,768 "$@"
+flags=(--no-sandbox --disable-dev-shm-usage --disable-gpu --no-first-run --no-default-browser-check --disable-session-crashed-bubble --window-position=0,0 --window-size=1024,768)
+if [ "$#" -gt 0 ]; then
+  exec google-chrome "${flags[@]}" --new-tab "$@"
+else
+  exec google-chrome "${flags[@]}"
+fi
 EOF
 chmod +x /usr/local/bin/chrome-desktop
 ln -sfn /usr/local/bin/chrome-desktop /usr/local/bin/chrome
