@@ -5,6 +5,7 @@ import * as vm from "./vm.mjs";
 import * as routines from "./routines.mjs";
 import { appRoot } from "./paths.mjs";
 import { isHumanControl } from "./control.mjs";
+import * as vault from "./vault.mjs";
 
 const COMPUTER_ACTIONS = [
   "screenshot",
@@ -115,6 +116,31 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "vault_list",
+      description:
+        "List saved logins this Bot is allowed to use. Returns label, site, username, and id only — never a password.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "vault_fill",
+      description:
+        "Paste a saved username or password into the focused field on the desktop. Click the field first. Never prints the secret. Use field=username or field=password.",
+      parameters: {
+        type: "object",
+        properties: {
+          account_id: { type: "string" },
+          field: { type: "string", enum: ["username", "password"] },
+        },
+        required: ["account_id", "field"],
+      },
+    },
+  },
 ];
 
 export function isChatQuestion(text) {
@@ -122,9 +148,11 @@ export function isChatQuestion(text) {
   if (!t) return false;
   if (/^(stop|halt|cancel|never mind)\b/i.test(t)) return false;
   if (/\b(go )?(post|tweet|publish) (it|now|this)\b/i.test(t)) return false;
+  if (/\b(open|click|type|go to|search|navigate|try again|resume|screenshot)\b/i.test(t)) return false;
+  if (/^(can you|could you|would you|please)\b/i.test(t) && looksLikeDesktopTask(t)) return false;
   if (/\bwhy\b/i.test(t)) return true;
   if (/\b(answer|explain|you should)\b/i.test(t) && !/\bpost it\b/i.test(t)) return true;
-  if (/^(what|how|when|where|who|did|do you|have you|are you|can you)\b/i.test(t)) return true;
+  if (/^(what|how|when|where|who|did|do you|have you|are you)\b/i.test(t)) return true;
   return /\?$/.test(t);
 }
 
@@ -263,6 +291,7 @@ Use \`shell\` only for a concrete command you already know belongs on this compu
 web_search is available for facts. Prefer it over opening Google unless the user asked to use the browser.
 Routines: ONE standing job, and only when the user asked to keep doing something on a clock (every N minutes, hourly, daily). "Check again", "try again", "resume", and one-shot desktop work are NOT routines — do the work now, do not upsert. "Run" / "resume" means execute, not rewrite. Never replace a long brief with the chat line. Never delete the only routine unless they said delete.
 If a submit already landed or the UI is still loading, do not submit the same thing again. If a click fails twice, stop repeating it.
+${await vault.promptBlock(bot.id)}
 `;
 }
 
@@ -284,7 +313,7 @@ const AUTO_SHOT = new Set([
   "scroll",
 ]);
 
-export async function runTurn({ bot, settings, userText, emit, hidden = false, images = [], signal, pullNudges } = {}) {
+export async function runTurn({ bot, settings, userText, emit, hidden = false, images = [], signal, pullNudges, persistUser = true } = {}) {
   if (!Array.isArray(bot.routines)) bot.routines = [];
   if (!hidden && routines.looksLikeSchedule(userText)) {
     const parsed = routines.parseSchedule(userText);
@@ -298,18 +327,20 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
   const harness = resolveClient(settings);
   const system = await loadSystemPrompt(bot);
 
-  if (!hidden) {
-    bot.messages.push({ id: `u${Date.now()}`, role: "user", content: userText, ts: Date.now() });
-    emit("message", bot.messages.at(-1));
-  } else {
-    bot.messages.push({
-      id: `u${Date.now()}`,
-      role: "user",
-      content: `[routine] ${userText}`,
-      ts: Date.now(),
-      hidden: true,
-    });
-    emit("message", bot.messages.at(-1));
+  if (persistUser) {
+    if (!hidden) {
+      bot.messages.push({ id: `u${Date.now()}`, role: "user", content: userText, ts: Date.now() });
+      emit("message", bot.messages.at(-1));
+    } else {
+      bot.messages.push({
+        id: `u${Date.now()}`,
+        role: "user",
+        content: `[routine] ${userText}`,
+        ts: Date.now(),
+        hidden: true,
+      });
+      emit("message", bot.messages.at(-1));
+    }
   }
 
   const history = [
@@ -518,6 +549,10 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
 }
 
 function toolSummary(name, args = {}, result = "") {
+  if (name === "vault_list") return "Checked saved logins";
+  if (name === "vault_fill") {
+    return args.field === "username" ? "Pasted username" : "Pasted password";
+  }
   if (name === "computer") {
     const a = args.action || "computer";
     if (a === "screenshot") return "Looked at the screen";
@@ -598,15 +633,31 @@ async function shotPayload(bot, emit, note = "") {
 
 async function execTool(bot, name, args, emit, settings) {
   try {
-    const hostTools = new Set(["send_message", "upsert_routine", "list_routines", "disable_routine", "web_search"]);
+    const hostTools = new Set([
+      "send_message",
+      "upsert_routine",
+      "list_routines",
+      "disable_routine",
+      "web_search",
+      "vault_list",
+    ]);
     if (bot.vm?.status !== "running" && !hostTools.has(name)) {
       return { text: "Computer is not running yet." };
     }
+    if (name === "vault_list") {
+      const rows = await vault.grantedAccounts(bot.id);
+      return { text: rows.length ? JSON.stringify(rows, null, 2) : "No saved logins granted to this Bot." };
+    }
+    if (name === "vault_fill") {
+      const filled = await vault.fillIntoDesktop(bot, args.account_id, args.field || "password");
+      return { text: filled.text };
+    }
     if (name === "send_message") {
+      const secrets = await vault.listSecrets();
       const out = {
         id: `a${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
         role: "assistant",
-        content: String(args.content || ""),
+        content: vault.redactSecrets(String(args.content || ""), secrets),
         ts: Date.now(),
       };
       bot.messages.push(out);
@@ -650,8 +701,13 @@ async function execTool(bot, name, args, emit, settings) {
       return { text: await webSearch(settings, args.query) };
     }
     if (name === "shell") {
-      const r = await vm.shell(bot, args.command);
-      return { text: r.output || (r.ok ? "(ok)" : "(failed)") };
+      const secrets = await vault.listSecrets();
+      const cmd = String(args.command || "");
+      if (secrets.some((s) => s && cmd.includes(s))) {
+        return { text: "Blocked: do not put vault secrets in the shell. Use vault_fill or octo-vault fill." };
+      }
+      const r = await vm.shell(bot, cmd);
+      return { text: vault.redactSecrets(r.output || (r.ok ? "(ok)" : "(failed)"), secrets) };
     }
     if (name === "computer") {
       if (isHumanControl(bot.id)) {
@@ -691,8 +747,17 @@ async function computerAction(bot, args, emit) {
     await vm.wait(args.ms || 800);
     return { text: `waited ${args.ms || 800}ms` };
   }
-  if (action === "clipboard_read") return { text: (await vm.clipboardRead(bot)) || "(empty)" };
+  if (action === "clipboard_read") {
+    const raw = (await vm.clipboardRead(bot)) || "";
+    const secrets = await vault.listSecrets();
+    if (secrets.some((s) => s && raw.includes(s))) return { text: "(redacted)" };
+    return { text: raw || "(empty)" };
+  }
   if (action === "clipboard_write") {
+    const secrets = await vault.listSecrets();
+    if (secrets.some((s) => s && String(args.text || "").includes(s))) {
+      return { text: "Blocked: do not write vault secrets. Use vault_fill." };
+    }
     await vm.clipboardWrite(bot, args.text || "");
     return { text: "clipboard set" };
   }
@@ -705,7 +770,13 @@ async function computerAction(bot, args, emit) {
   else if (action === "right_click") await vm.click(bot, args.x, args.y, 3, 1);
   else if (action === "double_click") await vm.click(bot, args.x, args.y, 1, 2);
   else if (action === "left_click_drag") await vm.drag(bot, args.x, args.y, args.x2, args.y2);
-  else if (action === "type") await vm.typeText(bot, args.text || "");
+  else if (action === "type") {
+    const secrets = await vault.listSecrets();
+    if (secrets.some((s) => s && String(args.text || "").includes(s))) {
+      return { text: "Blocked: do not type vault secrets. Click the field, then vault_fill." };
+    }
+    await vm.typeText(bot, args.text || "");
+  }
   else if (action === "key") await vm.key(bot, args.keys || args.text || "Return");
   else if (action === "scroll") await vm.scroll(bot, args.x, args.y, args.dy || 0, args.dx || 0);
   else return { text: `unknown computer action ${action}` };
@@ -849,6 +920,13 @@ function summarizeVmCommand(cmd = "") {
   if (/\b(scrot|screenshot)\b/i.test(c)) {
     return { name: "computer", action: "screenshot", summary: "Looked at the screen" };
   }
+  if (/octo-vault\s+fill/i.test(c)) {
+    const field = /\busername\b/i.test(c) ? "username" : "password";
+    return { name: "vault_fill", action: "vault_fill", summary: toolSummary("vault_fill", { field }) };
+  }
+  if (/octo-vault\s+list/i.test(c)) {
+    return { name: "vault_list", action: "vault_list", summary: "Checked saved logins" };
+  }
   return { name: "shell", action: "shell", summary: toolSummary("shell", { command: c }) };
 }
 
@@ -986,7 +1064,10 @@ function runGrokBuild(harness, userText, signal, bot, emit) {
       child.on("error", (e) => finish(`Grok Build harness failed: ${e.message}`));
       child.on("close", () => {
         takeLine(buf);
-        finish(reply.trim() || "(no output from grok)");
+        vault
+          .listSecrets()
+          .then((secrets) => finish(vault.redactSecrets(reply.trim() || "(no output from grok)", secrets)))
+          .catch(() => finish(reply.trim() || "(no output from grok)"));
       });
     });
   })();

@@ -3,6 +3,8 @@ node_modules
 scripts/.cache
 **/__pycache__/
 data/*.json
+data/vault.enc
+data/.vault.key
 data/screens
 data/conversations
 data/traces

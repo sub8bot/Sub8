@@ -3,14 +3,35 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 export HOME=/config
 
+wait_apt() {
+  for _ in $(seq 1 30); do
+    if ! fuser /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock /var/cache/apt/archives/lock >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+}
+
+apt_retry() {
+  local n=0
+  until [ "$n" -ge 4 ]; do
+    wait_apt
+    if apt-get update -qq && apt-get install -y -qq --fix-missing "$@"; then
+      return 0
+    fi
+    n=$((n + 1))
+    sleep $((n * 3))
+  done
+  return 1
+}
+
 need_chrome=0
 need_rustdesk=0
 command -v google-chrome >/dev/null 2>&1 || command -v google-chrome-stable >/dev/null 2>&1 || need_chrome=1
 command -v rustdesk >/dev/null 2>&1 || need_rustdesk=1
 
-apt-get update -qq
-apt-get install -y -qq wget ca-certificates desktop-file-utils xdg-utils fonts-liberation libnss3 libatk-bridge2.0-0 libgtk-3-0 libxss1 libasound2t64 libasound2 2>/dev/null || \
-  apt-get install -y -qq wget ca-certificates desktop-file-utils xdg-utils fonts-liberation
+apt_retry wget ca-certificates curl desktop-file-utils xdg-utils fonts-liberation libnss3 libatk-bridge2.0-0 libgtk-3-0 libxss1 libasound2t64 libasound2 \
+  || apt_retry wget ca-certificates curl desktop-file-utils xdg-utils fonts-liberation
 
 arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
 case "$arch" in
@@ -18,17 +39,27 @@ case "$arch" in
   *) chrome_deb="google-chrome-stable_current_arm64.deb"; rustdesk_deb="rustdesk-1.4.9-aarch64.deb" ;;
 esac
 
+fetch_deb() {
+  local url="$1" dest="$2"
+  if command -v wget >/dev/null 2>&1; then
+    wget -q --tries=4 --timeout=30 -O "$dest" "$url" && return 0
+  fi
+  curl -fsSL --retry 4 --retry-delay 2 -o "$dest" "$url"
+}
+
 if [ "$need_chrome" = 1 ]; then
   echo "Installing Google Chrome ($arch)…"
-  wget -q -O /tmp/chrome.deb "https://dl.google.com/linux/direct/${chrome_deb}"
-  apt-get install -y -qq /tmp/chrome.deb || { dpkg -i /tmp/chrome.deb || true; apt-get install -f -y -qq; }
+  fetch_deb "https://dl.google.com/linux/direct/${chrome_deb}" /tmp/chrome.deb
+  wait_apt
+  apt-get install -y -qq --fix-missing /tmp/chrome.deb || { dpkg -i /tmp/chrome.deb || true; wait_apt; apt-get install -f -y -qq; }
   rm -f /tmp/chrome.deb
 fi
 
 if [ "$need_rustdesk" = 1 ]; then
   echo "Installing RustDesk 1.4.9 ($arch)…"
-  wget -q -O /tmp/rustdesk.deb "https://github.com/rustdesk/rustdesk/releases/download/1.4.9/${rustdesk_deb}"
-  apt-get install -y -qq /tmp/rustdesk.deb || { dpkg -i /tmp/rustdesk.deb || true; apt-get install -f -y -qq; }
+  fetch_deb "https://github.com/rustdesk/rustdesk/releases/download/1.4.9/${rustdesk_deb}" /tmp/rustdesk.deb
+  wait_apt
+  apt-get install -y -qq --fix-missing /tmp/rustdesk.deb || { dpkg -i /tmp/rustdesk.deb || true; wait_apt; apt-get install -f -y -qq; }
   rm -f /tmp/rustdesk.deb
 fi
 

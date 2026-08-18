@@ -11,6 +11,7 @@ import * as store from "../server/store.mjs";
 import * as vm from "../server/vm.mjs";
 import { requireVm, assertVmShell, isHostPath } from "../server/isolation.mjs";
 import * as routines from "../server/routines.mjs";
+import { isChatQuestion } from "../server/agent.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 process.chdir(root);
@@ -61,6 +62,13 @@ test("explicit cadence still becomes a routine", () => {
   assert.equal(routines.parseSchedule("do this every 15 minutes")?.intervalMs, 15 * 60_000);
   assert.equal(routines.looksLikeSchedule("check flights daily"), true);
   assert.equal(routines.looksLikeSchedule("watch X inbox every 7 minutes"), true);
+});
+
+test("can you open chrome is work, not a chat question", () => {
+  assert.equal(isChatQuestion("can you open chrome"), false);
+  assert.equal(isChatQuestion("search google flights"), false);
+  assert.equal(isChatQuestion("why didn't that work?"), true);
+  assert.equal(isChatQuestion("what are you doing?"), true);
 });
 
 test("upsert refuses a check-again one-liner", () => {

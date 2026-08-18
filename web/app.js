@@ -34,6 +34,10 @@ const state = {
   teach: null,
   teachFrames: [],
   attachments: [],
+  vault: { groups: [], accounts: [], grants: {} },
+  vaultGroup: "all",
+  vaultEditId: null,
+  vaultReveal: false,
 };
 
 async function api(path, opts) {
@@ -91,22 +95,53 @@ function attachLiveFrame(bot) {
   const wrap = $("#screen-wrap");
   if (!wrap) return;
   if (!bot?.vm?.novncPort) {
-    if (!wrap.dataset.empty) {
-      wrap.dataset.empty = "1";
-      wrap.innerHTML = `<div style="display:grid;place-items:center;height:100%;color:#6b7280;font-size:13px;padding:16px;text-align:center">${
-        dockerMissing()
-          ? dockerMissingHtml()
-          : bot?.vm?.status === "starting"
-            ? "Starting Sub8's computer…"
-            : bot?.vm?.error || "Computer not assigned yet"
-      }</div>`;
-      liveFrameKey = null;
-    }
+    wrap.innerHTML = `<div class="screen-status">${
+      dockerMissing()
+        ? dockerMissingHtml()
+        : `<div><strong>${escapeHtml(vmStatusTitle(bot))}</strong><span>${escapeHtml(vmStatusDetail(bot))}</span></div>`
+    }</div>`;
+    liveFrameKey = null;
     return;
   }
   const key = `${bot.id}:${bot.vm.novncPort}`;
-  if (liveFrameKey === key && wrap.querySelector("iframe")) return;
-  mountLiveFrame(bot);
+  if (liveFrameKey !== key || !wrap.querySelector("iframe")) mountLiveFrame(bot);
+  paintScreenStatus(bot);
+}
+
+function vmStatusTitle(bot) {
+  if (bot?.vm?.status === "error" && bot.vm.error && !isTransientVmError(bot.vm.error)) return "Computer needs attention";
+  return "Setting up the computer";
+}
+
+function isTransientVmError(msg) {
+  return /app install|wget|apt|PackageKit|Unable to fetch|warming|Still setting/i.test(String(msg || ""));
+}
+
+function vmStatusDetail(bot) {
+  const hint = String(bot?.vm?.hint || "").trim();
+  if (hint) return hint;
+  if (isTransientVmError(bot?.vm?.error)) return "Installing Chrome and tools. This can take a minute on a new computer.";
+  if (bot?.vm?.error) return bot.vm.error;
+  if (bot?.vm?.status === "starting") return "Waiting for the desktop…";
+  return "Computer not assigned yet";
+}
+
+function paintScreenStatus(bot) {
+  const wrap = $("#screen-wrap");
+  if (!wrap) return;
+  const warming = bot?.vm?.status === "starting" || (bot?.vm?.hint && bot.vm.status !== "running");
+  const hardErr = bot?.vm?.status === "error" && bot.vm.error && !isTransientVmError(bot.vm.error);
+  let host = wrap.querySelector(".screen-status");
+  if (!warming && !hardErr) {
+    host?.remove();
+    return;
+  }
+  if (!host) {
+    host = document.createElement("div");
+    host.className = "screen-status";
+    wrap.appendChild(host);
+  }
+  host.innerHTML = `<div><strong>${escapeHtml(vmStatusTitle(bot))}</strong><span>${escapeHtml(vmStatusDetail(bot))}</span></div>`;
 }
 
 function dockerMissing() {
@@ -571,6 +606,10 @@ function iconUsage() {
   return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="10" width="4" height="10" rx="1"/><rect x="10" y="6" width="4" height="14" rx="1"/><rect x="17" y="3" width="4" height="17" rx="1"/></svg>`;
 }
 
+function iconLock() {
+  return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>`;
+}
+
 function iconGear() {
   return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.2a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9c.3.7 1 1.2 1.7 1.3H21a2 2 0 1 1 0 4h-.2a1.7 1.7 0 0 0-1.4 1.7z"/></svg>`;
 }
@@ -617,7 +656,7 @@ function paintTitle(bot) {
   const bar = $("#titlebar");
   const collapsed = !state.showComputer && !state.botEdit && state.deskSize !== "full";
   const stamp = `${bot?.id || ""}|${state.botEdit ? "1" : "0"}|${state.deskSize}|${collapsed ? "1" : "0"}`;
-  if (bar.dataset.stamp === stamp && bar.querySelector(".botname-btn")) {
+  if (bar.dataset.stamp === stamp && bar.querySelector("[data-act=vault]")) {
     const name = bar.querySelector(".botname-btn .bot-label");
     if (name && bot) name.textContent = bot.name;
     const chip = bar.querySelector(".harness-chip");
@@ -639,9 +678,10 @@ function paintTitle(bot) {
     </div>
     <div class="spacer"></div>
     <div class="title-actions">
+      <button class="iconbtn" data-act="vault" title="Password vault">${iconLock()}</button>
       ${
         !bot
-          ? ""
+          ? `<button class="iconbtn" data-act="settings" title="Settings">${iconGear()}</button>`
           : collapsed
             ? `<button class="monitor-fab title-monitor" data-act="expand-pane" title="Show computer">${iconMonitor()}</button>`
             : `<button class="iconbtn" data-act="bot-settings" title="Bot settings">${iconGear()}</button>
@@ -1057,9 +1097,15 @@ function paintLivePane(bot) {
     if (state.botEdit && bot) paintBotEditor(bot);
   }
   const label = $("#screen-label");
-  if (label && bot) label.textContent = `${bot.name}'s screen`;
+  if (label && bot) {
+    label.textContent =
+      bot.vm?.status === "starting" && bot.vm.hint ? bot.vm.hint : `${bot.name}'s screen`;
+  }
   const err = $("#vm-error");
-  if (err) err.textContent = bot?.vm?.error || "";
+  if (err) {
+    const hard = bot?.vm?.status === "error" && bot.vm.error && !isTransientVmError(bot.vm.error);
+    err.textContent = hard ? bot.vm.error : "";
+  }
   paintRoutineList(bot);
   if (bot) attachLiveFrame(bot);
 }
@@ -1215,7 +1261,7 @@ function paintModal() {
   const host = $("#modal-host");
   if (!host) return;
   const bot = state.bots.find((b) => b.id === state.selected);
-  const key = `${state.modal || ""}|${state.section}|${state.editingRoutineId || ""}|${state.selected || ""}`;
+  const key = `${state.modal || ""}|${state.section}|${state.editingRoutineId || ""}|${state.selected || ""}|${state.vaultGroup || ""}|${state.vaultEditId || ""}`;
   if (!state.modal) {
     host.innerHTML = "";
     delete host.dataset.key;
@@ -1225,10 +1271,11 @@ function paintModal() {
   const typing = host.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active?.tagName || "");
   // Never rebuild a form modal in place — SSE/health render() would wipe
   // the fields and steal the Create click onto the overlay.
-  const keepForm = typing || state.modal === "routine" || state.modal === "create";
+  const keepForm = typing || state.modal === "routine" || state.modal === "create" || state.modal === "vault";
   if (host.dataset.key === key && host.innerHTML && keepForm) return;
   host.dataset.key = key;
   if (state.modal === "create") host.innerHTML = createBotHtml();
+  else if (state.modal === "vault") host.innerHTML = vaultHtml();
   else if (state.modal === "settings") host.innerHTML = settingsHtml();
   else if (state.modal === "advanced" && bot) host.innerHTML = advancedHtml(bot);
   else if (state.modal === "routine" && bot) {
@@ -1371,6 +1418,97 @@ function createBotHtml() {
           <textarea class="field" id="cd" placeholder="Describe the job"></textarea>
           <button type="button" class="pill primary" data-act="confirm-create" id="confirm-create">Create Bot</button>
         </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function vaultAccountsInView() {
+  const all = state.vault.accounts || [];
+  if (state.vaultGroup === "all") return all;
+  if (state.vaultGroup === "none") return all.filter((a) => !a.groupId);
+  return all.filter((a) => a.groupId === state.vaultGroup);
+}
+
+function vaultHtml() {
+  const groups = state.vault.groups || [];
+  const accs = vaultAccountsInView();
+  const edit =
+    state.vaultEditId === "new"
+      ? { id: "new", label: "", site: "", username: "", notes: "", groupId: state.vaultGroup === "none" || state.vaultGroup === "all" ? "" : state.vaultGroup }
+      : (state.vault.accounts || []).find((a) => a.id === state.vaultEditId);
+  const grantSet = (botId) => new Set(state.vault.grants?.[botId] || []);
+  const navBtn = (id, label) =>
+    `<button type="button" class="${state.vaultGroup === id ? "active" : ""}" data-act="vault-group" data-id="${escapeHtml(id)}">${escapeHtml(label)}</button>`;
+  return `<div class="overlay">
+    <div class="modal vault-modal" data-modal="1">
+      <nav class="snav">
+        ${navBtn("all", "All logins")}
+        ${navBtn("none", "Ungrouped")}
+        ${groups.map((g) => navBtn(g.id, g.name)).join("")}
+        <button type="button" data-act="vault-add-group">+ Group</button>
+      </nav>
+      <div class="sbody">
+        <button type="button" class="close" data-act="close-modal" title="Close" aria-label="Close">${iconClose()}</button>
+        <h2>Password vault</h2>
+        <p class="muted" style="margin-top:-8px">Encrypted on this machine. Bots can paste into a field but never see the secret in chat.</p>
+        <div class="vault-toolbar">
+          <button type="button" class="pill primary" data-act="vault-add-account">New login</button>
+        </div>
+        <div class="vault-list">
+          ${
+            accs.length
+              ? accs
+                  .map(
+                    (a) =>
+                      `<button type="button" class="vault-row ${a.id === state.vaultEditId ? "on" : ""}" data-act="vault-edit" data-id="${a.id}">
+                        <strong>${escapeHtml(a.label)}</strong>
+                        <span class="muted">${escapeHtml(a.username || "—")} · ${escapeHtml(a.site || "no site")}</span>
+                      </button>`,
+                  )
+                  .join("")
+              : `<p class="muted">No logins in this group yet.</p>`
+          }
+        </div>
+        ${
+          edit
+            ? `<div class="vault-editor">
+          <label class="muted">Name</label>
+          <input class="field" id="v-label" value="${escapeHtml(edit.label || "")}" placeholder="Gmail work" />
+          <label class="muted">Site</label>
+          <input class="field" id="v-site" value="${escapeHtml(edit.site || "")}" placeholder="https://mail.google.com" />
+          <label class="muted">Username</label>
+          <input class="field" id="v-user" value="${escapeHtml(edit.username || "")}" autocomplete="off" />
+          <label class="muted">Password</label>
+          <div class="vault-pass">
+            <input class="field" id="v-pass" type="${state.vaultReveal ? "text" : "password"}" value="${edit.id === "new" ? "" : "••••"}" autocomplete="new-password" />
+            <button type="button" class="pill" data-act="vault-reveal">${state.vaultReveal ? "Hide" : "Show"}</button>
+          </div>
+          <label class="muted">Notes</label>
+          <textarea class="field" id="v-notes" placeholder="Optional">${escapeHtml(edit.notes || "")}</textarea>
+          <label class="muted">Group</label>
+          <select class="field" id="v-group">
+            <option value="">Ungrouped</option>
+            ${groups.map((g) => `<option value="${g.id}" ${g.id === (edit.groupId || "") ? "selected" : ""}>${escapeHtml(g.name)}</option>`).join("")}
+          </select>
+          <label class="muted">Bots that may use this login</label>
+          <div class="vault-grants">
+            ${(state.bots || [])
+              .map((b) => {
+                const on = edit.id !== "new" && grantSet(b.id).has(edit.id);
+                return `<label class="vault-grant"><input type="checkbox" data-vault-bot="${b.id}" ${on ? "checked" : ""}/> ${escapeHtml(b.name)}</label>`;
+              })
+              .join("") || `<span class="muted">Create a Bot first.</span>`}
+          </div>
+          <div class="routine-editor-foot">
+            ${edit.id !== "new" ? `<button type="button" class="danger" data-act="vault-delete" data-id="${edit.id}">Delete</button>` : ""}
+            <span class="grow"></span>
+            <button type="button" class="pill" data-act="vault-cancel">Cancel</button>
+            <button type="button" class="pill primary" data-act="vault-save">Save</button>
+          </div>
+        </div>`
+            : ""
+        }
       </div>
     </div>
   </div>`;
@@ -1641,6 +1779,51 @@ function bindDelegated() {
       state.teach = null;
       state.teachFrames = [];
       state.deskSize = "side";
+    }
+    if (act === "vault") {
+      openVault();
+      return;
+    }
+    if (act === "vault-group") {
+      state.vaultGroup = el.dataset.id;
+      state.vaultEditId = null;
+      state.vaultReveal = false;
+      const host = $("#modal-host");
+      if (host) delete host.dataset.key;
+    }
+    if (act === "vault-add-group") {
+      addVaultGroup();
+      return;
+    }
+    if (act === "vault-add-account") {
+      state.vaultEditId = "new";
+      state.vaultReveal = false;
+      const host = $("#modal-host");
+      if (host) delete host.dataset.key;
+    }
+    if (act === "vault-edit") {
+      state.vaultEditId = el.dataset.id;
+      state.vaultReveal = false;
+      const host = $("#modal-host");
+      if (host) delete host.dataset.key;
+    }
+    if (act === "vault-cancel") {
+      state.vaultEditId = null;
+      state.vaultReveal = false;
+      const host = $("#modal-host");
+      if (host) delete host.dataset.key;
+    }
+    if (act === "vault-reveal") {
+      toggleVaultReveal();
+      return;
+    }
+    if (act === "vault-save") {
+      saveVaultAccount();
+      return;
+    }
+    if (act === "vault-delete") {
+      deleteVaultAccount(el.dataset.id);
+      return;
     }
     if (act === "settings") {
       state.modal = "settings";
@@ -2343,6 +2526,92 @@ async function createBot() {
   render();
 }
 
+async function openVault() {
+  try {
+    state.vault = await api("/api/vault");
+  } catch (err) {
+    window.alert(err?.message || "Could not open the vault.");
+    return;
+  }
+  state.modal = "vault";
+  state.vaultEditId = null;
+  state.vaultReveal = false;
+  const host = $("#modal-host");
+  if (host) delete host.dataset.key;
+  render();
+}
+
+async function addVaultGroup() {
+  const name = window.prompt("Group name");
+  if (!name || !name.trim()) return;
+  await api("/api/vault/groups", { method: "POST", body: { name: name.trim() } });
+  state.vault = await api("/api/vault");
+  const g = (state.vault.groups || []).at(-1);
+  if (g) state.vaultGroup = g.id;
+  const host = $("#modal-host");
+  if (host) delete host.dataset.key;
+  render();
+}
+
+function toggleVaultReveal() {
+  const input = $("#v-pass");
+  const isNew = state.vaultEditId === "new";
+  if (!isNew && !state.vaultReveal && input && input.value === "••••") {
+    api(`/api/vault/accounts/${state.vaultEditId}/reveal`)
+      .then((acc) => {
+        state.vaultReveal = true;
+        if (input) {
+          input.type = "text";
+          input.value = acc.password || "";
+        }
+      })
+      .catch((err) => window.alert(err?.message || "Could not reveal."));
+    return;
+  }
+  state.vaultReveal = !state.vaultReveal;
+  if (input) input.type = state.vaultReveal ? "text" : "password";
+}
+
+async function saveVaultAccount() {
+  const body = {
+    label: $("#v-label")?.value || "",
+    site: $("#v-site")?.value || "",
+    username: $("#v-user")?.value || "",
+    notes: $("#v-notes")?.value || "",
+    groupId: $("#v-group")?.value || "",
+  };
+  const pass = $("#v-pass")?.value;
+  if (pass && pass !== "••••") body.password = pass;
+  let acc;
+  if (state.vaultEditId && state.vaultEditId !== "new") {
+    acc = await api(`/api/vault/accounts/${state.vaultEditId}`, { method: "PATCH", body });
+  } else {
+    acc = await api("/api/vault/accounts", { method: "POST", body });
+  }
+  const allowed = [...document.querySelectorAll("[data-vault-bot]:checked")].map((el) => el.dataset.vaultBot);
+  for (const bot of state.bots) {
+    const cur = new Set(state.vault.grants?.[bot.id] || []);
+    if (allowed.includes(bot.id)) cur.add(acc.id);
+    else cur.delete(acc.id);
+    await api(`/api/vault/grants/${bot.id}`, { method: "PUT", body: { accountIds: [...cur] } });
+  }
+  state.vault = await api("/api/vault");
+  state.vaultEditId = acc.id;
+  state.vaultReveal = false;
+  const host = $("#modal-host");
+  if (host) delete host.dataset.key;
+  render();
+}
+
+async function deleteVaultAccount(id) {
+  if (!id || !window.confirm("Delete this login? Bots will lose access.")) return;
+  state.vault = await api(`/api/vault/accounts/${id}`, { method: "DELETE" });
+  state.vaultEditId = null;
+  const host = $("#modal-host");
+  if (host) delete host.dataset.key;
+  render();
+}
+
 async function confirmCreateBot() {
   const name = ($("#cn")?.value || "").trim() || "New Bot";
   const description = ($("#cd")?.value || "").trim();
@@ -2663,8 +2932,23 @@ function listen() {
       } else render();
     });
     es.addEventListener("log", (e) => {
-      const { m } = JSON.parse(e.data);
+      const { botId, m } = JSON.parse(e.data);
       state.logs.push(m);
+      const bot = state.bots.find((b) => b.id === botId);
+      if (!bot) return;
+      bot.vm = { ...(bot.vm || {}), hint: m, status: bot.vm?.status === "running" ? bot.vm.status : "starting" };
+      if (botId === state.selected) {
+        paintScreenStatus(bot);
+        const label = $("#screen-label");
+        if (label && bot.vm.status === "starting") label.textContent = m;
+      }
+    });
+    es.addEventListener("vm-status", (e) => {
+      const { botId, status, hint } = JSON.parse(e.data);
+      const bot = state.bots.find((b) => b.id === botId);
+      if (!bot) return;
+      bot.vm = { ...(bot.vm || {}), status: status || bot.vm?.status, hint: hint || bot.vm?.hint };
+      if (botId === state.selected) paintScreenStatus(bot);
     });
     es.addEventListener("screen", (e) => {
       const { botId, url } = JSON.parse(e.data);
