@@ -6,6 +6,7 @@
   "type": "module",
   "main": "electron/main.mjs",
   "author": "Daniel Farina",
+  "license": "BUSL-1.1",
   "description": "Sub8 — local desktop assistants that live on their own Linux computers.",
   "scripts": {
     "start": "node server/index.mjs",
