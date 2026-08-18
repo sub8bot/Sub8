@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { loginNeedle, scoreVaultAccount } from "../server/agent.mjs";
+import { loginNeedle, loginUrlFor, scoreVaultAccount } from "../server/agent.mjs";
 
 assert.equal(loginNeedle("login to gmail"), "gmail");
 assert.equal(loginNeedle("Sign in to mail.google.com"), "mail.google.com");
@@ -10,4 +10,6 @@ const x = { label: "X", site: "x.com", username: "dan" };
 assert.ok(scoreVaultAccount(gmail, "gmail") > scoreVaultAccount(x, "gmail"));
 assert.ok(scoreVaultAccount(x, "x.com") > 0);
 assert.equal(scoreVaultAccount(x, "gmail"), 0);
+assert.match(loginUrlFor(gmail, "gmail"), /accounts\.google\.com\/ServiceLogin/);
+assert.match(loginUrlFor({ site: "https://mail.google.com" }, "gmail"), /accounts\.google\.com\/ServiceLogin/);
 console.log("ok login-intent");
