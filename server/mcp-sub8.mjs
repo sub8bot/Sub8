@@ -6,6 +6,7 @@ import * as store from "./store.mjs";
 import * as vm from "./vm.mjs";
 import * as vault from "./vault.mjs";
 import * as routines from "./routines.mjs";
+import { resolveZone } from "./context.mjs";
 
 const botId = process.env.SUB8BOT_BOT_ID || "";
 const token = process.env.SUB8_INTERNAL_TOKEN || "";
@@ -96,7 +97,7 @@ const TOOLS = [
   {
     name: "upsert_routine",
     description:
-      "Create or UPDATE this Bot's standing routine. Pass id from list_routines to edit. The operator asking to change the routine is permission. Do not create a second job that overlaps (same group or similar interval); update the existing id. instruction must be the full standing brief.",
+      "Create or UPDATE this Bot's standing routine. Pass id from list_routines to edit. The operator asking to change the routine is permission. Do not create a second job that overlaps (same group or similar interval); update the existing id. instruction must be the full standing brief. For every morning, pass schedule {type:\"daily\", hour:9, minute:0} and omit interval_minutes.",
     inputSchema: {
       type: "object",
       properties: {
@@ -104,6 +105,10 @@ const TOOLS = [
         name: { type: "string" },
         instruction: { type: "string" },
         interval_minutes: { type: "number" },
+        schedule: {
+          type: "object",
+          properties: { type: { type: "string" }, hour: { type: "number" }, minute: { type: "number" } },
+        },
         group_key: { type: "string" },
         force_new: { type: "boolean" },
         force_replace: { type: "boolean" },
@@ -282,17 +287,20 @@ async function callTool(name, args = {}) {
     if (!bot) throw new Error("Bot not found");
     const minutes = Number(args.interval_minutes);
     const instruction = String(args.instruction || "");
+    const settings = await store.loadSettings();
     const { routine, merged, rejected } = routines.upsertRoutine(bot, {
       id: args.id || undefined,
       name: args.name,
       instruction,
       intervalMs: Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : undefined,
+      schedule: args.schedule,
       groupKey: args.group_key || undefined,
       forceNew: args.force_new === true,
       forceReplace: args.force_replace === true || instruction.length > 80,
       solo: args.solo !== false,
       replace: args.replace !== false,
       enabled: args.enabled,
+      timeZone: resolveZone(settings),
     });
     await store.upsertBot(bot);
     await emit("routine", { routine, merged, rejected });
@@ -321,8 +329,8 @@ async function callTool(name, args = {}) {
         {
           type: "text",
           text: merged
-            ? `Updated "${routine.name}" (${routine.id}) every ${Math.round(routine.intervalMs / 60000)} min.`
-            : `Created "${routine.name}" (${routine.id}) every ${Math.round(routine.intervalMs / 60000)} min.`,
+            ? `Updated "${routine.name}" (${routine.id}) ${routines.cadenceLabel(routine).toLowerCase()}.`
+            : `Created "${routine.name}" (${routine.id}) ${routines.cadenceLabel(routine).toLowerCase()}.`,
         },
       ],
     };
