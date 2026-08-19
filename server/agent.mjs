@@ -82,6 +82,7 @@ const TOOLS = [
           interval_minutes: { type: "number" },
           group_key: { type: "string", description: "general unless user asked for a separate job" },
           force_new: { type: "boolean" },
+          force_replace: { type: "boolean", description: "true when the operator asked to rewrite the standing brief" },
           solo: { type: "boolean", description: "default true: drop other routines so only this one remains" },
           replace: { type: "boolean", description: "default true: replace instruction instead of appending" },
           enabled: { type: "boolean" },
@@ -1124,13 +1125,15 @@ async function execTool(bot, name, args, emit, settings) {
     }
     if (name === "upsert_routine") {
       const minutes = Number(args.interval_minutes);
+      const instruction = String(args.instruction || "");
       const { routine, merged, rejected } = routines.upsertRoutine(bot, {
         id: args.id || undefined,
         name: args.name,
-        instruction: args.instruction,
+        instruction,
         intervalMs: Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : undefined,
         groupKey: args.group_key || undefined,
         forceNew: args.force_new === true,
+        forceReplace: args.force_replace === true || instruction.length > 80,
         solo: args.solo !== false,
         replace: args.replace !== false,
         enabled: args.enabled,

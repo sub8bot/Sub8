@@ -59,9 +59,22 @@ export function looksLikeSchedule(text) {
 }
 
 function similarInterval(a, b) {
-  const hi = Math.max(a, b);
-  const lo = Math.min(a, b);
+  const hi = Math.max(a || 0, b || 0);
+  const lo = Math.min(a || 0, b || 0);
+  if (!hi || !lo) return false;
   return hi / lo <= 2.5;
+}
+
+export function overlappingRoutine(bot, spec = {}) {
+  const rows = bot?.routines || [];
+  const key = spec.groupKey || groupKey(spec.instruction || spec.name || "");
+  const parsed = parseSchedule(spec.instruction || spec.name || "");
+  const intervalMs = spec.intervalMs || parsed?.intervalMs || 20 * 60_000;
+  return (
+    rows.find((r) => r.id !== spec.id && r.groupKey === key && similarInterval(r.intervalMs || intervalMs, intervalMs)) ||
+    rows.find((r) => r.id !== spec.id && similarInterval(r.intervalMs || intervalMs, intervalMs)) ||
+    null
+  );
 }
 
 export function upsertRoutine(bot, spec) {
@@ -81,10 +94,15 @@ export function upsertRoutine(bot, spec) {
   }
   const byId = spec.id ? bot.routines.find((r) => r.id === spec.id) : null;
   const primary = bot.routines.find((r) => r.groupKey === "general") || bot.routines[0] || null;
-  const sameGroup = bot.routines.find(
-    (r) => r.groupKey === key && similarInterval(r.intervalMs || intervalMs, intervalMs),
-  );
-  const existing = byId || (!spec.forceNew && primary) || sameGroup;
+  const overlap = overlappingRoutine(bot, { ...spec, groupKey: key, intervalMs });
+  if (spec.forceNew && overlap) {
+    return {
+      routine: overlap,
+      merged: false,
+      rejected: `overlaps "${overlap.name}" (${overlap.id}) every ${Math.round((overlap.intervalMs || intervalMs) / 60000)} min. Update that id instead of creating a second job.`,
+    };
+  }
+  const existing = byId || (!spec.forceNew && (overlap || primary)) || null;
   if (existing) {
     if (text) {
       const prev = existing.instruction || "";
@@ -158,7 +176,7 @@ export function promptBlock(bot, { compact = false } = {}) {
   return [
     "",
     "## Standing routines (master schedule)",
-    "These fire automatically. Default is ONE standing routine. Update that routine (same id) when the mission changes. Only create another if the user explicitly asks for a second job. Instruction text must be a standing brief (who you are, current mission, workspace paths, next checkpoint) — never a paste of the user's last chat line.",
+    "These fire automatically. You MAY edit them: list_routines, then upsert_routine with that id. When the operator asks to change the routine, that IS permission — pass the full new brief and force_replace. Default is ONE standing job. Do not create a second routine that overlaps (same group or a similar interval); update the existing id instead. Instruction text must be a standing brief, never a chat one-liner.",
     ...lines,
     "",
   ].join("\n");
