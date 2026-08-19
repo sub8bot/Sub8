@@ -5,6 +5,7 @@
 import * as store from "./store.mjs";
 import * as vm from "./vm.mjs";
 import * as vault from "./vault.mjs";
+import * as routines from "./routines.mjs";
 
 const botId = process.env.SUB8BOT_BOT_ID || "";
 const token = process.env.SUB8_INTERNAL_TOKEN || "";
@@ -85,6 +86,39 @@ const TOOLS = [
         field: { type: "string", enum: ["username", "password"] },
       },
       required: ["account_id", "field"],
+    },
+  },
+  {
+    name: "list_routines",
+    description: "List this Bot's standing routines (id, name, interval, instruction).",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "upsert_routine",
+    description:
+      "Create or UPDATE this Bot's standing routine. Pass id from list_routines to edit. The operator asking to change the routine is permission. Do not create a second job that overlaps (same group or similar interval); update the existing id. instruction must be the full standing brief.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string" },
+        name: { type: "string" },
+        instruction: { type: "string" },
+        interval_minutes: { type: "number" },
+        group_key: { type: "string" },
+        force_new: { type: "boolean" },
+        force_replace: { type: "boolean" },
+        enabled: { type: "boolean" },
+      },
+      required: ["instruction"],
+    },
+  },
+  {
+    name: "disable_routine",
+    description: "Turn off a standing routine by id.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" } },
+      required: ["id"],
     },
   },
 ];
@@ -200,6 +234,98 @@ async function callTool(name, args = {}) {
       ts: Date.now(),
     });
     return { content: [{ type: "text", text: filled.text }], isError: !filled.ok };
+  }
+  if (name === "list_routines") {
+    const bot = await store.getBot(botId);
+    if (!bot) throw new Error("Bot not found");
+    const rows = bot.routines || [];
+    await emit("message", {
+      id: `tl${Date.now()}rt`,
+      role: "activity",
+      kind: "tool",
+      name: "list_routines",
+      action: "list_routines",
+      summary: "Checked routines",
+      ts: Date.now(),
+    });
+    return {
+      content: [
+        {
+          type: "text",
+          text: rows.length ? JSON.stringify(rows, null, 2) : "No standing routines.",
+        },
+      ],
+    };
+  }
+  if (name === "disable_routine") {
+    const bot = await store.getBot(botId);
+    if (!bot) throw new Error("Bot not found");
+    const r = (bot.routines || []).find((x) => x.id === args.id);
+    if (!r) return { content: [{ type: "text", text: "routine not found" }], isError: true };
+    r.enabled = false;
+    r.updatedAt = Date.now();
+    await store.upsertBot(bot);
+    await emit("routine", { routine: r });
+    await emit("message", {
+      id: `tl${Date.now()}rt`,
+      role: "activity",
+      kind: "tool",
+      name: "disable_routine",
+      action: "disable_routine",
+      summary: `Paused ${r.name}`,
+      ts: Date.now(),
+    });
+    return { content: [{ type: "text", text: `disabled ${r.name}` }] };
+  }
+  if (name === "upsert_routine") {
+    const bot = await store.getBot(botId);
+    if (!bot) throw new Error("Bot not found");
+    const minutes = Number(args.interval_minutes);
+    const instruction = String(args.instruction || "");
+    const { routine, merged, rejected } = routines.upsertRoutine(bot, {
+      id: args.id || undefined,
+      name: args.name,
+      instruction,
+      intervalMs: Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : undefined,
+      groupKey: args.group_key || undefined,
+      forceNew: args.force_new === true,
+      forceReplace: args.force_replace === true || instruction.length > 80,
+      solo: args.solo !== false,
+      replace: args.replace !== false,
+      enabled: args.enabled,
+    });
+    await store.upsertBot(bot);
+    await emit("routine", { routine, merged, rejected });
+    await emit("message", {
+      id: `tl${Date.now()}rt`,
+      role: "activity",
+      kind: "tool",
+      name: "upsert_routine",
+      action: "upsert_routine",
+      summary: rejected ? "Kept the standing brief" : merged ? `Updated ${routine?.name || "routine"}` : `Created ${routine?.name || "routine"}`,
+      ts: Date.now(),
+    });
+    if (rejected) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Did not create a second job. ${rejected}. Call upsert_routine with that id to edit.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: merged
+            ? `Updated "${routine.name}" (${routine.id}) every ${Math.round(routine.intervalMs / 60000)} min.`
+            : `Created "${routine.name}" (${routine.id}) every ${Math.round(routine.intervalMs / 60000)} min.`,
+        },
+      ],
+    };
   }
   throw new Error(`unknown tool ${name}`);
 }
