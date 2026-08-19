@@ -912,6 +912,18 @@ body {
   pointer-events: none;
 }
 .screen-wrap img.screen-still.hidden { opacity: 0; }
+.screen-connecting {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 4;
+  background: rgba(17, 17, 19, 0.82);
+  color: #fff;
+  padding: 8px 12px;
+  border-radius: 999px;
+  font: 600 13px/1 var(--font);
+  pointer-events: none;
+}
 .screen-wrap img.screen-still.broken,
 .screen-wrap img.screen-still[hidden],
 .screen-wrap img.screen-still:not([src]) {

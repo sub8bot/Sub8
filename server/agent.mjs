@@ -603,14 +603,18 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
         );
     const msg = resp.choices?.[0]?.message;
     if (!msg) break;
+    const toolCalls = local ? coerceToolCalls(msg) : msg.tool_calls || [];
 
-    if (msg.content && msg.content.trim() && !msg.tool_calls?.length) {
-      const think = String(msg.reasoning_content || msg.reasoning || "").trim();
-      emitThink(bot, emit, think, { hidden });
+    if (msg.content && msg.content.trim() && !toolCalls.length) {
       lastVisible = msg.content.trim();
-      const out = { id: `a${Date.now()}`, role: "assistant", content: lastVisible, ts: Date.now() };
-      bot.messages.push(out);
-      emit("message", out);
+      const planning = local && looksLikePlanning(lastVisible);
+      const think = String(msg.reasoning_content || msg.reasoning || "").trim() || (planning ? lastVisible : "");
+      emitThink(bot, emit, think, { hidden });
+      if (!planning) {
+        const out = { id: `a${Date.now()}`, role: "assistant", content: lastVisible, ts: Date.now() };
+        bot.messages.push(out);
+        emit("message", out);
+      }
       if (loginNeedle(userText) && !usedVaultFill && steps < maxSteps - 1) {
         history.push({ role: "assistant", content: lastVisible });
         history.push({
@@ -629,7 +633,11 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
         usedComputer = false;
         continue;
       }
-      if (!usedComputer && looksLikeDesktopTask(userText) && steps < maxSteps - 1) {
+      if (
+        ((!usedComputer && looksLikeDesktopTask(userText)) ||
+          (local && (planning || localWantsTools(userText, 0)))) &&
+        steps < maxSteps - 1
+      ) {
         history.push({ role: "assistant", content: lastVisible });
         history.push({
           role: "user",
@@ -641,16 +649,16 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
       break;
     }
 
-    if (!msg.tool_calls?.length) break;
+    if (!toolCalls.length) break;
 
     const think = String(msg.reasoning_content || msg.reasoning || "").trim()
       || (msg.content && String(msg.content).trim())
       || "";
     emitThink(bot, emit, think, { hidden });
 
-    history.push({ role: "assistant", content: msg.content || null, tool_calls: msg.tool_calls });
+    history.push({ role: "assistant", content: msg.content || null, tool_calls: toolCalls });
 
-    for (const call of msg.tool_calls) {
+    for (const call of toolCalls) {
       if (stopped()) {
         const out = { id: `a${Date.now()}`, role: "assistant", content: "Stopped.", ts: Date.now() };
         bot.messages.push(out);
@@ -787,6 +795,7 @@ function packChars(messages) {
 async function completeLocal(harness, history, userText, signal) {
   const toolSteps = (history || []).filter((m) => m.role === "tool").length;
   const query = toolSteps === 0 ? String(userText || "").trim() || "Continue." : localContinueQuery(userText);
+  const toolChoice = localWantsTools(userText, toolSteps) ? "required" : "auto";
   const attempts = [
     qwenSafeMessages(history, query),
     [...(history || []).filter((m) => m.role === "system"), { role: "user", content: query }],
@@ -799,9 +808,16 @@ async function completeLocal(harness, history, userText, signal) {
         model: harness.model,
         messages,
         tools: TOOLS,
-        tool_choice: "auto",
+        tool_choice: toolChoice,
         max_tokens: 1536,
         reasoning_effort: "low",
+      },
+      {
+        model: harness.model,
+        messages,
+        tools: TOOLS,
+        tool_choice: toolChoice,
+        max_tokens: 1536,
       },
       {
         model: harness.model,
@@ -823,7 +839,7 @@ async function completeLocal(harness, history, userText, signal) {
         lastErr = err;
         const msg = String(err?.message || err);
         console.log(`local-llm fail ${Date.now() - t0}ms step=${toolSteps} chars=${n} ${msg.slice(0, 160)}`);
-        if (!/No user query found|jinja template|reasoning_effort|Unrecognized request argument/i.test(msg)) throw err;
+        if (!/No user query found|jinja template|reasoning_effort|Unrecognized request argument|tool_choice/i.test(msg)) throw err;
       }
     }
   }
@@ -876,10 +892,65 @@ function isDone(text) {
   );
 }
 
-function looksLikeDesktopTask(text) {
+export function looksLikeDesktopTask(text) {
   return /\b(chrome|browser|click|desktop|computer|screenshot|flight|google|open |type |search|x\.com|twitter|post|tab|log\s*in|sign\s*in|gmail)\b/i.test(
     String(text || ""),
   );
+}
+
+export function localWantsTools(userText, toolSteps = 0) {
+  return (
+    Number(toolSteps) > 0 ||
+    looksLikeDesktopTask(userText) ||
+    /\b(resume|continue|keep going|try again|same task)\b/i.test(String(userText || ""))
+  );
+}
+
+export function extractToolCallsFromContent(content) {
+  const text = String(content || "");
+  const out = [];
+  const blocks = [...text.matchAll(/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/gi)];
+  for (const m of blocks) {
+    const raw = m[1].trim();
+    try {
+      const parsed = JSON.parse(raw);
+      const name = String(parsed.name || parsed.function || "").trim();
+      if (!name) continue;
+      let args = parsed.arguments ?? parsed.params;
+      if (typeof args === "undefined") {
+        const rest = { ...parsed };
+        delete rest.name;
+        delete rest.function;
+        args = rest;
+      }
+      out.push({
+        type: "function",
+        id: `qwen${Date.now()}${out.length}`,
+        function: { name, arguments: typeof args === "string" ? args : JSON.stringify(args) },
+      });
+    } catch {
+      const name = (raw.match(/^([a-z_][\w]*)/i) || [])[1];
+      const json = raw.match(/\{[\s\S]*\}/);
+      if (!name || !json) continue;
+      out.push({
+        type: "function",
+        id: `qwen${Date.now()}${out.length}`,
+        function: { name, arguments: json[0] },
+      });
+    }
+  }
+  return out;
+}
+
+function coerceToolCalls(msg) {
+  if (msg?.tool_calls?.length) return msg.tool_calls;
+  return extractToolCallsFromContent(msg?.content);
+}
+
+function looksLikePlanning(text) {
+  const t = String(text || "").trim();
+  if (!t || isDone(t)) return false;
+  return /^(let me|i'll|i will|i am going to|next i('ll| will)|rather than)/im.test(t);
 }
 
 export function loginUrlFor(acc, needle) {
@@ -1378,7 +1449,9 @@ function runGrokBuild(harness, userText, signal, bot, emit, { settings, hidden =
       "bypassPermissions",
       "--always-approve",
       "--max-turns",
-      "32",
+      "48",
+      "--effort",
+      "low",
       "--no-alt-screen",
       "--output-format",
       "streaming-json",
