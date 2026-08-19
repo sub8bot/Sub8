@@ -247,6 +247,31 @@ test("stream health reports VM apps", async () => {
   assert.ok(h.grok || h.chrome);
 });
 
+// A desk that is merely paused, or whose host port drifted, is still a healthy
+// desk. Both used to read as "Chrome is not ready yet" forever.
+test("stream health survives a stale novnc port", async () => {
+  const real = (await vm.streamHealth(bot)).novncPort;
+  assert.ok(real, "desk should report a mapped port");
+  const stale = { ...bot, vm: { ...bot.vm, novncPort: real + 7 } };
+  const h = await vm.streamHealth(stale);
+  assert.equal(h.novncPort, real, "health should re-detect the mapped port");
+  assert.equal(h.ok, true);
+});
+
+test("a paused desk is woken, not waited on", async () => {
+  const name = bot.vm.container;
+  execFileSync("docker", ["pause", name], { stdio: "ignore" });
+  try {
+    const paused = execFileSync("docker", ["inspect", "-f", "{{.State.Running}}", name], { encoding: "utf8" });
+    assert.equal(paused.trim(), "true", "paused containers still report Running=true");
+    const r = await vm.waitForDesktop({ ...bot }, { timeoutMs: 120_000, onLog: () => {} });
+    assert.equal(r.ok, true, r.reason || "desk should come back");
+  } finally {
+    const st = execFileSync("docker", ["inspect", "-f", "{{.State.Paused}}", name], { encoding: "utf8" });
+    if (st.trim() === "true") execFileSync("docker", ["unpause", name], { stdio: "ignore" });
+  }
+});
+
 let failed = 0;
 for (const { name, fn } of results) {
   try {
