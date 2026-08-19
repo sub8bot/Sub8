@@ -146,10 +146,19 @@ export async function setHermesModel(model) {
 }
 
 export function nodeBin() {
-  if (process.env.ELECTRON_RUN_AS_NODE || path.basename(process.execPath).toLowerCase().includes("electron")) {
-    return process.execPath;
-  }
-  return process.execPath;
+  const exe = path.basename(process.execPath || "").toLowerCase();
+  const electronish = /electron|^sub8$/.test(exe) || process.env.ELECTRON_RUN_AS_NODE;
+  if (!electronish && process.execPath && fsSync.existsSync(process.execPath)) return process.execPath;
+  return whichCmd("node", ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]);
+}
+
+export function mcpServerSpec(mcpEnv = {}) {
+  return {
+    type: "stdio",
+    command: nodeBin(),
+    args: [mcpScript()],
+    env: { ...hostEnv(), ...mcpEnv },
+  };
 }
 
 function mcpScript() {
@@ -416,7 +425,7 @@ To see the screen: computer action=screenshot
 To click: computer action=left_click with x,y from the screenshot.
 To type: computer action=type. To press a key: computer action=key.
 To sign in: vault_fill. Never print a password.
-Do not drive Chrome with xdotool, wmctrl, octo-click, or host Bash. If sub8 MCP is missing, say "sub8 MCP not connected".
+Do not drive Chrome with xdotool, wmctrl, octo-click, or host Bash. The sub8 tools are computer, shell, vault_list, and vault_fill — call them. Do not announce they are missing unless a tool call returned an error.
 `;
   const prompt = `${userText}
 
@@ -428,18 +437,9 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
     SUB8_INTERNAL_URL: port ? `http://127.0.0.1:${port}` : "",
   };
   const mcpFile = path.join(work, "mcp.json");
-  await fs.writeFile(
-    mcpFile,
-    JSON.stringify({
-      mcpServers: {
-        sub8: {
-          command: nodeBin(),
-          args: [mcpScript()],
-          env: { ...hostEnv(), ...mcpEnv },
-        },
-      },
-    }),
-  );
+  const mcpJson = JSON.stringify({ mcpServers: { sub8: mcpServerSpec(mcpEnv) } }, null, 2);
+  await fs.writeFile(mcpFile, mcpJson);
+  await fs.writeFile(path.join(work, ".mcp.json"), mcpJson);
 
   let bin;
   let args;
@@ -454,6 +454,8 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
       "--verbose",
       "--permission-mode",
       "bypassPermissions",
+      "--dangerously-skip-permissions",
+      "--strict-mcp-config",
       "--mcp-config",
       mcpFile,
       "--append-system-prompt",
