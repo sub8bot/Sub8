@@ -264,8 +264,14 @@ test("a paused desk is woken, not waited on", async () => {
   try {
     const paused = execFileSync("docker", ["inspect", "-f", "{{.State.Running}}", name], { encoding: "utf8" });
     assert.equal(paused.trim(), "true", "paused containers still report Running=true");
-    const r = await vm.waitForDesktop({ ...bot }, { timeoutMs: 120_000, onLog: () => {} });
-    assert.equal(r.ok, true, r.reason || "desk should come back");
+    const seen = [];
+    const r = await vm.waitForDesktop({ ...bot }, { timeoutMs: 120_000, onLog: (m) => seen.push(m) });
+    const h = await vm.streamHealth({ ...bot });
+    assert.equal(
+      r.ok,
+      true,
+      `${r.reason || "desk should come back"} | log: ${[...new Set(seen)].join(" / ")} | health: ${JSON.stringify({ running: h.running, port: h.novncPort, http: h.http, x11: h.x11, chrome: h.chrome })} | stored: ${bot.vm.novncPort}`,
+    );
   } finally {
     const st = execFileSync("docker", ["inspect", "-f", "{{.State.Paused}}", name], { encoding: "utf8" });
     if (st.trim() === "true") execFileSync("docker", ["unpause", name], { stdio: "ignore" });
