@@ -55,8 +55,8 @@ export function hermesConfigPath() {
 }
 
 const HERMES_MIN_CTX = 131072;
-/** Isolated Sub8 ACP home: enough to beat LM Studio's ~4k probe, not a 128k KV tax. */
-export const HERMES_SUB8_CTX = 32768;
+/** Isolated Sub8 ACP home: Hermes Agent requires >= 64k. Do not use 128k. */
+export const HERMES_SUB8_CTX = 65536;
 
 export function withHermesContextLength(cfg, n = HERMES_MIN_CTX) {
   let out = String(cfg || "");
