@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { HERMES_SUB8_CTX, withHermesContextLength, withHermesReasoningEffort } from "../server/host-cli.mjs";
 
 const slim = withHermesReasoningEffort(withHermesContextLength("model:\n  default: qwen3.8-27b\n", HERMES_SUB8_CTX), "low");
-assert.match(slim, /context_length:\s*32768/);
+assert.match(slim, /context_length:\s*65536/);
 assert.match(slim, /reasoning_effort:\s*low/);
 
 const host = withHermesContextLength("model:\n  context_length: 4096\n  default: x\n");
