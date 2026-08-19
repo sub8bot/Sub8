@@ -1085,16 +1085,30 @@ export async function sweepOrphans(keepNames = [], keepVolumes = []) {
 
 export async function streamHealth(bot) {
   const name = bot.vm?.container || (bot.id ? containerName(bot.id) : null);
-  const port = bot.vm?.novncPort;
   const inspect = name ? await docker(["inspect", "-f", "{{.State.Running}}", name]) : { ok: false, out: "" };
   const running = inspect.ok && inspect.out.trim() === "true";
-  let http = 0;
-  if (port) {
+  const probe = async (p) => {
+    if (!p) return 0;
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(3000) });
-      http = res.status;
+      const res = await fetch(`http://127.0.0.1:${p}/`, { signal: AbortSignal.timeout(3000) });
+      return res.status;
     } catch {
-      http = 0;
+      return 0;
+    }
+  };
+  // Docker hands out a new host port whenever it restarts a container, so the
+  // port we stored can point at nothing. Ask Docker again rather than deciding
+  // a healthy desk is down.
+  let port = bot.vm?.novncPort;
+  let http = await probe(port);
+  if (running && name && http !== 200 && http !== 401) {
+    const fresh = await detectMappedPort(name);
+    if (fresh && fresh !== port) {
+      const status = await probe(fresh);
+      if (status === 200 || status === 401) {
+        port = fresh;
+        http = status;
+      }
     }
   }
   let grok = false;
@@ -1139,8 +1153,19 @@ export async function waitForDesktop(bot, { timeoutMs = 90_000, onLog = () => {}
   const start = Date.now();
   const gone = async () => Boolean(shouldAbort && (await shouldAbort()));
   const name = bot.vm?.container || containerName(bot.id);
-  const inspect = await docker(["inspect", "-f", "{{.State.Running}}", name], { timeout: 8_000 });
-  let alive = inspect.ok && inspect.out.trim() === "true";
+  // A paused container still reports State.Running=true, but every exec into it
+  // fails, so the desk can never look ready. Wake it before waiting on it.
+  const inspect = await docker(["inspect", "-f", "{{.State.Running}} {{.State.Paused}}", name], { timeout: 8_000 });
+  const [wasRunning, wasPaused] = inspect.out.trim().split(/\s+/);
+  if (inspect.ok && wasPaused === "true") {
+    onLog("Waking the computer…");
+    await resumeContainer(name);
+  }
+  let alive = inspect.ok && wasRunning === "true" && wasPaused !== "true";
+  if (!alive && inspect.ok && wasPaused === "true") {
+    const woke = await docker(["inspect", "-f", "{{.State.Running}} {{.State.Paused}}", name], { timeout: 8_000 });
+    alive = woke.ok && woke.out.trim() === "true false";
+  }
   if (!alive) {
     onLog("Starting computer…");
     const grace = Date.now() + 25_000;
