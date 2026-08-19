@@ -187,8 +187,9 @@ function create() {
     const load = () => {
       if (!win.isDestroyed()) win.loadURL(URL);
     };
-    if (app.isPackaged) load();
-    else win.webContents.session.clearCache().finally(load);
+    // Don't wait on clearCache — it can hang under sandbox and leave a white window.
+    if (!app.isPackaged) win.webContents.session.clearCache().catch(() => {});
+    load();
   });
   let fails = 0;
   win.webContents.on("did-fail-load", (_e, code) => {
