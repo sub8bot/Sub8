@@ -695,7 +695,8 @@ export async function startVm(bot, onLog = () => {}, shouldAbort = async () => f
   const live = await inspectState(name);
   if (live.exists && (live.running || live.paused)) {
     await abortIfGone();
-    const port = bot.vm?.novncPort || (await detectMappedPort(name));
+    const mapped = live.novncPort || (await detectMappedPort(name));
+    const port = resolveStreamPort(bot.vm?.novncPort, mapped);
     const chrome = await chromeReady(name);
     finishDesktopSetup(name, onLog).catch((err) => onLog(String(err.message || err)));
     return {
@@ -899,6 +900,17 @@ export async function detectMappedPort(name) {
   return m ? Number(m[1]) : null;
 }
 
+// Docker's current mapping is the source of truth. A port we wrote down can
+// still answer HTTP after a remap — it just belongs to a different desk.
+export function resolveStreamPort(stored, mapped) {
+  return mapped || stored || null;
+}
+
+export function cachedMappedPort(name) {
+  if (!name || !containerListCache.value?.states) return null;
+  return containerListCache.value.states.get(name)?.novncPort || null;
+}
+
 async function waitHttp(url, timeoutMs, onLog, shouldAbort) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
@@ -1100,21 +1112,15 @@ export async function streamHealth(bot) {
       return 0;
     }
   };
-  // Docker hands out a new host port whenever it restarts a container, so the
-  // port we stored can point at nothing. Ask Docker again rather than deciding
-  // a healthy desk is down.
-  let port = bot.vm?.novncPort;
-  let http = await probe(port);
-  if (running && name && http !== 200 && http !== 401) {
-    const fresh = await detectMappedPort(name);
-    if (fresh && fresh !== port) {
-      const status = await probe(fresh);
-      if (status === 200 || status === 401) {
-        port = fresh;
-        http = status;
-      }
-    }
+  // Ask Docker first. Probing the stored port and treating HTTP 200 as "ours"
+  // steals another desk's stream after a remap (stored 13100, mapped 13101).
+  let mapped = null;
+  if (running && name) {
+    const st = await inspectState(name);
+    mapped = st.novncPort || (await detectMappedPort(name));
   }
+  const port = resolveStreamPort(bot.vm?.novncPort, mapped);
+  const http = await probe(port);
   let grok = false;
   let chrome = name ? setupProgress(name).ready || chromeCache.get(name)?.value === true : false;
   if (running && name && !chrome) chrome = await chromeReady(name);

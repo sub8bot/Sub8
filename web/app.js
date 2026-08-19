@@ -1,5 +1,7 @@
 import { animList, bodyList, defaultAvatar, faceList, inferMood, isSleepingMood, randomWakeMood, syncAvatars } from "./avatar.js";
 import { AVATAR_COLORS } from "./palette.js";
+import { applyHealthPort, frameKey, healthIframeIsCurrent } from "./stream-bind.mjs";
+import { listModelsForProvider, modelFieldKind, pickListedModel } from "./harness-models.mjs";
 
 const $ = (sel, el = document) => el.querySelector(sel);
 
@@ -190,8 +192,9 @@ function attachLiveFrame(bot) {
     )}</span></div></div>`;
     return;
   }
-  const key = `${bot.id}:${bot.vm.novncPort}`;
-  if (liveFrameKey !== key || !wrap.querySelector("iframe")) mountLiveFrame(bot);
+  const key = frameKey(bot);
+  const iframe = wrap.querySelector("iframe");
+  if (liveFrameKey !== key || !healthIframeIsCurrent(iframe, bot)) mountLiveFrame(bot);
   paintScreenStatus(bot);
 }
 
@@ -497,10 +500,11 @@ async function refreshStill(img, botId) {
 function mountLiveFrame(bot) {
   const wrap = $("#screen-wrap");
   if (!wrap || !bot?.vm?.novncPort) return;
-  const key = `${bot.id}:${bot.vm.novncPort}`;
+  const key = frameKey(bot);
   liveFrameKey = key;
   delete wrap.dataset.empty;
   delete wrap.dataset.streamReady;
+  delete wrap.dataset.kicked;
   const keep = lastGoodScreen.get(bot.id) || "";
   wrap.innerHTML = `<img class="screen-still${keep ? "" : " hidden"}" alt="" ${
     keep ? `src="${keep}"` : ""
@@ -512,15 +516,21 @@ function mountLiveFrame(bot) {
   refreshStill(still, bot.id);
   const label = $("#screen-label");
   iframe?.addEventListener("load", () => {
+    if (wrap.querySelector("iframe") !== iframe) return;
+    if (state.selected !== bot.id || !healthIframeIsCurrent(iframe, bot)) return;
     wrap.dataset.streamReady = "1";
     if (label) label.textContent = `${bot.name}'s screen`;
     const live = state.bots.find((b) => b.id === bot.id) || bot;
     paintScreenStatus(live);
     setTimeout(() => {
+      if (state.selected !== bot.id) return;
       if (still?.parentNode === wrap) still.classList.add("hidden");
     }, 1400);
   });
-  iframe?.addEventListener("error", () => scheduleStreamRetry(bot, 1600));
+  iframe?.addEventListener("error", () => {
+    if (state.selected !== bot.id) return;
+    scheduleStreamRetry(bot, 1600);
+  });
   if (!wrap.dataset.kicked) {
     wrap.dataset.kicked = "1";
     scheduleStreamRetry(bot, 2200);
@@ -535,7 +545,7 @@ function scheduleStreamRetry(bot, ms) {
     if (state.selected !== bot.id || !bot.vm?.novncPort) return;
     const wrap = $("#screen-wrap");
     const iframe = wrap?.querySelector("iframe");
-    if (iframe) {
+    if (iframe && healthIframeIsCurrent(iframe, bot)) {
       iframe.src = streamUrl(bot);
       const still = wrap.querySelector(".screen-still");
       if (still) {
@@ -1854,30 +1864,40 @@ function harnessProviderOptions(selected) {
 
 function modelPickerHtml(provider, selected, { id = "cm" } = {}) {
   const models = localModels(provider);
-  const local = provider === "ollama" || provider === "lmstudio";
-  const grok = provider === "grok-build" || provider === "spacexai";
+  const kind = modelFieldKind(provider, models);
   const detected = state.localHarness?.[provider];
-  if ((local || grok) && models.length) {
-    const value = models.includes(selected) ? selected : grok ? "grok-4.6" : models[0];
-    const label = provider === "lmstudio" ? "LM Studio" : provider === "ollama" ? "Ollama" : "Grok Build";
+  if (kind === "select") {
+    const value = pickListedModel(provider, selected, models);
+    const label =
+      provider === "lmstudio"
+        ? "LM Studio"
+        : provider === "ollama"
+          ? "Ollama"
+          : provider === "hermes"
+            ? "Hermes"
+            : provider === "codex"
+              ? "Codex"
+            : provider === "spacexai"
+              ? "SpaceXAI"
+              : provider === "grok-build"
+                ? "Grok Build"
+                : provider;
     return `<select class="field" id="${id}">${models
       .map((m) => `<option value="${escapeHtml(m)}" ${value === m ? "selected" : ""}>${escapeHtml(m)}</option>`)
       .join("")}</select>
       <div class="muted">${escapeHtml(label)} · ${models.length} available</div>`;
   }
-  if (local) {
+  if (kind === "detect") {
     return `<input class="field" id="${id}" value="${escapeHtml(selected || "")}" placeholder="${
       detected?.ok ? "no chat models detected" : "start the app to list models"
     }" />
       <div class="muted">${detected?.ok ? "Running, but no chat models yet." : "Not detected. Start the app, then Refresh."}</div>
       <button type="button" class="pill" data-act="refresh-local-harness">Refresh models</button>`;
   }
-  if (provider === "claude" || provider === "codex" || provider === "hermes") {
-    return `<input class="field" id="${id}" value="${escapeHtml(selected || "")}" placeholder="${
-      provider === "hermes" ? "Hermes default" : "default"
-    }" />`;
+  if (kind === "cli") {
+    return `<input class="field" id="${id}" value="${escapeHtml(selected || "")}" placeholder="default" />`;
   }
-  if (provider === "default") {
+  if (kind === "app-default") {
     const def = state.settings?.harness?.model || "app default";
     return `<input class="field" id="${id}" value="${escapeHtml(selected || "")}" placeholder="${escapeHtml(def)}" />
       <div class="muted">Uses the harness in Settings unless you set one here.</div>`;
@@ -2261,33 +2281,22 @@ function seg(key, value, options) {
 }
 
 function grokModels() {
-  const live = state.localHarness?.grok?.models;
-  if (Array.isArray(live) && live.length) return live;
-  return ["grok-4.6", "grok-4.5", "grok-4.3", "grok-build-0.1"];
+  return listModelsForProvider("grok-build", { grok: state.localHarness?.grok?.models });
 }
 
 function localModels(provider) {
-  if (provider === "grok-build" || provider === "spacexai") return grokModels();
-  if (provider === "hermes") {
-    const lm = state.localHarness?.lmstudio?.models || [];
-    const current = harnessInfo("hermes")?.model || "";
-    const extra = ["qwen3.8-27b", "qwen3.6-27b-mlx"];
-    return [...new Set([current, ...lm, ...extra].filter(Boolean))];
-  }
-  return state.localHarness?.[provider]?.models || [];
+  return listModelsForProvider(provider, {
+    grok: state.localHarness?.grok?.models,
+    lmstudio: state.localHarness?.lmstudio?.models,
+    ollama: state.localHarness?.ollama?.models,
+    hermesCurrent: harnessInfo("hermes")?.model || "",
+    codex: harnessInfo("codex")?.extra?.models,
+    codexCurrent: harnessInfo("codex")?.model || "",
+  });
 }
 
 function pickModelForProvider(provider, current = "") {
-  const models = localModels(provider);
-  if (provider === "grok-build" || provider === "spacexai") {
-    return models.includes(current) ? current : "grok-4.6";
-  }
-  if (provider === "ollama" || provider === "lmstudio") {
-    if (models.length) return models.includes(current) ? current : models[0];
-    return "";
-  }
-  if (provider === "claude" || provider === "codex" || provider === "hermes") return "";
-  return current || "";
+  return pickListedModel(provider, current, localModels(provider));
 }
 
 function harnessCatalog() {
@@ -2855,7 +2864,7 @@ function bindDelegated() {
       resetCreateForm();
       state.modal = "create";
       state.picker = false;
-      loadLocalHarness().then(() => {
+      Promise.all([loadLocalHarness(), loadHarnessStatus()]).then(() => {
         if (state.modal === "create") rebuildCreateModal();
       });
     }
@@ -4141,7 +4150,7 @@ function reconnectStream() {
   const iframe = wrap?.querySelector("iframe");
   const still = wrap?.querySelector(".screen-still");
   if (still) still.classList.remove("hidden");
-  if (iframe && bot.vm?.novncPort) {
+  if (iframe && bot.vm?.novncPort && healthIframeIsCurrent(iframe, bot)) {
     iframe.src = streamUrl(bot);
     if (still) refreshStill(still, bot.id);
   } else if (bot.vm?.novncPort) {
@@ -4510,12 +4519,20 @@ function watchStream() {
   }
   api(`/api/bots/${bot.id}/stream-health`)
     .then((h) => {
+      if (state.selected !== bot.id) return;
+      const applied = applyHealthPort(bot, h);
+      if (applied.changed) {
+        bot.vm = applied.bot.vm;
+        liveFrameKey = null;
+        attachLiveFrame(bot);
+      }
       if (h.docker) {
         const was = dockerMissing();
         state.docker = h.docker;
         if (was !== dockerMissing()) attachLiveFrame(bot);
       }
-      if (h.ok && $("#screen-wrap iframe")) return;
+      const iframe = $("#screen-wrap iframe");
+      if (h.ok && healthIframeIsCurrent(iframe, bot)) return;
       if (needsDesk(bot)) {
         attachLiveFrame(bot);
         return;

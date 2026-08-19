@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { parseLocalbotPs, urlLooksOpen } from "../server/vm.mjs";
+import { parseLocalbotPs, resolveStreamPort, urlLooksOpen } from "../server/vm.mjs";
+import { applyHealthPort, frameKey, healthIframeIsCurrent } from "../web/stream-bind.mjs";
 
 const states = parseLocalbotPs(
   [
@@ -26,6 +27,24 @@ const mapped = parseLocalbotPs(
 );
 assert.equal(mapped.get("localbot-6d6cfe52")?.novncPort, 13101);
 assert.equal(mapped.get("localbot-438716ea")?.novncPort, null);
+
+// A stored port that still answers HTTP can belong to a *different* desk
+// after Docker remaps. Mapped always wins; stored is only a fallback.
+assert.equal(resolveStreamPort(13100, 13101), 13101);
+assert.equal(resolveStreamPort(13100, null), 13100);
+assert.equal(resolveStreamPort(null, 13102), 13102);
+assert.equal(resolveStreamPort(null, null), null);
+
+const aika = { id: "6d6cfe52", vm: { novncPort: 13100 } };
+const healed = applyHealthPort(aika, { novncPort: 13101 });
+assert.equal(healed.changed, true);
+assert.equal(healed.bot.vm.novncPort, 13101);
+assert.equal(aika.vm.novncPort, 13100, "do not mutate the input bot");
+assert.equal(frameKey(healed.bot), "6d6cfe52:13101");
+assert.equal(healthIframeIsCurrent({ dataset: { key: "6d6cfe52:13100" } }, healed.bot), false);
+assert.equal(healthIframeIsCurrent({ dataset: { key: "6d6cfe52:13101" } }, healed.bot), true);
+assert.equal(applyHealthPort(healed.bot, { novncPort: 13101 }).changed, false);
+
 assert.equal(urlLooksOpen("Example Domain - Google Chrome", "https://mail.google.com"), false);
 assert.equal(urlLooksOpen("Inbox - aikabotto@gmail.com - Google Chrome", "https://mail.google.com"), true);
 assert.equal(urlLooksOpen("Octopus - Wikipedia - Google Chrome", "https://en.wikipedia.org/wiki/Octopus"), true);

@@ -79,6 +79,41 @@ function yamlScalar(src, key) {
   return m ? m[1].trim().replace(/^["']|["']$/g, "") : "";
 }
 
+export function parseCodexModelCatalog(payload, { current = "", includeHidden = false } = {}) {
+  const models = Array.isArray(payload?.models) ? payload.models : Array.isArray(payload) ? payload : [];
+  const ranked = [];
+  for (const m of models) {
+    const slug = String(m?.slug || m?.id || "").trim();
+    if (!slug) continue;
+    const vis = String(m?.visibility || "list").toLowerCase();
+    if (!includeHidden && vis === "hide") continue;
+    ranked.push({ slug, priority: Number(m?.priority) || 999 });
+  }
+  ranked.sort((a, b) => a.priority - b.priority || a.slug.localeCompare(b.slug));
+  return [...new Set([current, ...ranked.map((m) => m.slug)].filter(Boolean))];
+}
+
+export async function listCodexModels() {
+  const home = path.join(os.homedir(), ".codex");
+  const cfg = await readText(path.join(home, "config.toml"));
+  const current = yamlScalar(cfg, "model") || "";
+  const cache = await readJson(path.join(home, "models_cache.json"));
+  const fromCache = parseCodexModelCatalog(cache, { current });
+  if (fromCache.length) return fromCache;
+  return parseCodexModelCatalog(
+    {
+      models: [
+        { slug: "gpt-5.6-sol", visibility: "list", priority: 1 },
+        { slug: "gpt-5.6-terra", visibility: "list", priority: 2 },
+        { slug: "gpt-5.6-luna", visibility: "list", priority: 3 },
+        { slug: "gpt-5.5", visibility: "list", priority: 7 },
+        { slug: "gpt-5.2", visibility: "list", priority: 29 },
+      ],
+    },
+    { current },
+  );
+}
+
 async function grokStatus() {
   const bin = resolveBin("grok", whichCmd("grok", [path.join(os.homedir(), ".grok", "bin", "grok")]));
   const signedIn = await hostHasGrokAuth();
@@ -188,6 +223,7 @@ async function codexStatus() {
     const v = await run(bin, ["--version"], { timeout: 6_000 });
     version = (v.out.split("\n")[0] || "").slice(0, 80);
   }
+  const models = await listCodexModels();
   return {
     id: "codex",
     label: "Codex",
@@ -197,7 +233,8 @@ async function codexStatus() {
     version,
     signedIn,
     ready: Boolean(bin) && signedIn,
-    model: "",
+    model: models[0] || "",
+    extra: { models },
     detail: !bin
       ? "Codex CLI is not installed on this Mac."
       : signedIn

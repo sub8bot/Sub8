@@ -30,8 +30,14 @@ app.use("/vendor/three", express.static(path.join(root, "node_modules", "three")
 const busyIds = new Set();
 const internalToken = randomBytes(24).toString("hex");
 function toClient(bot) {
+  const mapped = bot.vm?.container ? vm.cachedMappedPort(bot.vm.container) : null;
+  const novncPort = vm.resolveStreamPort(bot.vm?.novncPort, mapped);
+  const client = publicBot(bot);
+  if (client.vm && novncPort && client.vm.novncPort !== novncPort) {
+    client.vm = { ...client.vm, novncPort };
+  }
   return {
-    ...publicBot(bot),
+    ...client,
     busy: busyIds.has(bot.id),
     storage: {
       sessionId: bot.id,
@@ -806,6 +812,17 @@ app.get("/api/bots/:id/stream-health", async (req, res) => {
   if (!bot) return res.status(404).json({ error: "not found" });
   try {
     const health = await vm.streamHealth(bot);
+    if (health.novncPort && bot.vm?.novncPort !== health.novncPort) {
+      bot.vm = { ...bot.vm, novncPort: health.novncPort };
+      await store.upsertBot(bot);
+      if (bot.vm.computerId) {
+        const full = await computers.getComputer(bot.vm.computerId);
+        if (full && full.novncPort !== health.novncPort) {
+          await computers.saveComputer({ ...full, novncPort: health.novncPort });
+        }
+      }
+      broadcast("bot", toClient(bot));
+    }
     const shotPath = path.join(dataDir, "screens", `${bot.id}.png`);
     let shot = null;
     try {
@@ -1116,6 +1133,12 @@ async function runUserTurn(botId, text, hidden, images = [], opts = {}) {
   try {
     let bot = await store.getBot(botId);
     if (!bot) return;
+    const mapped = bot.vm?.container ? (vm.cachedMappedPort(bot.vm.container) || (await vm.detectMappedPort(bot.vm.container))) : null;
+    const port = vm.resolveStreamPort(bot.vm?.novncPort, mapped);
+    if (port && bot.vm && bot.vm.novncPort !== port) {
+      bot.vm = { ...bot.vm, novncPort: port };
+      await store.upsertBot(bot);
+    }
     broadcast("bot", toClient(bot));
     const box = bot.vm?.container;
     const chromeOk = box ? await vm.chromeReady(box) : false;
