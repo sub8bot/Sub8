@@ -1641,14 +1641,13 @@ function paintRoutineList(bot) {
   }
   rl.innerHTML = rows
     .map((r) => {
-      const mins = Math.max(1, Math.round((r.intervalMs || 0) / 60000));
       const on = r.enabled !== false;
       return `<div class="routine-card ${on ? "" : "off"}">
         <div class="routine-top">
           <span class="routine-clock">${iconClock()}</span>
           <div class="routine-copy">
             <b>${escapeHtml(r.name || "Routine")}</b>
-            <div class="muted">Every ${mins} minutes${on ? "" : ", paused"}${r.lastRunAt ? ` · last ${fmtWhen(r.lastRunAt)}` : ""}</div>
+            <div class="muted">${escapeHtml(routineCadence(r))}${on ? "" : ", paused"}${r.lastRunAt ? ` · last ${fmtWhen(r.lastRunAt, r.schedule?.type === "daily" ? state.timezone : "")}` : ""}</div>
           </div>
         </div>
         <p class="routine-body">${escapeHtml(previewRoutine(r.instruction))}</p>
@@ -1662,7 +1661,38 @@ function paintRoutineList(bot) {
     .join("");
 }
 
-function fmtWhen(ts) {
+function routineClock(hour, minute) {
+  const h = Number(hour);
+  const m = Number(minute);
+  if (!Number.isInteger(h) || h < 0 || h > 23 || !Number.isInteger(m) || m < 0 || m > 59) return "";
+  const twelveHour = h % 12 || 12;
+  return `${twelveHour}:${String(m).padStart(2, "0")} ${h >= 12 ? "PM" : "AM"}`;
+}
+
+function routineCadence(r) {
+  const schedule = r?.schedule;
+  if (schedule?.type === "daily") {
+    const clock = routineClock(schedule.hour, schedule.minute);
+    if (clock) return `Every day at ${clock} (${state.timezone || "local time"})`;
+  }
+  const mins = Math.max(1, Math.round((r?.intervalMs || 0) / 60000));
+  return `Every ${mins} minute${mins === 1 ? "" : "s"}`;
+}
+
+function morningScheduleFromInstruction(text) {
+  const t = String(text || "");
+  const match = t.match(/\b(?:every|each)\s+morning\b/i);
+  if (!match) return null;
+  const suffix = t.slice((match.index || 0) + match[0].length);
+  if (
+    /[?]|^\s*(?:at|around|by|before|after|until)\b|^\s*\d{1,2}(?::\d{2})?\s*(?:am|pm|ish)?\b|^\s*(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?:\s+o['’]?clock)?\b|^\s*half\s+past\s+(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d{1,2})\b|\b(?:in|until|before|after)\s+(?:the\s+)?(?:am|pm|noon|midnight)\b|\b(?:noon|midnight)\b/i.test(
+      suffix,
+    )
+  ) return null;
+  return { type: "daily", hour: 9, minute: 0 };
+}
+
+function fmtWhen(ts, timeZone = "") {
   const n = Number(ts);
   if (!n) return "—";
   const d = new Date(n);
@@ -1670,8 +1700,9 @@ function fmtWhen(ts) {
   const ago = Math.max(0, now - n);
   if (ago < 60_000) return "just now";
   if (ago < 3600_000) return `${Math.round(ago / 60_000)} min ago`;
-  if (ago < 86400_000) return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  return d.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const zone = timeZone || undefined;
+  if (ago < 86400_000) return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZone: zone });
+  return d.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: zone });
 }
 
 function previewRoutine(text) {
@@ -1766,6 +1797,7 @@ function advancedHtml(bot) {
 function routineEditorHtml(bot) {
   const r = (bot.routines || []).find((x) => x.id === state.editingRoutineId);
   const isNew = !r;
+  const isCalendar = r?.schedule?.type === "daily";
   const mins = r ? Math.max(1, Math.round((r.intervalMs || 0) / 60000)) : 15;
   const on = r?.enabled !== false;
   const runs = Array.isArray(r?.runs) ? [...r.runs].reverse().slice(0, 12) : [];
@@ -1787,11 +1819,15 @@ function routineEditorHtml(bot) {
             <input class="field" id="rn" value="${escapeHtml(r?.name || "")}" placeholder="Main routine" />
           </label>
           <label class="routine-field">
-            <span class="muted">Every</span>
-            <div class="routine-mins">
+            <span class="muted">${isCalendar ? "Schedule" : "Every"}</span>
+            ${
+              isCalendar
+                ? `<div class="routine-schedule-display">${escapeHtml(routineCadence(r))}</div>`
+                : `<div class="routine-mins">
               <input class="field" id="rm" type="number" min="1" value="${mins}" />
               <span class="muted">minutes</span>
-            </div>
+            </div>`
+            }
           </label>
         </div>
         <label class="routine-field routine-brief">
@@ -1805,7 +1841,7 @@ function routineEditorHtml(bot) {
           <div class="muted">Trigger history</div>
           ${
             runs.length
-              ? `<ul>${runs.map((x) => `<li>${escapeHtml(fmtWhen(x.ts))}</li>`).join("")}</ul>`
+               ? `<ul>${runs.map((x) => `<li>${escapeHtml(fmtWhen(x.ts, r?.schedule?.type === "daily" ? state.timezone : ""))}</li>`).join("")}</ul>`
               : `<p class="muted">No runs logged yet. They appear here each time this routine fires.</p>`
           }
         </div>`
@@ -3921,11 +3957,21 @@ async function confirmCreateBot() {
 async function saveRoutine() {
   const bot = state.bots.find((b) => b.id === state.selected);
   if (!bot) return;
+  const current = (bot.routines || []).find((r) => r.id === state.editingRoutineId);
   const body = {
     name: $("#rn")?.value || "Routine",
     instruction: $("#ri")?.value || "",
-    interval_minutes: Number($("#rm")?.value || 15),
   };
+  if (current?.schedule?.type === "daily") body.schedule = current.schedule;
+  else if (!current) {
+    const morningSchedule = morningScheduleFromInstruction(body.instruction);
+    if (morningSchedule) body.schedule = morningSchedule;
+    else body.interval_minutes = Number($("#rm")?.value || 15);
+  } else body.interval_minutes = Number($("#rm")?.value || 15);
+  if (!current) {
+    body.force_new = true;
+    body.solo = false;
+  }
   if (!body.instruction.trim()) return;
   if (state.editingRoutineId) {
     body.enabled = $("#re-tog") ? $("#re-tog").classList.contains("on") : true;
