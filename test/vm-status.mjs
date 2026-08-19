@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { parseLocalbotPs, resolveStreamPort, urlLooksOpen } from "../server/vm.mjs";
-import { applyHealthPort, frameKey, healthIframeIsCurrent } from "../web/stream-bind.mjs";
+import { applyHealthPort, CONNECTING_AFTER_MS, frameKey, healthIframeIsCurrent, shouldShowConnecting } from "../web/stream-bind.mjs";
 
 const states = parseLocalbotPs(
   [
@@ -44,6 +44,11 @@ assert.equal(frameKey(healed.bot), "6d6cfe52:13101");
 assert.equal(healthIframeIsCurrent({ dataset: { key: "6d6cfe52:13100" } }, healed.bot), false);
 assert.equal(healthIframeIsCurrent({ dataset: { key: "6d6cfe52:13101" } }, healed.bot), true);
 assert.equal(applyHealthPort(healed.bot, { novncPort: 13101 }).changed, false);
+
+assert.equal(CONNECTING_AFTER_MS, 5000);
+assert.equal(shouldShowConnecting({ downSince: 0, now: 9000 }), false);
+assert.equal(shouldShowConnecting({ downSince: 1000, now: 4000 }), false);
+assert.equal(shouldShowConnecting({ downSince: 1000, now: 6000 }), true);
 
 assert.equal(urlLooksOpen("Example Domain - Google Chrome", "https://mail.google.com"), false);
 assert.equal(urlLooksOpen("Inbox - aikabotto@gmail.com - Google Chrome", "https://mail.google.com"), true);

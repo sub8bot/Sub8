@@ -1,6 +1,6 @@
 import { animList, bodyList, defaultAvatar, faceList, inferMood, isSleepingMood, randomWakeMood, syncAvatars } from "./avatar.js";
 import { AVATAR_COLORS } from "./palette.js";
-import { applyHealthPort, frameKey, healthIframeIsCurrent } from "./stream-bind.mjs";
+import { applyHealthPort, CONNECTING_AFTER_MS, frameKey, healthIframeIsCurrent, shouldShowConnecting } from "./stream-bind.mjs";
 import { listModelsForProvider, modelFieldKind, pickListedModel } from "./harness-models.mjs";
 
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -441,9 +441,9 @@ function paintDockerGate() {
   </div>`;
 }
 
-function streamUrl(bot) {
-  const t = Date.now();
-  return `http://127.0.0.1:${bot.vm.novncPort}/?autoconnect=1&reconnect=1&reconnect_delay=1500&resize=scale&t=${t}`;
+function streamUrl(bot, { bust = false } = {}) {
+  const q = `autoconnect=1&reconnect=1&reconnect_delay=1500&resize=scale`;
+  return `http://127.0.0.1:${bot.vm.novncPort}/?${q}${bust ? `&t=${Date.now()}` : ""}`;
 }
 
 const lastGoodScreen = new Map();
@@ -497,14 +497,69 @@ async function refreshStill(img, botId) {
   }
 }
 
+function screenStill(wrap) {
+  return wrap?.querySelector(".screen-still");
+}
+
+function holdStill(wrap, botId) {
+  const still = screenStill(wrap);
+  if (!still || !botId) return still;
+  still.classList.remove("hidden");
+  still.hidden = false;
+  const keep = lastGoodScreen.get(botId);
+  if (keep && still.src !== keep) still.src = keep;
+  refreshStill(still, botId);
+  return still;
+}
+
+let connectingTimer = 0;
+function beginStreamWait(wrap, botId, { reset = false } = {}) {
+  if (!wrap) return;
+  holdStill(wrap, botId);
+  if (reset || !wrap.dataset.awaiting) wrap.dataset.awaiting = String(Date.now());
+  delete wrap.dataset.streamReady;
+  if (reset) delete wrap.dataset.iframeLoaded;
+  wrap.querySelector(".screen-connecting")?.remove();
+  clearTimeout(connectingTimer);
+  const downSince = Number(wrap.dataset.awaiting || Date.now());
+  connectingTimer = setTimeout(() => settleStreamWait(wrap), Math.max(0, CONNECTING_AFTER_MS - (Date.now() - downSince)));
+}
+
+function markIframeLoaded(wrap) {
+  if (!wrap) return;
+  wrap.dataset.iframeLoaded = "1";
+  settleStreamWait(wrap);
+}
+
+function settleStreamWait(wrap) {
+  if (!wrap) return;
+  const downSince = Number(wrap.dataset.awaiting || 0);
+  const now = Date.now();
+  const loaded = wrap.dataset.iframeLoaded === "1";
+  const still = screenStill(wrap);
+  if (loaded && (!downSince || now - downSince >= CONNECTING_AFTER_MS)) {
+    wrap.dataset.streamReady = "1";
+    delete wrap.dataset.awaiting;
+    wrap.querySelector(".screen-connecting")?.remove();
+    still?.classList.add("hidden");
+    return;
+  }
+  if (!loaded && shouldShowConnecting({ downSince, now })) {
+    if (!wrap.querySelector(".screen-connecting")) {
+      const chip = document.createElement("div");
+      chip.className = "screen-connecting";
+      chip.textContent = "Connecting…";
+      wrap.appendChild(chip);
+    }
+  }
+}
+
 function mountLiveFrame(bot) {
   const wrap = $("#screen-wrap");
   if (!wrap || !bot?.vm?.novncPort) return;
   const key = frameKey(bot);
   liveFrameKey = key;
   delete wrap.dataset.empty;
-  delete wrap.dataset.streamReady;
-  delete wrap.dataset.kicked;
   const keep = lastGoodScreen.get(bot.id) || "";
   wrap.innerHTML = `<img class="screen-still${keep ? "" : " hidden"}" alt="" ${
     keep ? `src="${keep}"` : ""
@@ -513,28 +568,20 @@ function mountLiveFrame(bot) {
   const still = wrap.querySelector(".screen-still");
   bindStill(still, bot.id);
   if (keep) still.hidden = false;
-  refreshStill(still, bot.id);
+  beginStreamWait(wrap, bot.id, { reset: true });
   const label = $("#screen-label");
   iframe?.addEventListener("load", () => {
     if (wrap.querySelector("iframe") !== iframe) return;
     if (state.selected !== bot.id || !healthIframeIsCurrent(iframe, bot)) return;
-    wrap.dataset.streamReady = "1";
     if (label) label.textContent = `${bot.name}'s screen`;
     const live = state.bots.find((b) => b.id === bot.id) || bot;
     paintScreenStatus(live);
-    setTimeout(() => {
-      if (state.selected !== bot.id) return;
-      if (still?.parentNode === wrap) still.classList.add("hidden");
-    }, 1400);
+    markIframeLoaded(wrap);
   });
   iframe?.addEventListener("error", () => {
     if (state.selected !== bot.id) return;
     scheduleStreamRetry(bot, 1600);
   });
-  if (!wrap.dataset.kicked) {
-    wrap.dataset.kicked = "1";
-    scheduleStreamRetry(bot, 2200);
-  }
   paintControlChrome();
 }
 
@@ -546,12 +593,8 @@ function scheduleStreamRetry(bot, ms) {
     const wrap = $("#screen-wrap");
     const iframe = wrap?.querySelector("iframe");
     if (iframe && healthIframeIsCurrent(iframe, bot)) {
-      iframe.src = streamUrl(bot);
-      const still = wrap.querySelector(".screen-still");
-      if (still) {
-        still.classList.remove("hidden");
-        refreshStill(still, bot.id);
-      }
+      beginStreamWait(wrap, bot.id, { reset: true });
+      iframe.src = streamUrl(bot, { bust: true });
       return;
     }
     liveFrameKey = null;
@@ -4146,17 +4189,7 @@ async function resetVm() {
 function reconnectStream() {
   const bot = state.bots.find((b) => b.id === state.selected);
   if (!bot) return;
-  const wrap = $("#screen-wrap");
-  const iframe = wrap?.querySelector("iframe");
-  const still = wrap?.querySelector(".screen-still");
-  if (still) still.classList.remove("hidden");
-  if (iframe && bot.vm?.novncPort && healthIframeIsCurrent(iframe, bot)) {
-    iframe.src = streamUrl(bot);
-    if (still) refreshStill(still, bot.id);
-  } else if (bot.vm?.novncPort) {
-    liveFrameKey = null;
-    mountLiveFrame(bot);
-  }
+  scheduleStreamRetry(bot, 0);
   const label = $("#screen-label");
   if (label) label.textContent = `${bot.name}'s screen`;
 }
@@ -4531,8 +4564,21 @@ function watchStream() {
         state.docker = h.docker;
         if (was !== dockerMissing()) attachLiveFrame(bot);
       }
-      const iframe = $("#screen-wrap iframe");
-      if (h.ok && healthIframeIsCurrent(iframe, bot)) return;
+      const wrap = $("#screen-wrap");
+      const iframe = wrap?.querySelector("iframe");
+      if (healthIframeIsCurrent(iframe, bot)) {
+        if (h.ok) {
+          wrap.dataset.iframeLoaded = "1";
+          settleStreamWait(wrap);
+        } else if (wrap.dataset.streamReady !== "1") {
+          beginStreamWait(wrap, bot.id);
+        } else if (!wrap.dataset.awaiting) {
+          wrap.dataset.awaiting = String(Date.now());
+          clearTimeout(connectingTimer);
+          connectingTimer = setTimeout(() => settleStreamWait(wrap), CONNECTING_AFTER_MS);
+        }
+        return;
+      }
       if (needsDesk(bot)) {
         attachLiveFrame(bot);
         return;
@@ -4546,7 +4592,7 @@ function watchStream() {
           });
         return;
       }
-      if (bot.vm?.novncPort) scheduleStreamRetry(bot, 400);
+      if (bot.vm?.novncPort) attachLiveFrame(bot);
     })
     .catch(() => {
       if (needsDesk(bot)) {
@@ -4627,6 +4673,7 @@ function watchStream() {
   }, 5_000);
   window.addEventListener("focus", () => {
     const bot = state.bots.find((b) => b.id === state.selected);
-    if (bot?.vm?.novncPort) scheduleStreamRetry(bot, 700);
+    const still = $(".screen-still");
+    if (bot?.id && still) refreshStill(still, bot.id);
   });
 })();

@@ -264,6 +264,22 @@ function parseCodexStream(line, acc) {
   }
 }
 
+export function grokShouldKeepText(text) {
+  const t = String(text || "").trim();
+  if (!t) return false;
+  if (/^Error: max turns reached$/i.test(t)) return false;
+  if (t.length > 280) return true;
+  return !/^(I('ll| will) |Let me |Trying |The (first |desktop |MCP |hash |trip|origin|destination|route|search) |Origin is |SFO is set|One way is |Google Flights is open)/i.test(
+    t,
+  );
+}
+
+export function foldGrokVisibleText(parts) {
+  const list = (parts || []).map((p) => String(p || "").trim()).filter(Boolean);
+  const kept = list.filter(grokShouldKeepText);
+  return (kept.length ? kept : list.slice(-1)).join("\n");
+}
+
 function parseGrokStream(line, acc) {
   let evt;
   try {
@@ -271,17 +287,28 @@ function parseGrokStream(line, acc) {
   } catch {
     return;
   }
+  const typ = String(evt.type || evt.event || "");
+  if (/think|reasoning|tool_call|tool_result|status|error/i.test(typ) && typ !== "result") return;
+  if (typ === "result" && typeof evt.result === "string" && evt.result.trim()) {
+    acc.final = true;
+    acc.parts = [evt.result.trim()];
+    acc.reply = foldGrokVisibleText(acc.parts);
+    return;
+  }
+  if (acc.final) return;
   const text =
-    (evt.type === "text" && typeof evt.data === "string" && evt.data) ||
+    (typ === "text" && typeof evt.data === "string" && evt.data) ||
     (typeof evt.text === "string" && evt.text) ||
-    (typeof evt.result === "string" && evt.result) ||
     (typeof evt.message === "string" && evt.message) ||
     "";
-  if (text) acc.reply += text;
   const update = evt.params?.update || evt.update || {};
   const kind = update.sessionUpdate || update.session_update || evt.method || "";
   const chunk = update.content?.text || update.content?.content || "";
-  if (/agent_message/i.test(kind) && chunk) acc.reply += chunk;
+  const piece = text || (/agent_message/i.test(kind) ? chunk : "");
+  if (!piece || !String(piece).trim()) return;
+  acc.parts = acc.parts || [];
+  acc.parts.push(String(piece).trim());
+  acc.reply = foldGrokVisibleText(acc.parts);
 }
 
 export function hostCodexAuthPath() {
@@ -429,6 +456,9 @@ export async function writeGrokHome(botId, mcpEnv) {
   const toml = `[ui]
 permission_mode = "always-approve"
 
+[models]
+default_reasoning_effort = "low"
+
 [mcp_servers.sub8]
 command = ${JSON.stringify(nodeBin())}
 args = [${JSON.stringify(mcpScript())}]
@@ -459,12 +489,22 @@ export async function runHostCli({ provider, model, userText, signal, bot, setti
   const work = await fs.mkdtemp(path.join(os.tmpdir(), `sub8-${provider}-`));
   const extra = await ctx.agentsExtra({ bot, settings, hidden });
   const hermesFast = provider === "hermes";
+  const grokFast = provider === "grok-build";
   const rules = hermesFast
     ? `${extra}
 
 You are Sub8 on this Bot's Linux desktop. Call it "my computer".
 Drive it only through MCP tools: computer, shell, vault_list, vault_fill.
+Always call a tool before you reply. Do not only describe the next step.
 computer action=open text=https://… already returns a screenshot. Do not screenshot again unless the page is wrong. Do not curl a page you opened. Do not use xdotool or host Bash.`
+    : grokFast
+      ? `${extra}
+
+You are Sub8 on this Bot's Linux desktop. Call it "my computer".
+MCP server "sub8" is already connected. Its tools are exactly: computer, shell, vault_list, vault_fill.
+Call computer immediately. Never search for tools, never invent APIs, never curl localhost, never say tools are missing unless a computer call returned an error.
+Do not print a user-visible sentence between every click. One short ack, then tools until the job is done, then one result with the answer.
+computer action=open text=https://… already returns a screenshot.`
     : `${await fs.readFile(path.join(appRoot, "prompts", "capabilities.txt"), "utf8")}
 ${extra}
 
@@ -517,6 +557,7 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
   } else if (provider === "grok-build") {
     const home = await writeGrokHome(bot.id, mcpEnv);
     spawnEnv.GROK_HOME = home;
+    spawnEnv.GROK_CONFIG = JSON.stringify({ models: { default_reasoning_effort: "low" } });
     bin = grokBin();
     args = [
       "-p",
@@ -528,7 +569,9 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
       "--always-approve",
       "--no-alt-screen",
       "--max-turns",
-      "32",
+      "48",
+      "--effort",
+      "low",
       "--rules",
       rules,
       "--cwd",

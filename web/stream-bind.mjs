@@ -13,3 +13,10 @@ export function healthIframeIsCurrent(iframe, bot) {
   const key = frameKey(bot);
   return Boolean(iframe && key && iframe.dataset?.key === key);
 }
+
+export const CONNECTING_AFTER_MS = 5000;
+
+export function shouldShowConnecting({ downSince, now }) {
+  if (!downSince) return false;
+  return now - downSince >= CONNECTING_AFTER_MS;
+}
