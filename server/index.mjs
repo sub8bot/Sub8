@@ -749,7 +749,9 @@ async function liveComputers() {
       continue;
     }
     const st = list.states.get(row.container) || { status: "missing", exists: false, running: false, paused: false };
-    let novncPort = row.novncPort || attached.get(row.id)?.vm?.novncPort || null;
+    // Docker's current mapping wins: a port we remembered can belong to a
+    // container that has since been restarted onto a different one.
+    let novncPort = st.novncPort || row.novncPort || attached.get(row.id)?.vm?.novncPort || null;
     if (st.status === "running" && !novncPort) {
       novncPort = await vm.detectMappedPort(row.container);
     }

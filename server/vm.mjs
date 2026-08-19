@@ -278,8 +278,12 @@ export async function dockerStatus() {
 export function parseLocalbotPs(out) {
   const states = new Map();
   for (const line of String(out || "").split("\n")) {
-    const [name, state, status] = line.split("\t");
+    const [name, state, status, ports] = line.split("\t");
     if (!name || !name.startsWith("localbot-")) continue;
+    // docker ps already knows the host port; reading it here keeps a remembered
+    // port from outliving the mapping it came from.
+    const mapped = /:(\d+)->3000\/tcp/.exec(ports || "");
+    const novncPort = mapped ? Number(mapped[1]) : null;
     const paused = state === "paused" || /paused/i.test(status || "");
     let st = "exited";
     if (paused) st = "paused";
@@ -287,7 +291,7 @@ export function parseLocalbotPs(out) {
     else if (state === "dead") st = "missing";
     else if (state === "created" || state === "exited") st = "exited";
     else if (state) st = state;
-    states.set(name, { exists: true, status: st, running: st === "running", paused, stuck: false });
+    states.set(name, { exists: true, status: st, running: st === "running", paused, stuck: false, novncPort });
   }
   return states;
 }
@@ -303,7 +307,7 @@ export async function listLocalbotStates({ force = false } = {}) {
   if (!force && containerListCache.value && now - containerListCache.at < 2000) return containerListCache.value;
   if (containerListInflight) return containerListInflight;
   containerListInflight = (async () => {
-    const r = await docker(["ps", "-a", "--filter", "name=localbot-", "--format", "{{.Names}}\t{{.State}}\t{{.Status}}"], {
+    const r = await docker(["ps", "-a", "--filter", "name=localbot-", "--format", "{{.Names}}\t{{.State}}\t{{.Status}}\t{{.Ports}}"], {
       timeout: 8_000,
     });
     const value = r.ok
