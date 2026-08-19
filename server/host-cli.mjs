@@ -161,11 +161,61 @@ export function mcpServerSpec(mcpEnv = {}) {
   };
 }
 
+const IMPORT_RE = /(?:import|from)\s+["'](\.[^"']+)["']|import\(\s*["'](\.[^"']+)["']/g;
+
+// Every file the MCP server pulls in, as paths relative to appRoot.
+function mcpGraph(entry, root, seen = new Set()) {
+  if (seen.has(entry) || !fsSync.existsSync(entry)) return seen;
+  seen.add(entry);
+  let src = "";
+  try {
+    src = fsSync.readFileSync(entry, "utf8");
+  } catch {
+    return seen;
+  }
+  for (const m of src.matchAll(IMPORT_RE)) {
+    mcpGraph(path.resolve(path.dirname(entry), m[1] || m[2]), root, seen);
+  }
+  return seen;
+}
+
+// Claude runs this server with real node, which cannot read inside app.asar.
+// A bundle that unpacks the entry point but not its imports dies with
+// ERR_MODULE_NOT_FOUND, and Claude just reports "sub8 MCP not connected".
+// Copy the whole graph somewhere real node can read it, and keep it fresh.
+function healMcp(packed) {
+  try {
+    const out = path.join(dataDir, "mcp");
+    let entry = "";
+    for (const file of mcpGraph(packed, appRoot)) {
+      const rel = path.relative(appRoot, file);
+      if (rel.startsWith("..")) continue;
+      const dest = path.join(out, rel);
+      const src = fsSync.statSync(file);
+      const stale = !fsSync.existsSync(dest) || fsSync.statSync(dest).mtimeMs !== src.mtimeMs;
+      if (stale) {
+        fsSync.mkdirSync(path.dirname(dest), { recursive: true });
+        fsSync.copyFileSync(file, dest);
+        fsSync.utimesSync(dest, src.atime, src.mtime);
+      }
+      if (file === packed) entry = dest;
+    }
+    return entry;
+  } catch {
+    return "";
+  }
+}
+
 function mcpScript() {
   const packed = path.join(appRoot, "server", "mcp-sub8.mjs");
   const unpacked = packed.replace(/\.asar([/\\])/, ".asar.unpacked$1");
-  if (fsSync.existsSync(unpacked)) return unpacked;
-  return packed;
+  const entry = fsSync.existsSync(unpacked) ? unpacked : packed;
+  const root = path.dirname(path.dirname(entry));
+  const complete = [...mcpGraph(packed, appRoot)].every((file) =>
+    fsSync.existsSync(path.join(root, path.relative(appRoot, file))),
+  );
+  if (complete) return entry;
+  return healMcp(packed) || entry;
 }
 
 export function hostEnv() {
