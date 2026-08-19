@@ -24,3 +24,4 @@ tmp
 build/icon.iconset
 *.dmg
 *.AppImage
+DEVELOPMENT.md
