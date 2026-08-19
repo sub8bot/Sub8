@@ -494,7 +494,7 @@ export async function runHostCli({ provider, model, userText, signal, bot, setti
     ? `${extra}
 
 You are Sub8 on this Bot's Linux desktop. Call it "my computer".
-Drive it only through MCP tools: computer, shell, vault_list, vault_fill, list_routines, upsert_routine, disable_routine.
+Drive it only through MCP tools: computer, shell, vault_list, vault_fill, list_routines, upsert_routine, disable_routine, list_teammates, message_teammate, ask_user, create_teammate.
 You MAY edit standing routines: list_routines, then upsert_routine with that id. Overlapping jobs (same group or similar interval) must update the existing id, not create a second one.
 Always call a tool before you reply. Do not only describe the next step.
 computer action=open text=https://… already returns a screenshot. Do not screenshot again unless the page is wrong. Do not curl a page you opened. Do not use xdotool or host Bash.`
@@ -502,7 +502,7 @@ computer action=open text=https://… already returns a screenshot. Do not scree
       ? `${extra}
 
 You are Sub8 on this Bot's Linux desktop. Call it "my computer".
-MCP server "sub8" is already connected. Its tools are: computer, shell, vault_list, vault_fill, list_routines, upsert_routine, disable_routine.
+MCP server "sub8" is already connected. Its tools are: computer, shell, vault_list, vault_fill, list_routines, upsert_routine, disable_routine, list_teammates, message_teammate, ask_user, create_teammate.
 You MAY edit standing routines (list_routines, then upsert_routine with that id). Do not create a second job that overlaps.
 Call computer immediately. Never search for tools, never invent APIs, never curl localhost, never say tools are missing unless a computer call returned an error.
 Do not print a user-visible sentence between every click. One short ack, then tools until the job is done, then one result with the answer.

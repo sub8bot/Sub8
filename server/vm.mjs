@@ -1332,7 +1332,8 @@ export async function screenshotContainer(name, hostPath) {
 
 export async function screenshot(bot) {
   const name = requireVm(bot, "screenshot");
-  return trace.span(bot, "outside", "screenshot", {}, async () => {
+  return withDeskLock(name, () => trace.span(bot, "outside", "screenshot", {}, async () => {
+    await focusOwnedWindow(bot);
     const dest = `/tmp/shot-${Date.now()}.png`;
     let r = await takeScreenshotPng(bot, name, dest);
     if (!r.ok && missingShotTool(r.out)) {
@@ -1349,7 +1350,7 @@ export async function screenshot(bot) {
     const annotated = await annotateShot(hostPath, loc.x, loc.y);
     const buf = annotated || raw;
     return { path: hostPath, ...pngSize(buf), bytes: buf.length, buf, pointer: loc };
-  });
+  }));
 }
 
 export async function mouseMove(bot, x, y) {
@@ -1406,7 +1407,8 @@ unset WINDOW
 export async function click(bot, x, y, button = 1, count = 1) {
   requireVm(bot, "click");
   const p = clampPoint(x, y);
-  return trace.span(bot, "outside", "click", { x: p.x, y: p.y, button, count }, async () => {
+  return withDeskLock(bot.vm.container, () => trace.span(bot, "outside", "click", { x: p.x, y: p.y, button, count }, async () => {
+    await focusOwnedWindow(bot);
     const n = Math.max(1, Math.min(5, Math.round(count)));
     const r = await docker([
       "exec",
@@ -1419,7 +1421,7 @@ export async function click(bot, x, y, button = 1, count = 1) {
     ]);
     if (!r.ok) throw new Error(`click failed: ${r.out.slice(-400)}`);
     await wait(160);
-  });
+  }));
 }
 
 export async function drag(bot, x1, y1, x2, y2) {
@@ -1438,6 +1440,7 @@ export async function drag(bot, x1, y1, x2, y2) {
 }
 
 export async function typeText(bot, text) {
+  await focusOwnedWindow(bot);
   if (!text) return;
   requireVm(bot, "type");
   const escaped = String(text).replace(/'/g, `'\\''`);
@@ -1466,6 +1469,7 @@ export async function typeText(bot, text) {
 }
 
 export async function key(bot, keys) {
+  await focusOwnedWindow(bot);
   const seq = String(keys).trim().replace(/\+/g, "+");
   const r = await docker([
     "exec",
@@ -1545,6 +1549,80 @@ export async function wait(ms) {
   await new Promise((r) => setTimeout(r, Math.max(0, Math.min(15000, ms))));
 }
 
+const deskChain = new Map();
+export function withDeskLock(container, fn) {
+  const key = container || "_";
+  const prev = deskChain.get(key) || Promise.resolve();
+  const next = prev.then(fn, fn);
+  deskChain.set(key, next.catch(() => {}));
+  return next;
+}
+
+export function windowTag(bot) {
+  return `Sub8:${String(bot?.id || "bot").slice(0, 8)}`;
+}
+
+export async function claimChromeWindow(bot) {
+  const name = bot?.vm?.container;
+  if (!name) return null;
+  const tag = windowTag(bot);
+  const id8 = String(bot.id).slice(0, 8);
+  const r = await docker([
+    "exec",
+    "-u",
+    "abc",
+    name,
+    "bash",
+    "-lc",
+    `${displayEnv(bot)}; TAG=${JSON.stringify(tag)}; ID8=${JSON.stringify(id8)};
+HIT=$(wmctrl -l 2>/dev/null | awk -v t="$TAG" 'index($0,t){print $1; exit}')
+if [ -n "$HIT" ]; then echo WINDOW=$HIT; exit 0; fi
+PROF=/config/chrome-profiles/$ID8
+mkdir -p "$PROF"
+BEFORE=$(wmctrl -lx 2>/dev/null | awk '/[Cc]hrom/{print $1}')
+google-chrome --user-data-dir="$PROF" --no-first-run --disable-session-crashed-bubble --new-window about:blank >/tmp/chrome-$ID8.log 2>&1 &
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  sleep 0.35
+  AFTER=$(wmctrl -lx 2>/dev/null | awk '/[Cc]hrom/{print $1}')
+  for w in $AFTER; do
+    echo "$BEFORE" | grep -q "$w" && continue
+    wmctrl -i -r "$w" -N "$TAG" 2>/dev/null || true
+    xdotool set_window --name "$TAG" "$w" 2>/dev/null || true
+    echo WINDOW=$w
+    exit 0
+  done
+done
+w=$(wmctrl -lx 2>/dev/null | awk '/[Cc]hrom/{id=$1} END{print id}')
+if [ -n "$w" ]; then
+  wmctrl -i -r "$w" -N "$TAG" 2>/dev/null || true
+  echo WINDOW=$w
+  exit 0
+fi
+echo WINDOW=
+exit 1`,
+  ]);
+  const wid = (r.out.match(/WINDOW=(\S+)/) || [])[1] || "";
+  if (!wid) return null;
+  bot.vm = { ...(bot.vm || {}), windowId: wid, windowTitle: tag };
+  return { windowId: wid, title: tag };
+}
+
+export async function focusOwnedWindow(bot) {
+  if (!bot?.teamId || !bot?.vm?.container) return null;
+  const claimed = await claimChromeWindow(bot).catch(() => null);
+  const tag = windowTag(bot);
+  await docker([
+    "exec",
+    "-u",
+    "abc",
+    bot.vm.container,
+    "bash",
+    "-lc",
+    `${displayEnv(bot)}; wmctrl -a ${JSON.stringify(tag)} 2>/dev/null || xdotool search --name ${JSON.stringify(tag)} windowactivate 2>/dev/null || true`,
+  ]).catch(() => {});
+  return claimed;
+}
+
 /** True if wmctrl/xdotool window text already shows this URL. */
 export function urlLooksOpen(windowText, dest) {
   const d = String(dest || "").trim();
@@ -1565,6 +1643,8 @@ export function urlLooksOpen(windowText, dest) {
 
 export async function openChrome(bot, url = "") {
   requireVm(bot, "open");
+  return withDeskLock(bot.vm.container, async () => {
+  await focusOwnedWindow(bot);
   const dest = String(url || "").trim();
   const arg = dest ? JSON.stringify(dest) : "";
   const r = await docker([
@@ -1577,6 +1657,14 @@ export async function openChrome(bot, url = "") {
     `${displayEnv(bot)}; nohup /usr/local/bin/chrome-desktop ${arg} >/tmp/chrome-desktop.log 2>&1 & echo OPENED:$!; sleep 0.8`,
   ]);
   if (!r.ok) throw new Error(`open Chrome failed: ${r.out.slice(-400)}`);
+  if (bot.teamId && dest) {
+    await key(bot, "ctrl+l");
+    await wait(150);
+    await typeText(bot, dest);
+    await key(bot, "Return");
+    await wait(400);
+    return { text: `opened ${dest}`, out: r.out };
+  }
   if (dest) {
     const titles = await docker([
       "exec",
@@ -1606,6 +1694,7 @@ export async function openChrome(bot, url = "") {
     }
   }
   return { text: dest ? `opened ${dest}` : "opened Chrome", out: r.out };
+  });
 }
 
 export async function shell(bot, command) {

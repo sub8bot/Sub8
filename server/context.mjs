@@ -2,6 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { appRoot } from "./paths.mjs";
 import * as vault from "./vault.mjs";
+import * as teams from "./teams.mjs";
+import * as store from "./store.mjs";
 
 const TZ_HINTS = [
   [/^America\//, "en-US", "USD", "United States"],
@@ -145,9 +147,19 @@ ${boot}${extra}`;
 export async function agentsExtra({ bot, settings, hidden = false } = {}) {
   const ident = `You are the Bot named "${bot?.name || "Bot"}". ${bot?.description || ""}`.trim();
   const extra = bot?.instructions?.trim() ? `\nStanding instructions:\n${bot.instructions.trim()}` : "";
+  let teamLine = "";
+  if (bot?.teamId) {
+    const team = await teams.getTeam(bot.teamId);
+    if (team) {
+      const mates = teams.membersOf(team, await store.loadBots());
+      const role = bot.teamRole === "chief" ? "chief" : "worker";
+      const names = mates.map((b) => `${b.name} (${b.teamRole || "member"}, ${b.id})`).join("; ");
+      teamLine = `\nYou are the ${role} on team “${team.name}”. Shared desk. Teammates: ${names}. Use list_teammates and message_teammate. Your Chrome window title starts with Sub8:${String(bot.id).slice(0, 8)}.`;
+    }
+  }
   return `${clockBlock(settings, { hidden })}
 ${harnessLine(settings, bot)}
-${ident}${extra}
+${ident}${extra}${teamLine}
 ${await vault.promptBlock(bot?.id)}
 `;
 }

@@ -79,6 +79,8 @@ const state = {
       return "name";
     }
   })(),
+  teams: [],
+  teamTab: null,
   deleteBotId: null,
   pausingQuit: false,
   previewTick: 0,
@@ -654,15 +656,15 @@ async function stopTurn() {
   const id = state.selected;
   if (!id) return;
   const bot = state.bots.find((b) => b.id === id);
-  if (bot) {
-    bot.busy = false;
-    paintChat(bot);
+  const ids = new Set([id]);
+  const team = teamOf(bot);
+  for (const b of teamBots(team)) ids.add(b.id);
+  for (const bid of ids) {
+    const b = state.bots.find((x) => x.id === bid);
+    if (b) b.busy = false;
   }
-  try {
-    await api(`/api/bots/${id}/stop`, { method: "POST", body: {} });
-  } catch {
-    /* ignore */
-  }
+  if (bot) paintChat(bot);
+  await Promise.all([...ids].map((bid) => api(`/api/bots/${bid}/stop`, { method: "POST", body: {} }).catch(() => {})));
 }
 
 async function loadBotHistory(id) {
@@ -679,10 +681,27 @@ async function loadBotHistory(id) {
   }
 }
 
+function namedBubble(m, assistant) {
+  const name = escapeHtml(m.speakerName || "Bot");
+  const role = m.speakerRole ? ` · ${escapeHtml(m.speakerRole)}` : "";
+  const aid = m.speakerId && m.speakerId !== "user" && m.speakerId !== "teammate" ? m.speakerId : "";
+  const avatar = aid
+    ? `<span class="msg-ava" data-avatar="${aid}" data-avatar-slot="chat" data-avatar-size="28" data-avatar-framing="body"></span>`
+    : `<span class="msg-ava msg-ava-empty"></span>`;
+  return `<div class="msg ${assistant ? "asst" : "mate"}" data-mid="${escapeHtml(m.id || "")}">
+    ${avatar}
+    <div class="msg-col">
+      <div class="msg-meta">${name}${role}</div>
+      <div class="bubble">${assistant ? formatChatText(m.content) : escapeHtml(m.content)}</div>
+    </div>
+  </div>`;
+}
+
 function paintChat(bot) {
   const thread = $("#thread");
   if (!thread || !bot) return;
   if (!Array.isArray(bot.messages)) bot.messages = [];
+  const team = teamOf(bot);
   if (state.chatFollowBot !== bot.id) {
     state.chatFollowBot = bot.id;
     state.chatFollow = true;
@@ -695,8 +714,14 @@ function paintChat(bot) {
   const html = [];
   for (let i = 0; i < rows.length; ) {
     const m = rows[i];
+    if (m.kind === "choices") {
+      html.push(renderChoiceCard(m));
+      i += 1;
+      continue;
+    }
     if (m.role === "user") {
-      html.push(`<div class="bubble user" data-mid="${escapeHtml(m.id || "")}">${escapeHtml(m.content)}</div>`);
+      const fromMate = m.speakerId && m.speakerId !== "user" && m.speakerName;
+      html.push(fromMate ? namedBubble(m, false) : `<div class="bubble user" data-mid="${escapeHtml(m.id || "")}">${escapeHtml(m.content)}</div>`);
       i += 1;
       continue;
     }
@@ -713,7 +738,7 @@ function paintChat(bot) {
       continue;
     }
     if (String(m.content || "").trim()) {
-      html.push(`<div class="bubble" data-mid="${escapeHtml(m.id || "")}">${formatChatText(m.content)}</div>`);
+      html.push(m.speakerName ? namedBubble(m, true) : `<div class="bubble" data-mid="${escapeHtml(m.id || "")}">${formatChatText(m.content)}</div>`);
     }
     i += 1;
   }
@@ -1050,7 +1075,7 @@ function paintTitle(bot) {
   const stamp = `${bot?.id || ""}|${state.botEdit ? "1" : "0"}|${state.deskSize}|${collapsed ? "1" : "0"}|c${runningN}`;
   if (bar.dataset.stamp === stamp && bar.querySelector("[data-act=vault]") && bar.querySelector("[data-act=computers]")) {
     const name = bar.querySelector(".botname-btn .bot-label");
-    if (name && bot) name.textContent = bot.name;
+    if (name && bot) name.textContent = teamOf(bot)?.name || bot.name;
     const chip = bar.querySelector(".harness-chip");
     if (chip) chip.textContent = `${provider} · ${model}`;
     return;
@@ -1062,7 +1087,7 @@ function paintTitle(bot) {
       bot
         ? `<button class="botname-btn" data-act="bot-settings" title="Bot settings">
             <span class="avatar sm" data-avatar="${bot.id}" data-avatar-slot="title" data-avatar-size="32" data-avatar-framing="body"></span>
-            <span class="bot-label">${escapeHtml(bot.name)}</span>
+            <span class="bot-label">${escapeHtml(teamOf(bot)?.name || bot.name)}</span>
           </button>`
         : "Sub8"
     }
@@ -1089,10 +1114,27 @@ function sidebarSections() {
   return Array.isArray(state.settings?.sidebarSections) ? state.settings.sidebarSections : [];
 }
 
+function teamOf(bot) {
+  if (!bot?.teamId) return null;
+  return (state.teams || []).find((t) => t.id === bot.teamId) || null;
+}
+
+function teamBots(team) {
+  if (!team) return [];
+  const ids = new Set(team.memberIds || []);
+  return state.bots.filter((b) => ids.has(b.id) || b.teamId === team.id);
+}
+
 function railLayout() {
   const vis = state.bots.filter((b) => !b.hidden);
-  const pinned = vis.filter((b) => b.pinned);
-  const rest = vis.filter((b) => !b.pinned);
+  const teamed = new Set();
+  const teamGroups = (state.teams || []).map((t) => {
+    const bots = vis.filter((b) => b.teamId === t.id);
+    for (const b of bots) teamed.add(b.id);
+    return { id: t.id, name: t.name, bots };
+  });
+  const pinned = vis.filter((b) => b.pinned && !teamed.has(b.id));
+  const rest = vis.filter((b) => !b.pinned && !teamed.has(b.id));
   const sections = sidebarSections();
   const known = new Set(sections.map((s) => s.id));
   const groups = sections.map((s) => ({
@@ -1102,7 +1144,7 @@ function railLayout() {
   }));
   const loose = rest.filter((b) => !b.section || !known.has(b.section));
   groups.push({ id: "", name: groups.length ? "Unassigned" : "", bots: loose });
-  return { pinned, groups };
+  return { pinned, groups, teamGroups };
 }
 
 function ensureRailNode(b) {
@@ -1130,7 +1172,7 @@ function paintRail(bot) {
     bindRailResize();
   }
   const host = $("#rail-bots");
-  const { pinned, groups } = railLayout();
+  const { pinned, groups, teamGroups } = railLayout();
   const keep = new Set(state.bots.map((b) => b.id));
   const nodes = new Map();
   for (const node of [...host.querySelectorAll(".rail-bot")]) {
@@ -1155,6 +1197,27 @@ function paintRail(bot) {
   if (pinned.length) {
     host.appendChild(sectionTag("pinned", "Pinned"));
     for (const b of pinned) addBot(b);
+  }
+  for (const t of teamGroups || []) {
+    if (!t.bots.length) continue;
+    host.appendChild(sectionTag(`team-${t.id}`, t.name || "Team"));
+    const cluster = document.createElement("button");
+    cluster.className = "rail-team";
+    cluster.dataset.act = "select-team";
+    cluster.dataset.id = t.id;
+    const on = t.bots.some((b) => b.id === bot?.id);
+    cluster.classList.toggle("active", on);
+    cluster.classList.toggle("busy", t.bots.some((b) => b.busy));
+    cluster.title = t.name;
+    const extra = Math.max(0, t.bots.length - 3);
+    const shown = extra > 0 ? t.bots.slice(0, 3) : t.bots.slice(0, 4);
+    cluster.innerHTML = `<span class="rail-team-grid">${shown
+      .map(
+        (b, i) =>
+          `<span class="rail-team-face" data-avatar="${b.id}" data-avatar-slot="rail-team-${i}" data-avatar-size="28" data-avatar-framing="icon"></span>`,
+      )
+      .join("")}${extra > 0 ? `<span class="rail-team-more">+${extra}</span>` : ""}</span>`;
+    host.appendChild(cluster);
   }
   for (const g of groups) {
     if (g.name || g.bots.length) {
@@ -1266,19 +1329,81 @@ function moveBotTo(id, { section = "", pinned = false } = {}) {
   render();
 }
 
+function memberTabLabel(b) {
+  const role = b.teamRole === "chief" ? "Chief" : b.teamRole === "worker" ? "Worker" : "";
+  if (!role || String(b.name || "").toLowerCase() === role.toLowerCase()) return escapeHtml(b.name);
+  return `${escapeHtml(b.name)}<span class="muted"> ${role}</span>`;
+}
+
+function renderChoiceCard(m) {
+  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const closed = m.pending === false;
+  const rows = (m.choices || [])
+    .map((c, i) => {
+      const letter = String(c.id || letters[i] || i + 1).slice(0, 1).toUpperCase();
+      const on = m.selected?.id === c.id ? " on" : "";
+      return `<button type="button" class="choice-row${on}" data-act="pick-choice" data-mid="${escapeHtml(m.id)}" data-cid="${escapeHtml(c.id)}" ${closed ? "disabled" : ""}>
+        <span class="choice-letter">${escapeHtml(letter)}</span>
+        <span>${escapeHtml(c.label)}</span>
+      </button>`;
+    })
+    .join("");
+  const custom =
+    m.allowCustom !== false && !closed
+      ? `<input class="choice-custom" data-mid="${escapeHtml(m.id)}" placeholder="Type your own answer" />`
+      : "";
+  return `<div class="choice-card" data-mid="${escapeHtml(m.id || "")}">
+    <div class="choice-head">
+      <div>
+        <div class="choice-title">${escapeHtml(m.content || "Pick one")}</div>
+        ${m.hint ? `<div class="choice-hint">${escapeHtml(m.hint)}</div>` : ""}
+      </div>
+      ${closed ? "" : `<button type="button" class="choice-x" data-act="dismiss-choice" data-mid="${escapeHtml(m.id)}">×</button>`}
+    </div>
+    <div class="choice-list">${rows}</div>
+    ${custom}
+  </div>`;
+}
+
+function paintTeamTabs(bot) {
+  const host = $("#team-tabs");
+  if (!host) return;
+  const team = teamOf(bot);
+  const members = teamBots(team);
+  if (!team || members.length < 2) {
+    host.hidden = true;
+    host.innerHTML = "";
+    host.closest(".chat-head")?.classList.remove("has-tabs");
+    return;
+  }
+  host.hidden = false;
+  host.closest(".chat-head")?.classList.add("has-tabs");
+  host.innerHTML = members
+    .map((b) => {
+      const role = b.teamRole === "chief" ? "Chief" : b.teamRole === "worker" ? "Worker" : "";
+      const title = role && b.name.toLowerCase() !== role.toLowerCase() ? `${b.name} · ${role}` : b.name;
+      return `<button type="button" class="chrome-tab ${b.id === bot.id ? "on" : ""} ${b.busy ? "busy" : ""}" data-act="team-tab" data-id="${b.id}" title="${escapeHtml(title)}">
+        <span class="chrome-tab-ico" data-avatar="${b.id}" data-avatar-slot="tab" data-avatar-size="22" data-avatar-framing="body"></span>
+        <span class="chrome-tab-title">${escapeHtml(b.name)}</span>
+      </button>`;
+    })
+    .join("");
+}
+
 function paintChatPane(bot) {
   const chat = $("#chat");
   if (!bot) {
     chat.innerHTML = `<div class="empty">Create a Bot to get started.</div>`;
     return;
   }
-  if (!$("#thread") || !$("#send textarea[name=q]") || !$(".composer-mic") || !$(".chat-head") || $(".chat-stop") || document.querySelector("[data-act=picker]")) {
+  if (chat.dataset.ui !== "chrome-tabs-2" || !$("#thread") || !$("#send textarea[name=q]") || !$(".composer-mic") || !$(".chat-head") || $(".chat-stop") || document.querySelector("[data-act=picker]")) {
+    chat.dataset.ui = "chrome-tabs-2";
     chat.innerHTML = `
       <div class="chat-head">
-        <span class="chat-head-name">${escapeHtml(bot.name)}</span>
-        <div class="chat-head-actions">
-          <button type="button" class="pill chat-advanced" data-act="advanced">Advanced</button>
+        <div class="chat-head-row">
+          <span class="chat-head-name">${escapeHtml(bot.name)}</span>
         </div>
+        <div class="chrome-tabs" id="team-tabs" hidden></div>
       </div>
       <div class="thread" id="thread"></div>
       <div class="composer">
@@ -1315,14 +1440,18 @@ function paintChatPane(bot) {
     sizeComposer();
   } else {
     const input = $("#send")?.q;
+    const team = teamOf(bot);
     if (input) input.placeholder = `Message ${bot.name}`;
     const hn = $(".chat-head-name");
     if (hn) hn.textContent = bot.name;
+    const hint = $(".composer-hint");
+    if (hint) hint.textContent = bot.busy ? "In line — extra messages wait until this job finishes" : "Enter to send · Shift+Enter for a new line";
     const go = $(".composer-go");
     const halt = $(".composer [data-act=stop-turn]");
     if (go) go.hidden = false;
     if (halt) halt.hidden = !bot.busy;
   }
+  paintTeamTabs(bot);
   paintChat(bot);
   const ph = $("#picker-host");
   if (ph) {
@@ -1339,6 +1468,14 @@ function iconClip() {
 
 function iconRecord() {
   return `<svg width="16" height="16" viewBox="0 0 24 24" fill="#e11d48"><circle cx="12" cy="12" r="7"/></svg>`;
+}
+
+function mentionChipsHtml(team) {
+  const members = teamBots(team);
+  if (!members.length) return "";
+  return `<div class="mention-chips">${members
+    .map((b) => `<button type="button" class="mention-chip" data-act="mention" data-name="${escapeHtml(b.name)}">@${escapeHtml(b.name)}</button>`)
+    .join("")}</div>`;
 }
 
 function plusMenuHtml() {
@@ -1504,6 +1641,7 @@ function pickerHtml() {
   return `<div class="picker">
     <input id="pickq" placeholder="Search or create Bots" />
     <div class="pick" data-act="create"><span class="avatar" style="background:#f3f4f6;color:#111">+</span> Create new Bot <span class="kbd">⌘1</span></div>
+    <div class="pick" data-act="create-team"><span class="avatar" style="background:#111;color:#fff">T</span> Create team (chief + worker)</div>
     ${state.bots
       .map(
         (b) =>
@@ -1570,8 +1708,13 @@ function paintLivePane(bot) {
   }
   const label = $("#screen-label");
   if (label && bot) {
+    const team = teamOf(bot);
     label.textContent =
-      bot.vm?.status === "starting" && bot.vm.hint ? bot.vm.hint : `${bot.name}'s screen`;
+      bot.vm?.status === "starting" && bot.vm.hint
+        ? bot.vm.hint
+        : team
+          ? `${team.name} desk · ${bot.name}`
+          : `${bot.name}'s screen`;
   }
   const err = $("#vm-error");
   if (err) {
@@ -1784,10 +1927,11 @@ function paintModal() {
   const typing = host.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active?.tagName || "");
   // Never rebuild a form modal in place — SSE/health render() would wipe
   // the fields and steal the Create click onto the overlay.
-  const keepForm = typing || state.modal === "routine" || state.modal === "create" || state.modal === "vault";
+  const keepForm = typing || state.modal === "routine" || state.modal === "create" || state.modal === "create-team" || state.modal === "vault";
   if (host.dataset.key === key && host.innerHTML && keepForm) return;
   host.dataset.key = key;
   if (state.modal === "create") host.innerHTML = createBotHtml();
+  else if (state.modal === "create-team") host.innerHTML = createTeamHtml();
   else if (state.modal === "vault") host.innerHTML = vaultHtml();
   else if (state.modal === "computers") host.innerHTML = computersHtml();
   else if (state.modal === "delete-bot") host.innerHTML = deleteBotHtml();
@@ -2219,6 +2363,24 @@ function deleteBotHtml() {
           <div class="sub">The desk and its volume are destroyed. This cannot be undone.</div>
           <button type="button" class="pill" data-act="close-modal">Cancel</button>
         </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function createTeamHtml() {
+  const provider = state.createHarness || "claude";
+  return `<div class="overlay">
+    <div class="modal create-modal" data-modal="1">
+      <div class="sbody" style="width:100%">
+        <button class="close" data-act="close-modal">×</button>
+        <h2>Create team</h2>
+        <p class="muted" style="margin-top:-8px">One shared desk. A chief and a worker who can talk to each other, each with their own Chrome window.</p>
+        <label class="muted">Team name</label>
+        <input class="field" id="tn" placeholder="Research" value="${escapeHtml(state.createName || "")}" autofocus />
+        <label class="muted">Harness for both</label>
+        <select class="field" id="th">${harnessProviderOptions(provider)}</select>
+        <button type="button" class="pill primary" data-act="confirm-create-team" id="confirm-create-team" style="margin-top:16px">Create chief + worker</button>
       </div>
     </div>
   </div>`;
@@ -2684,6 +2846,11 @@ function escapeHtml(s) {
 
 function bindDelegated() {
   document.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.target?.classList?.contains("choice-custom")) {
+      e.preventDefault();
+      submitChoice(e.target.dataset.mid, "custom", e.target.value.trim());
+      return;
+    }
     if (e.key === "Enter" && e.target?.id === "ctx-sec-name") {
       e.preventDefault();
       const save = document.querySelector("[data-act=ctx-rename-section], [data-act=ctx-create-section]");
@@ -2951,8 +3118,50 @@ function bindDelegated() {
         if (state.modal === "create") rebuildCreateModal();
       });
     }
+    if (act === "create-team") {
+      state.modal = "create-team";
+      state.picker = false;
+      state.createHarness = "claude";
+    }
     if (act === "confirm-create") {
       confirmCreateBot();
+      return;
+    }
+    if (act === "confirm-create-team") {
+      confirmCreateTeam();
+      return;
+    }
+    if (act === "select-team") {
+      const team = (state.teams || []).find((t) => t.id === el.dataset.id);
+      const members = teamBots(team);
+      const pick = members.find((b) => b.id === team?.chiefId) || members[0];
+      if (pick) {
+        rememberSelected(pick.id);
+        state.teamTab = pick.id;
+        loadBotHistory(pick.id);
+      }
+    }
+    if (act === "team-tab") {
+      const b = state.bots.find((x) => x.id === el.dataset.id);
+      if (b) {
+        rememberSelected(b.id);
+        state.teamTab = b.id;
+        loadBotHistory(b.id);
+        const team = teamOf(b);
+        if (team) api(`/api/teams/${team.id}/focus`, { method: "POST", body: { botId: b.id } }).catch(() => {});
+      }
+    }
+    if (act === "pick-choice") {
+      submitChoice(el.dataset.mid, el.dataset.cid, "");
+      return;
+    }
+    if (act === "dismiss-choice") {
+      const bot = state.bots.find((b) => b.id === state.selected);
+      const card = bot?.messages?.find((m) => m.id === el.dataset.mid);
+      if (card) {
+        card.pending = false;
+        paintChat(bot);
+      }
       return;
     }
     if (act === "toggle-computer" || act === "collapse-pane") {
@@ -3869,6 +4078,29 @@ async function onSend(e) {
   await api(`/api/bots/${state.selected}/messages`, { method: "POST", body: { content, images } });
 }
 
+async function submitChoice(messageId, choiceId, custom) {
+  const bot = state.bots.find((b) => b.id === state.selected);
+  if (!bot || !messageId) return;
+  const card = (bot.messages || []).find((m) => m.id === messageId);
+  if (card) {
+    card.pending = false;
+    card.selected = { id: choiceId || "custom", label: custom || "" };
+  }
+  paintChat(bot);
+  try {
+    const r = await api(`/api/bots/${bot.id}/choice`, {
+      method: "POST",
+      body: { messageId, choiceId, custom },
+    });
+    if (r?.created) await refresh();
+    else await loadBotHistory(bot.id);
+  } catch (err) {
+    if (card) card.pending = true;
+    window.alert(err?.message || "Could not save that choice.");
+    paintChat(bot);
+  }
+}
+
 async function createBot() {
   resetCreateForm();
   state.modal = "create";
@@ -3962,6 +4194,39 @@ async function deleteVaultAccount(id) {
   const host = $("#modal-host");
   if (host) delete host.dataset.key;
   render();
+}
+
+async function confirmCreateTeam() {
+  const name = ($("#tn")?.value || state.createName || "").trim() || "Team";
+  const provider = $("#th")?.value || state.createHarness || "claude";
+  const btn = $("#confirm-create-team");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Creating…";
+  }
+  try {
+    const team = await api("/api/teams", {
+      method: "POST",
+      body: {
+        name,
+        harness: { provider, model: provider === "claude" || provider === "codex" || provider === "hermes" ? "default" : "" },
+      },
+    });
+    state.modal = null;
+    state.teams = [...(state.teams || []).filter((t) => t.id !== team.id), team];
+    const chief = team.members?.find((m) => m.role === "chief") || team.members?.[0];
+    if (chief) {
+      rememberSelected(chief.id);
+      state.teamTab = chief.id;
+    }
+    await refresh();
+  } catch (err) {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Create chief + worker";
+    }
+    window.alert(err?.message || "Could not create the team.");
+  }
 }
 
 async function confirmCreateBot() {
@@ -4313,6 +4578,11 @@ async function resumeVm() {
 async function refresh() {
   const incoming = await api("/api/bots");
   syncBots(incoming);
+  try {
+    state.teams = await api("/api/teams");
+  } catch {
+    state.teams = state.teams || [];
+  }
   const saved = state.selected || (typeof localStorage !== "undefined" ? localStorage.getItem("selectedBot") : null);
   if (saved && state.bots.some((b) => b.id === saved)) rememberSelected(saved);
   else if (state.bots[0]) rememberSelected(state.bots[0].id);
@@ -4498,6 +4768,28 @@ function listen() {
       if (!bot || name === "send_message") return;
       bot.busy = true;
       if (botId === state.selected && $("#thread")) paintChat(bot);
+    });
+    es.addEventListener("teammate", (e) => {
+      const data = JSON.parse(e.data);
+      if (data.bot) adoptBot(data.bot);
+      api("/api/teams")
+        .then((rows) => {
+          state.teams = rows;
+          render();
+        })
+        .catch(() => {});
+    });
+    es.addEventListener("team-message", (e) => {
+      const msg = JSON.parse(e.data);
+      const team = (state.teams || []).find((t) => t.id === msg.teamId);
+      if (!team) return;
+      team.messages = team.messages || [];
+      if (!team.messages.some((m) => m.id === msg.id)) team.messages.push(msg);
+      const selected = state.bots.find((b) => b.id === state.selected);
+      if (selected?.teamId === team.id && $("#thread")) {
+        paintChat(selected);
+        refreshAvatars();
+      }
     });
     es.addEventListener("message", (e) => {
       const { botId, ...msg } = JSON.parse(e.data);
