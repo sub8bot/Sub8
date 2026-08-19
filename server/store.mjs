@@ -262,6 +262,38 @@ function unionMessages(incoming = [], existing = []) {
   return [...byId.values()].sort((a, b) => (a.ts || 0) - (b.ts || 0));
 }
 
+function preserveRoutineRunMarker(incoming, previous) {
+  const incomingDaily = incoming?.schedule?.type === "daily";
+  const previousDaily = previous?.schedule?.type === "daily";
+  const sameSchedule =
+    incomingDaily &&
+    previousDaily &&
+    incoming.schedule.hour === previous.schedule.hour &&
+    incoming.schedule.minute === previous.schedule.minute;
+  const sameTimeZone = incoming.nextRunTimeZone === previous.nextRunTimeZone;
+  const previousLast = Number(previous.lastRunAt);
+  const incomingLast = Number(incoming.lastRunAt || 0);
+  if (Number.isFinite(previousLast) && previousLast > incomingLast) incoming.lastRunAt = previousLast;
+  const runs = new Map();
+  for (const run of [...(previous.runs || []), ...(incoming.runs || [])]) {
+    if (Number.isFinite(Number(run?.ts))) runs.set(Number(run.ts), run);
+  }
+  if (runs.size) incoming.runs = [...runs.values()].sort((a, b) => a.ts - b.ts).slice(-24);
+  if (sameSchedule && sameTimeZone) {
+    const previousNext = Number(previous.nextRunAt);
+    const incomingNext = Number(incoming.nextRunAt);
+    const markerHorizon = Date.now() + 2 * 86400_000;
+    if (
+      Number.isFinite(previousNext) &&
+      previousNext <= markerHorizon &&
+      (!Number.isFinite(incomingNext) || previousNext > incomingNext)
+    ) {
+      incoming.nextRunAt = previousNext;
+    }
+    return;
+  }
+}
+
 export async function upsertBot(bot) {
   return withBots(async () => {
     const bots = await loadBotsUnlocked();
@@ -298,6 +330,7 @@ export async function upsertBot(bot) {
       bot.routines = incoming.map((r) => {
         const was = existing.get(r.id);
         if (was && (was.updatedAt || 0) > (r.updatedAt || 0)) return was;
+        if (was) preserveRoutineRunMarker(r, was);
         return r;
       });
       bots[i] = bot;

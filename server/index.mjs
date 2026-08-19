@@ -17,6 +17,7 @@ import * as appUpdate from "./update.mjs";
 import * as vault from "./vault.mjs";
 import * as computers from "./computers.mjs";
 import * as hostCli from "./host-cli.mjs";
+import { resolveZone } from "./context.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = appRoot;
@@ -198,7 +199,7 @@ app.get("/api/settings", async (_req, res) => {
     settings: safe,
     hasEnvKey: Boolean(process.env.XAI_API_KEY),
     hasGrokAuth: await vm.hostHasGrokAuth(),
-    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    timezone: resolveZone(s),
     docker: await vm.dockerStatus(),
     appVersion: appUpdate.appVersion(),
     harnessProviders: HARNESS_PROVIDERS,
@@ -1039,40 +1040,98 @@ app.get("/api/bots/:id/routines", async (req, res) => {
 });
 
 app.post("/api/bots/:id/routines", async (req, res) => {
-  const bot = await store.getBot(req.params.id);
-  if (!bot) return res.status(404).json({ error: "not found" });
   const body = req.body || {};
   const minutes = Number(body.interval_minutes ?? body.intervalMinutes);
-  const { routine, merged } = routines.upsertRoutine(bot, {
-    name: body.name,
-    instruction: body.instruction,
-    groupKey: body.group_key || body.groupKey,
-    intervalMs: Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : body.intervalMs,
+  const explicitInterval = Number.isFinite(minutes) && minutes > 0;
+  const intervalProvided = Object.prototype.hasOwnProperty.call(body, "interval_minutes") || Object.prototype.hasOwnProperty.call(body, "intervalMinutes");
+  if (typeof body.instruction === "string" && routines.isRejectedRoutineInstruction(body.instruction, { explicitInterval })) {
+    return res.status(400).json({ error: "routine instruction is not a standing scheduled job" });
+  }
+  if (intervalProvided && !explicitInterval) {
+    return res.status(400).json({ error: "invalid routine interval" });
+  }
+  if (!explicitInterval && body.schedule != null && !routines.normalizeSchedule(body.schedule)) {
+    return res.status(400).json({ error: "invalid routine schedule" });
+  }
+  const settings = await store.loadSettings();
+  let result;
+  const live = await store.patchBot(req.params.id, (bot) => {
+    result = routines.upsertRoutine(bot, {
+      name: body.name,
+      instruction: body.instruction,
+      groupKey: body.group_key || body.groupKey,
+      intervalMs: explicitInterval ? minutes * 60_000 : body.intervalMs,
+      schedule: body.schedule,
+      forceNew: body.force_new === true,
+      solo: body.solo !== false,
+      timeZone: resolveZone(settings),
+    });
   });
-  await store.upsertBot(bot);
-  broadcast("bot", toClient(bot));
-  res.json({ routine, merged });
+  if (!live) return res.status(404).json({ error: "not found" });
+  if (result?.rejected && !result.routine) return res.status(400).json(result);
+  broadcast("bot", toClient(live));
+  res.json(result);
 });
 
 app.patch("/api/bots/:id/routines/:rid", async (req, res) => {
-  const bot = await store.getBot(req.params.id);
-  if (!bot) return res.status(404).json({ error: "not found" });
-  if (!Array.isArray(bot.routines)) bot.routines = [];
-  const r = bot.routines.find((x) => x.id === req.params.rid);
-  if (!r) return res.status(404).json({ error: "routine not found" });
   const body = req.body || {};
-  if (typeof body.name === "string") r.name = body.name.trim() || r.name;
-  if (typeof body.instruction === "string") r.instruction = body.instruction;
-  if (typeof body.group_key === "string" || typeof body.groupKey === "string") {
-    r.groupKey = body.group_key || body.groupKey;
-  }
+  const settings = await store.loadSettings();
   const minutes = Number(body.interval_minutes ?? body.intervalMinutes);
-  if (Number.isFinite(minutes) && minutes > 0) r.intervalMs = minutes * 60_000;
-  if (typeof body.enabled === "boolean") r.enabled = body.enabled;
-  r.updatedAt = Date.now();
-  await store.upsertBot(bot);
-  broadcast("bot", toClient(bot));
-  res.json(r);
+  const explicitInterval = Number.isFinite(minutes) && minutes > 0;
+  const intervalProvided = Object.prototype.hasOwnProperty.call(body, "interval_minutes") || Object.prototype.hasOwnProperty.call(body, "intervalMinutes");
+  if (typeof body.instruction === "string" && routines.isRejectedRoutineInstruction(body.instruction, { explicitInterval })) {
+    return res.status(400).json({ error: "routine instruction is not a standing scheduled job" });
+  }
+  if (intervalProvided && !explicitInterval) {
+    return res.status(400).json({ error: "invalid routine interval" });
+  }
+  if (!explicitInterval && body.schedule != null && !routines.normalizeSchedule(body.schedule)) {
+    return res.status(400).json({ error: "invalid routine schedule" });
+  }
+  let updated = null;
+  let missing = false;
+  const live = await store.patchBot(req.params.id, (bot) => {
+    if (!Array.isArray(bot.routines)) bot.routines = [];
+    const r = bot.routines.find((x) => x.id === req.params.rid);
+    if (!r) {
+      missing = true;
+      return;
+    }
+    if (typeof body.name === "string") r.name = body.name.trim() || r.name;
+    if (typeof body.instruction === "string") r.instruction = body.instruction;
+    if (typeof body.group_key === "string" || typeof body.groupKey === "string") {
+      r.groupKey = body.group_key || body.groupKey;
+    }
+    if (Number.isFinite(minutes) && minutes > 0) {
+      r.intervalMs = minutes * 60_000;
+      delete r.schedule;
+      delete r.nextRunAt;
+      delete r.nextRunTimeZone;
+    } else if (body.schedule != null) {
+      const schedule = routines.normalizeSchedule(body.schedule);
+      const previous = routines.normalizeSchedule(r.schedule);
+      const unchanged =
+        previous &&
+        previous.type === schedule.type &&
+        previous.hour === schedule.hour &&
+        previous.minute === schedule.minute &&
+        Number.isFinite(r.nextRunAt);
+      r.schedule = schedule;
+      delete r.intervalMs;
+      const now = Date.now();
+      r.nextRunAt = unchanged
+        ? routines.calendarNextRunAt(r, now, resolveZone(settings))
+        : routines.nextCalendarOccurrence(now, schedule, resolveZone(settings));
+      r.nextRunTimeZone = resolveZone(settings);
+    }
+    if (typeof body.enabled === "boolean") r.enabled = body.enabled;
+    r.updatedAt = Date.now();
+    updated = r;
+  });
+  if (!live) return res.status(404).json({ error: "not found" });
+  if (missing) return res.status(404).json({ error: "routine not found" });
+  broadcast("bot", toClient(live));
+  res.json(updated);
 });
 
 app.delete("/api/bots/:id/routines/:rid", async (req, res) => {
@@ -1239,22 +1298,60 @@ async function runUserTurn(botId, text, hidden, images = [], opts = {}) {
 async function tickRoutines() {
   const bots = await store.loadBots();
   const now = Date.now();
-  for (const bot of bots) {
+  const settings = await store.loadSettings();
+  const timeZone = resolveZone(settings);
+  for (const original of bots) {
+    let bot = original;
     if (isHumanControl(bot.id)) continue;
-    const due = routines.dueRoutines(bot, now);
+    const rebased = (bot.routines || [])
+      .filter((r) => routines.isCalendarRoutine(r))
+      .map((r) => ({
+        id: r.id,
+        schedule: r.schedule,
+        previousNextRunAt: r.nextRunAt,
+        nextRunAt: routines.calendarNextRunAt(r, now, timeZone),
+      }))
+      .filter((r) => Number.isFinite(r.nextRunAt) && r.nextRunAt !== r.previousNextRunAt);
+    if (rebased.length) {
+      bot =
+        (await store.patchBot(bot.id, (live) => {
+          for (const update of rebased) {
+            const r = (live.routines || []).find((x) => x.id === update.id);
+            if (
+              r &&
+              r.schedule?.type === update.schedule?.type &&
+              r.schedule?.hour === update.schedule?.hour &&
+              r.schedule?.minute === update.schedule?.minute
+            ) {
+              r.nextRunAt = update.nextRunAt;
+              r.nextRunTimeZone = timeZone;
+              r.updatedAt = now;
+            }
+          }
+        })) || bot;
+    }
+    const due = routines.dueRoutines(bot, now, { timeZone });
     if (!due.length) continue;
     const packs = routines.packDue(due);
     for (const pack of packs) {
+      const accepted = [];
       await store.patchBot(bot.id, (live) => {
+        const currentDue = new Map(routines.dueRoutines(live, now, { timeZone }).map((r) => [r.id, r]));
         for (const id of pack.ids) {
-          const r = (live.routines || []).find((x) => x.id === id);
+          const r = currentDue.get(id);
           if (r) {
             r.lastRunAt = now;
+            if (routines.isCalendarRoutine(r)) routines.advanceCalendarRoutine(r, now, timeZone);
+            r.updatedAt = now;
             r.runs = [...(Array.isArray(r.runs) ? r.runs : []), { ts: now }].slice(-24);
+            accepted.push({ name: r.name, instruction: r.instruction });
           }
         }
       });
-      const prompt = `Standing routine "${pack.name}" is due. Do this work now, then stop if nothing changed:\n${pack.instruction}`;
+      if (!accepted.length) continue;
+      const prompt = `Standing routine "${accepted[0].name || pack.name}" is due. Do this work now, then stop if nothing changed:\n${accepted
+        .map((r) => r.instruction)
+        .join("\n")}`;
       enqueueTurn(bot.id, () => runUserTurn(bot.id, prompt, true));
     }
   }

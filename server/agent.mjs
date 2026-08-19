@@ -72,7 +72,7 @@ const TOOLS = [
     function: {
       name: "upsert_routine",
       description:
-        "Create or UPDATE a standing routine only when the user asked to keep doing a job on a clock (every N minutes, hourly, daily). instruction must be a standing brief (what to watch, cadence, next checkpoint), never 'check again' or the raw chat line. Default: update the existing routine (pass id from list_routines). Only set force_new true if they asked for a second job.",
+        "Create or UPDATE a standing routine only when the user asked to keep doing a job on a clock (every N minutes, hourly, daily, or every morning). instruction must be a standing brief (what to watch, cadence, next checkpoint), never 'check again' or the raw chat line. Default: update the existing routine (pass id from list_routines). Only set force_new true if they asked for a second job.",
       parameters: {
         type: "object",
         properties: {
@@ -351,13 +351,13 @@ async function loadSystemPrompt(bot, settings, { hidden = false, compactRoutines
 ${adapter}
 ${capabilities}
 ${computer}
-${routines.promptBlock(bot, { compact: compactRoutines })}
+${routines.promptBlock(bot, { compact: compactRoutines, timeZone: ctx.resolveZone(settings) })}
 ${voice}
 
 ## Sub8
 After send_message, if the user asked for something on the desktop (research, Chrome, files they can see, clicks): call \`computer\` screenshot next, then click like a human.
 web_search is available for facts. Prefer it over opening Google unless the user asked to use the browser.
-Routines: ONE standing job, and only when the user asked to keep doing something on a clock (every N minutes, hourly, daily). "Check again", "try again", "resume", and one-shot desktop work are NOT routines — do the work now, do not upsert. "Run" / "resume" means execute, not rewrite. Never replace a long brief with the chat line. Never delete the only routine unless they said delete.
+Routines: ONE standing job, and only when the user asked to keep doing something on a clock (every N minutes, hourly, daily, or every morning). "Check again", "try again", "resume", and one-shot desktop work are NOT routines — do the work now, do not upsert. "Run" / "resume" means execute, not rewrite. Never replace a long brief with the chat line. Never delete the only routine unless they said delete.
 If a submit already landed or the UI is still loading, do not submit the same thing again. If a click fails twice, stop repeating it.
 ${await vault.promptBlock(bot.id)}
 `;
@@ -388,6 +388,8 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
     const { routine, merged, rejected } = routines.upsertRoutine(bot, {
       instruction: userText,
       intervalMs: parsed.intervalMs,
+      schedule: parsed.schedule,
+      timeZone: ctx.resolveZone(settings),
     });
     if (routine) await Promise.resolve(emit("routine", { routine, merged, rejected }));
   }
@@ -1058,6 +1060,7 @@ async function execTool(bot, name, args, emit, settings) {
         name: args.name,
         instruction: args.instruction,
         intervalMs: Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : undefined,
+        timeZone: ctx.resolveZone(settings),
         groupKey: args.group_key || undefined,
         forceNew: args.force_new === true,
         solo: args.solo !== false,
@@ -1070,8 +1073,8 @@ async function execTool(bot, name, args, emit, settings) {
       }
       return {
         text: merged
-          ? `Merged into existing "${routine.name}" (${routine.groupKey}) every ${Math.round(routine.intervalMs / 60000)} min.`
-          : `Created "${routine.name}" (${routine.groupKey}) every ${Math.round(routine.intervalMs / 60000)} min.`,
+          ? `Merged into existing "${routine.name}" (${routine.groupKey}) ${routines.cadenceLabel(routine, ctx.resolveZone(settings)).toLowerCase()}.`
+          : `Created "${routine.name}" (${routine.groupKey}) ${routines.cadenceLabel(routine, ctx.resolveZone(settings)).toLowerCase()}.`,
       };
     }
     if (name === "web_search") {
