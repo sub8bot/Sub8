@@ -17,7 +17,7 @@ const data = path.join(tmp, "data");
 fs.mkdirSync(path.join(asar, "server"), { recursive: true });
 fs.mkdirSync(path.join(asar, "web"), { recursive: true });
 fs.mkdirSync(path.join(unpacked, "server"), { recursive: true });
-for (const f of ["mcp-sub8", "store", "vm", "vault", "paths", "trace", "isolation", "routines"]) {
+for (const f of ["mcp-sub8", "store", "vm", "vault", "paths", "trace", "isolation", "routines", "context"]) {
   fs.copyFileSync(path.join(root, "server", `${f}.mjs`), path.join(asar, "server", `${f}.mjs`));
 }
 fs.copyFileSync(path.join(root, "web", "palette.js"), path.join(asar, "web", "palette.js"));
@@ -35,7 +35,7 @@ const spec = JSON.parse(
 const entry = spec.args[0];
 assert.ok(entry.startsWith(data), `healed copy should live in the data dir, got ${entry}`);
 assert.ok(fs.existsSync(entry), "healed entry exists");
-for (const f of ["store.mjs", "vm.mjs", "vault.mjs", "paths.mjs", "trace.mjs", "isolation.mjs", "routines.mjs"]) {
+for (const f of ["store.mjs", "vm.mjs", "vault.mjs", "paths.mjs", "trace.mjs", "isolation.mjs", "routines.mjs", "context.mjs"]) {
   assert.ok(fs.existsSync(path.join(path.dirname(entry), f)), `healed copy is missing ${f}`);
 }
 assert.ok(fs.existsSync(path.join(path.dirname(path.dirname(entry)), "web", "palette.js")), "healed copy is missing web/palette.js");
