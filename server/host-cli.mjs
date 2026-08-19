@@ -95,6 +95,23 @@ export function withHermesReasoningEffort(cfg, effort = "low") {
   return `${out.trimEnd()}\nagent:\n  reasoning_effort: ${effort}\n`;
 }
 
+/** Strip Hermes host browser/terminal/web so it cannot open Chrome on the Mac. */
+export function withHermesHostLockdown(cfg) {
+  let out = String(cfg || "");
+  out = out.replace(/(?:^|\n)toolsets:\n(?:- [^\n]+\n)*/g, "\ntoolsets: []\n");
+  if (/(?:^|\n)  disabled_toolsets:\n/.test(out)) {
+    out = out.replace(
+      /(?:^|\n)  disabled_toolsets:\n(?:  - [^\n]+\n)*/,
+      "\n  disabled_toolsets:\n  - browser\n  - terminal\n  - web\n",
+    );
+  } else if (/(?:^|\n)agent:\s*\n/.test(out)) {
+    out = out.replace(/((?:^|\n)agent:\s*\n)/, `$1  disabled_toolsets:\n  - browser\n  - terminal\n  - web\n`);
+  }
+  out = out.replace(/((?:^|\n)platform_toolsets:\n)  cli:\n(?:  - [^\n]+\n)+/, `$1  cli: []\n`);
+  out = out.replace(/((?:^|\n)browser:\n(?:  .+\n)*?  cloud_provider:\s*)[^\n]+/, `$1none`);
+  return out;
+}
+
 export function readHermesModel() {
   try {
     const cfg = fsSync.readFileSync(hermesConfigPath(), "utf8");
@@ -332,9 +349,9 @@ export async function writeHermesHome(home, mcpEnv, { contextLength = HERMES_SUB
     cfg = "model:\n  provider: auto\n";
   }
   cfg = cfg.replace(/\nmcp_servers:\n[\s\S]*?(?=\n[a-z_][a-z0-9_]*:|\s*$)/i, "\n");
-  cfg = cfg.replace(/(?:^|\n)toolsets:\n(?:- [^\n]+\n)*/, "\ntoolsets: []\n");
   cfg = withHermesContextLength(cfg, contextLength);
   cfg = withHermesReasoningEffort(cfg, reasoning);
+  cfg = withHermesHostLockdown(cfg);
   await fs.writeFile(cfgPath, `${cfg.trimEnd()}\n${block}`);
   return home;
 }
