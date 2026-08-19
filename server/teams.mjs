@@ -139,6 +139,34 @@ export async function addMember(team, spec = {}) {
   return { bot, team: saved };
 }
 
+export async function applyBotPatch(target, args = {}) {
+  if (args.name) target.name = String(args.name).trim() || target.name;
+  if (typeof args.instructions === "string") target.instructions = args.instructions;
+  if (typeof args.description === "string") target.description = args.description;
+  if (args.color) target.color = String(args.color);
+  if (args.role === "chief" || args.role === "worker") target.teamRole = args.role;
+  if (args.harness || args.provider || args.model) {
+    target.harness = {
+      ...(target.harness || {}),
+      ...(args.harness || args.provider ? { provider: String(args.harness || args.provider) } : {}),
+      ...(args.model ? { model: String(args.model) } : {}),
+    };
+  }
+  await store.upsertBot(target);
+  return target;
+}
+
+export async function removeMember(team, botId) {
+  if (!team?.id || !botId) return team;
+  const memberIds = (team.memberIds || []).filter((id) => id !== botId);
+  const chiefId = team.chiefId === botId ? memberIds[0] || null : team.chiefId;
+  if (!memberIds.length) {
+    await removeTeam(team.id);
+    return null;
+  }
+  return saveTeam({ ...team, memberIds, chiefId });
+}
+
 export function mentionedMemberIds(text, members) {
   const tags = [...String(text || "").matchAll(/@([^\s@.,!?]+)/g)].map((m) => m[1].toLowerCase());
   if (!tags.length) return [];

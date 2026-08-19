@@ -13,8 +13,16 @@ import * as teams from "./teams.mjs";
 import * as store from "./store.mjs";
 
 let dispatchTeammate = null;
+let deliverReply = null;
+let stopBotFn = null;
 export function setTeamDispatch(fn) {
   dispatchTeammate = fn;
+}
+export function setTeamReply(fn) {
+  deliverReply = fn;
+}
+export function setStopBot(fn) {
+  stopBotFn = fn;
 }
 
 const COMPUTER_ACTIONS = [
@@ -176,15 +184,66 @@ const TOOLS = [
     function: {
       name: "create_teammate",
       description:
-        "Create another Bot in your group on the same shared desk. Pass name and job. If the job is missing, ask the user with a choice card first.",
+        "Create another Bot in your group on the same shared desk. Pass name and job. You MAY set harness (claude, grok-build, hermes, codex, ollama, lmstudio), model, instructions, color. If the job is missing, ask the user with a choice card first.",
       parameters: {
         type: "object",
         properties: {
           name: { type: "string" },
           job: { type: "string", description: "What this Bot should do" },
           role: { type: "string", description: "worker (default) or chief" },
+          harness: { type: "string" },
+          model: { type: "string" },
+          instructions: { type: "string" },
+          color: { type: "string" },
         },
         required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "rename_bot",
+      description: "Rename yourself or a teammate on this desk.",
+      parameters: {
+        type: "object",
+        properties: {
+          bot_id: { type: "string", description: "Defaults to yourself" },
+          name: { type: "string" },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_bot",
+      description: "Change settings for yourself or a teammate: harness, model, instructions, description, color, role.",
+      parameters: {
+        type: "object",
+        properties: {
+          bot_id: { type: "string", description: "Defaults to yourself" },
+          name: { type: "string" },
+          harness: { type: "string" },
+          model: { type: "string" },
+          instructions: { type: "string" },
+          description: { type: "string" },
+          color: { type: "string" },
+          role: { type: "string" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_teammate",
+      description: "Remove a Bot from this group when asked. Their chat is deleted. The shared desk stays if anyone remains.",
+      parameters: {
+        type: "object",
+        properties: { bot_id: { type: "string" } },
+        required: ["bot_id"],
       },
     },
   },
@@ -1200,6 +1259,9 @@ async function execTool(bot, name, args, emit, settings) {
       "message_teammate",
       "ask_user",
       "create_teammate",
+      "rename_bot",
+      "update_bot",
+      "delete_teammate",
       "web_search",
       "vault_list",
     ]);
@@ -1230,6 +1292,10 @@ async function execTool(bot, name, args, emit, settings) {
       if (bot.teamId) {
         const posted = await teams.appendMessage(bot.teamId, { ...out, teamId: bot.teamId });
         emit("team-message", { teamId: bot.teamId, ...posted });
+      }
+      if (settings?.__replyTo && typeof deliverReply === "function") {
+        settings.__didReply = true;
+        await deliverReply(settings.__replyTo, bot, out.content);
       }
       return { text: "sent" };
     }
@@ -1340,11 +1406,18 @@ async function execTool(bot, name, args, emit, settings) {
         bot.teamRole = bot.teamRole || "chief";
         await store.upsertBot(bot);
       }
-      const { bot: mate, team: saved } = await teams.addMember(team, {
+      const harness = {
+        ...(bot.harness || {}),
+        ...(args.harness || args.provider ? { provider: String(args.harness || args.provider) } : {}),
+        ...(args.model ? { model: String(args.model) } : {}),
+      };
+      const { bot: mate } = await teams.addMember(team, {
         name: nm,
-        job,
+        job: args.instructions ? `${job}\n${args.instructions}` : job,
         role: args.role === "chief" ? "chief" : "worker",
-        harness: bot.harness,
+        harness,
+        color: args.color,
+        instructions: args.instructions || job,
       });
       emit("teammate", { bot: { id: mate.id, name: mate.name, teamId: mate.teamId, teamRole: mate.teamRole, color: mate.color, harness: mate.harness, vm: mate.vm } });
       const note = {
@@ -1358,6 +1431,45 @@ async function execTool(bot, name, args, emit, settings) {
       bot.messages.push(note);
       emit("message", note);
       return { text: `created ${mate.name} (${mate.id}) job=${job}` };
+    }
+    if (name === "rename_bot" || name === "update_bot") {
+      const targetId = String(args.bot_id || bot.id);
+      const team = bot.teamId ? await teams.getTeam(bot.teamId) : null;
+      const bots = await store.loadBots();
+      const target = bots.find((b) => b.id === targetId);
+      if (!target) return { text: "bot not found" };
+      if (target.id !== bot.id && (!team || !team.memberIds?.includes(target.id))) {
+        return { text: "that Bot is not on your team" };
+      }
+      if (args.name) target.name = String(args.name).trim() || target.name;
+      if (typeof args.instructions === "string") target.instructions = args.instructions;
+      if (typeof args.description === "string") target.description = args.description;
+      if (args.color) target.color = String(args.color);
+      if (args.role === "chief" || args.role === "worker") target.teamRole = args.role;
+      if (args.harness || args.provider || args.model) {
+        target.harness = {
+          ...(target.harness || {}),
+          ...(args.harness || args.provider ? { provider: String(args.harness || args.provider) } : {}),
+          ...(args.model ? { model: String(args.model) } : {}),
+        };
+      }
+      await store.upsertBot(target);
+      emit("teammate", { bot: { id: target.id, name: target.name, teamId: target.teamId, teamRole: target.teamRole, color: target.color, harness: target.harness, vm: target.vm } });
+      return { text: `updated ${target.name} (${target.id})` };
+    }
+    if (name === "delete_teammate") {
+      const targetId = String(args.bot_id || "");
+      if (!targetId) return { text: "bot_id required" };
+      if (targetId === bot.id) return { text: "You cannot delete yourself with this tool. Ask the human." };
+      const team = bot.teamId ? await teams.getTeam(bot.teamId) : null;
+      if (!team || !team.memberIds?.includes(targetId)) return { text: "that Bot is not on your team" };
+      const target = await store.getBot(targetId);
+      const label = target?.name || targetId;
+      if (typeof stopBotFn === "function") stopBotFn(targetId);
+      await teams.removeMember(team, targetId);
+      await store.deleteBot(targetId);
+      emit("teammate", { gone: targetId });
+      return { text: `deleted ${label}` };
     }
     if (name === "list_routines") {
       return { text: JSON.stringify(bot.routines || [], null, 2) };
