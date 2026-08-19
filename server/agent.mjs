@@ -339,7 +339,7 @@ export async function pingHarness(settings, bot, providerOverride) {
   };
 }
 
-async function loadSystemPrompt(bot, settings, { hidden = false } = {}) {
+async function loadSystemPrompt(bot, settings, { hidden = false, compactRoutines = false } = {}) {
   const [adapter, computer, capabilities, voice] = await Promise.all([
     ctx.readPrompt("local-adapter.txt"),
     ctx.readPrompt("computer-control.txt"),
@@ -351,7 +351,7 @@ async function loadSystemPrompt(bot, settings, { hidden = false } = {}) {
 ${adapter}
 ${capabilities}
 ${computer}
-${routines.promptBlock(bot)}
+${routines.promptBlock(bot, { compact: compactRoutines })}
 ${voice}
 
 ## Sub8
@@ -408,7 +408,8 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
       return bot;
     }
   }
-  const system = await loadSystemPrompt(bot, settings, { hidden });
+  const local = harness.provider === "ollama" || harness.provider === "lmstudio";
+  const system = await loadSystemPrompt(bot, settings, { hidden, compactRoutines: local });
 
   if (persistUser) {
     if (!hidden) {
@@ -594,7 +595,6 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
           : "The user sent a chat message while you were working. It was already answered in chat. If they asked to stop or change course, follow that. If they asked you to do the thing now, do it. Otherwise continue the same computer work.",
       });
     }
-    const local = harness.provider === "ollama" || harness.provider === "lmstudio";
     const resp = local
       ? await completeLocal(harness, history, userText, signal)
       : await harness.client.chat.completions.create(
@@ -696,12 +696,36 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
   return bot;
 }
 
+/** After the first tool, do not re-send a 12k standing brief on every Qwen step. */
+export function localContinueQuery(userText) {
+  const t = String(userText || "").trim();
+  if (t.length < 1600) return t || "Continue.";
+  return "Continue the same standing job. Do not re-read MEMORY.md, VOICE.md, or X-JOURNAL unless a specific fact is missing. Prefer computer screenshot / open / click on x.com. One real desktop step.";
+}
+
+function lastVisualImage(history) {
+  for (let i = (history || []).length - 1; i >= 0; i--) {
+    const m = history[i];
+    if (m?.role === "tool") {
+      const t = String(m.content || "");
+      if (!/Screenshot|Mouse pointer|Opened Chrome|Clicked/i.test(t)) return null;
+      continue;
+    }
+    if (Array.isArray(m?.content)) {
+      const img = m.content.find((p) => p?.type === "image_url");
+      if (img) return img;
+    }
+    if (m?.role === "assistant" || (m?.role === "user" && typeof m.content === "string")) return null;
+  }
+  return null;
+}
+
 /** Qwen 3.x jinja dies on long / consecutive-user histories ("No user query found"). */
-function qwenSafeMessages(history, userText) {
+export function qwenSafeMessages(history, userText) {
   const sys = [];
   const compact = [];
   const toolNotes = [];
-  let lastImage = null;
+  const lastImage = lastVisualImage(history);
   for (const m of history || []) {
     if (!m?.role) continue;
     if (m.role === "system") {
@@ -715,26 +739,23 @@ function qwenSafeMessages(history, userText) {
     }
     if (Array.isArray(m.content)) {
       const texts = m.content.filter((p) => p?.type === "text").map((p) => String(p.text || "")).join(" ");
-      const img = m.content.find((p) => p?.type === "image_url");
-      if (img) lastImage = img;
-      if (texts.trim()) compact.push({ role: m.role, content: texts.slice(-4000) });
+      if (texts.trim()) compact.push({ role: m.role, content: texts.slice(-2000) });
       continue;
     }
     const content = typeof m.content === "string" ? m.content : "";
     if (m.role === "user" && (content.startsWith("[routine]") || !content.trim())) continue;
     if (m.role === "assistant" && !content.trim() && !m.tool_calls) continue;
     if (compact.at(-1)?.role === m.role && !m.tool_calls) {
-      compact.at(-1).content = content.slice(-4000);
+      compact.at(-1).content = content.slice(-2000);
       continue;
     }
-    compact.push({ role: m.role, content: content.slice(-4000) });
+    compact.push({ role: m.role, content: content.slice(-2000) });
   }
   while (compact.at(-1)?.role === "user") compact.pop();
   const bits = [String(userText || "").trim() || "Continue."];
-  if (toolNotes.length) bits.push(`Last tool results:\n${toolNotes.slice(-4).join("\n")}`);
-  bits.push("Do only the latest user message. Do not continue an earlier Gmail or login job unless they asked for it this turn.");
-  bits.push("Do the next real desktop step. Do not only say you will do it.");
-  let tail = compact.slice(-4);
+  if (toolNotes.length) bits.push(`Last tool results:\n${toolNotes.slice(-3).join("\n")}`);
+  bits.push("Do the next real desktop step. Do not only say you will do it. Do not re-cat notes you already read this turn.");
+  let tail = compact.slice(-3);
   while (tail[0]?.role === "assistant") tail.shift();
   const query = bits.join("\n\n");
   if (lastImage) {
@@ -748,23 +769,62 @@ function qwenSafeMessages(history, userText) {
   return [...sys, ...tail];
 }
 
+function packChars(messages) {
+  let n = 0;
+  let image = false;
+  for (const m of messages || []) {
+    if (typeof m.content === "string") n += m.content.length;
+    else if (Array.isArray(m.content)) {
+      for (const p of m.content) {
+        if (p?.type === "text") n += String(p.text || "").length;
+        if (p?.type === "image_url") image = true;
+      }
+    }
+  }
+  return { n, image };
+}
+
 async function completeLocal(harness, history, userText, signal) {
-  const query = String(userText || "").trim() || "Continue.";
+  const toolSteps = (history || []).filter((m) => m.role === "tool").length;
+  const query = toolSteps === 0 ? String(userText || "").trim() || "Continue." : localContinueQuery(userText);
   const attempts = [
     qwenSafeMessages(history, query),
     [...(history || []).filter((m) => m.role === "system"), { role: "user", content: query }],
   ];
   let lastErr;
   for (const messages of attempts) {
-    try {
-      return await harness.client.chat.completions.create(
-        { model: harness.model, messages, tools: TOOLS, tool_choice: "auto" },
-        signal ? { signal } : undefined,
-      );
-    } catch (err) {
-      lastErr = err;
-      const msg = String(err?.message || err);
-      if (!/No user query found|jinja template/i.test(msg)) throw err;
+    const { n, image } = packChars(messages);
+    const bodies = [
+      {
+        model: harness.model,
+        messages,
+        tools: TOOLS,
+        tool_choice: "auto",
+        max_tokens: 1536,
+        reasoning_effort: "low",
+      },
+      {
+        model: harness.model,
+        messages,
+        tools: TOOLS,
+        tool_choice: "auto",
+        max_tokens: 1536,
+      },
+    ];
+    for (const body of bodies) {
+      const t0 = Date.now();
+      try {
+        const resp = await harness.client.chat.completions.create(body, signal ? { signal } : undefined);
+        console.log(
+          `local-llm ${Date.now() - t0}ms model=${harness.model} step=${toolSteps} chars=${n} image=${image} think=${Boolean(body.reasoning_effort)}`,
+        );
+        return resp;
+      } catch (err) {
+        lastErr = err;
+        const msg = String(err?.message || err);
+        console.log(`local-llm fail ${Date.now() - t0}ms step=${toolSteps} chars=${n} ${msg.slice(0, 160)}`);
+        if (!/No user query found|jinja template|reasoning_effort|Unrecognized request argument/i.test(msg)) throw err;
+      }
     }
   }
   throw lastErr;
@@ -937,7 +997,7 @@ function emitThink(bot, emit, text, { hidden } = {}) {
 }
 
 function waitForPaint() {
-  return new Promise((r) => setTimeout(r, 1800));
+  return new Promise((r) => setTimeout(r, 500));
 }
 
 async function shotPayload(bot, emit, note = "") {

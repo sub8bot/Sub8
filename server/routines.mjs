@@ -146,17 +146,20 @@ export function packDue(due) {
   }));
 }
 
-export function promptBlock(bot) {
+export function promptBlock(bot, { compact = false } = {}) {
   const rows = (bot.routines || []).filter((r) => r.enabled !== false);
   if (!rows.length) return "";
+  const lines = compact
+    ? rows.map((r) => `- [${r.groupKey}] ${r.name} every ${Math.round(r.intervalMs / 60000)} min. The current user task is this job — do not paste the brief back.`)
+    : rows.map(
+        (r) =>
+          `- [${r.groupKey}] ${r.name} every ${Math.round(r.intervalMs / 60000)} min: ${r.instruction.replace(/\n/g, " | ")}`,
+      );
   return [
     "",
     "## Standing routines (master schedule)",
     "These fire automatically. Default is ONE standing routine. Update that routine (same id) when the mission changes. Only create another if the user explicitly asks for a second job. Instruction text must be a standing brief (who you are, current mission, workspace paths, next checkpoint) — never a paste of the user's last chat line.",
-    ...rows.map(
-      (r) =>
-        `- [${r.groupKey}] ${r.name} every ${Math.round(r.intervalMs / 60000)} min: ${r.instruction.replace(/\n/g, " | ")}`
-    ),
+    ...lines,
     "",
   ].join("\n");
 }
