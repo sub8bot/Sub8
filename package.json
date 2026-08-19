@@ -1,13 +1,13 @@
 {
   "name": "sub8bot",
   "productName": "Sub8",
-  "version": "0.3.19",
+  "version": "0.3.20",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
   "author": "Daniel Farina",
   "license": "BUSL-1.1",
-  "description": "Sub8 — local desktop assistants that live on their own Linux computers.",
+  "description": "Sub8 \u2014 local desktop assistants that live on their own Linux computers.",
   "scripts": {
     "start": "node server/index.mjs",
     "app": "zsh start.sh",
@@ -37,7 +37,7 @@
   "build": {
     "appId": "app.sub8bot.desktop",
     "productName": "Sub8",
-    "copyright": "Copyright © 2026 Daniel Farina",
+    "copyright": "Copyright \u00a9 2026 Daniel Farina",
     "artifactName": "${productName}-${os}-${arch}.${ext}",
     "publish": {
       "provider": "github",
