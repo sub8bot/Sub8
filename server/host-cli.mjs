@@ -55,6 +55,8 @@ export function hermesConfigPath() {
 }
 
 const HERMES_MIN_CTX = 131072;
+/** Isolated Sub8 ACP home: enough to beat LM Studio's ~4k probe, not a 128k KV tax. */
+export const HERMES_SUB8_CTX = 32768;
 
 export function withHermesContextLength(cfg, n = HERMES_MIN_CTX) {
   let out = String(cfg || "");
@@ -80,6 +82,17 @@ export function withHermesContextLength(cfg, n = HERMES_MIN_CTX) {
     out += `\nauxiliary:\n  compression:\n    context_length: ${n}\n    provider: auto\n    model: ''\n`;
   }
   return out;
+}
+
+export function withHermesReasoningEffort(cfg, effort = "low") {
+  let out = String(cfg || "");
+  if (/(?:^|\n)agent:\s*\n(?:  .+\n)*?  reasoning_effort:\s*/.test(out)) {
+    return out.replace(/((?:^|\n)agent:\s*\n(?:  .+\n)*?  reasoning_effort:\s*)[^\n#]+/, `$1${effort}`);
+  }
+  if (/(?:^|\n)agent:\s*\n/.test(out)) {
+    return out.replace(/((?:^|\n)agent:\s*\n)/, `$1  reasoning_effort: ${effort}\n`);
+  }
+  return `${out.trimEnd()}\nagent:\n  reasoning_effort: ${effort}\n`;
 }
 
 export function readHermesModel() {
@@ -271,9 +284,8 @@ ${envLines}
   return home;
 }
 
-export async function writeHermesHome(work, mcpEnv) {
+export async function writeHermesHome(home, mcpEnv, { contextLength = HERMES_SUB8_CTX, reasoning = "low" } = {}) {
   const src = path.join(os.homedir(), ".hermes");
-  const home = path.join(work, "hermes-home");
   await fs.mkdir(home, { recursive: true });
   for (const name of ["config.yaml", ".env"]) {
     const from = path.join(src, name);
@@ -287,9 +299,13 @@ export async function writeHermesHome(work, mcpEnv) {
     const to = path.join(home, name);
     if (!fsSync.existsSync(from)) continue;
     try {
-      await fs.symlink(from, to);
+      await fs.lstat(to);
     } catch {
-      await fs.copyFile(from, to).catch(() => {});
+      try {
+        await fs.symlink(from, to);
+      } catch {
+        await fs.copyFile(from, to).catch(() => {});
+      }
     }
   }
   const mcp = {
@@ -316,7 +332,9 @@ export async function writeHermesHome(work, mcpEnv) {
     cfg = "model:\n  provider: auto\n";
   }
   cfg = cfg.replace(/\nmcp_servers:\n[\s\S]*?(?=\n[a-z_][a-z0-9_]*:|\s*$)/i, "\n");
-  cfg = withHermesContextLength(cfg);
+  cfg = cfg.replace(/(?:^|\n)toolsets:\n(?:- [^\n]+\n)*/, "\ntoolsets: []\n");
+  cfg = withHermesContextLength(cfg, contextLength);
+  cfg = withHermesReasoningEffort(cfg, reasoning);
   await fs.writeFile(cfgPath, `${cfg.trimEnd()}\n${block}`);
   return home;
 }
@@ -364,7 +382,14 @@ export async function runHostCli({ provider, model, userText, signal, bot, setti
   if (!box) return "This harness only runs after the Bot computer is up.";
   const work = await fs.mkdtemp(path.join(os.tmpdir(), `sub8-${provider}-`));
   const extra = await ctx.agentsExtra({ bot, settings, hidden });
-  const rules = `${await fs.readFile(path.join(appRoot, "prompts", "capabilities.txt"), "utf8")}
+  const hermesFast = provider === "hermes";
+  const rules = hermesFast
+    ? `${extra}
+
+You are Sub8 on this Bot's Linux desktop. Call it "my computer".
+Drive it only through MCP tools: computer, shell, vault_list, vault_fill.
+computer action=open text=https://… already returns a screenshot. Do not screenshot again unless the page is wrong. Do not curl a page you opened. Do not use xdotool or host Bash.`
+    : `${await fs.readFile(path.join(appRoot, "prompts", "capabilities.txt"), "utf8")}
 ${extra}
 
 You are Sub8 on this Bot's Linux desktop (display :1, home /config). Call it "my computer". Never say box, container, Docker, VM, or Mac in user-facing replies.
@@ -445,6 +470,8 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
     else args.push("--session-id", bot.id);
   } else if (provider === "hermes") {
     const { hermesAcpPrompt } = await import("./hermes-acp.mjs");
+    const home = await writeHermesHome(path.join(dataDir, "hermes-host"), mcpEnv);
+    spawnEnv.HERMES_HOME = home;
     try {
       const text = await hermesAcpPrompt({
         bot,
@@ -455,16 +482,15 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
         signal,
         bin: hermesBin(),
         env: spawnEnv,
+        home,
       });
-      if (text) return text;
+      return text || "(no output from hermes)";
     } catch (err) {
       const msg = String(err.message || err);
       console.error("hermes acp", msg);
       if (/silent|timed out|still working/i.test(msg)) return msg;
       /* fall back to a one-shot only if ACP never came up */
     }
-    const home = await writeHermesHome(work, mcpEnv);
-    spawnEnv.HERMES_HOME = home;
     spawnEnv.HERMES_ACCEPT_HOOKS = "1";
     bin = hermesBin();
     args = [

@@ -10,6 +10,7 @@ let nextId = 1;
 const pending = new Map();
 const replies = new Map();
 let starting = null;
+let acpHome = "";
 const IDLE_MS = 180_000;
 const FIRST_IDLE_MS = 360_000;
 const HARD_MS = 20 * 60_000;
@@ -134,20 +135,23 @@ function attachChild(proc) {
   });
 }
 
-export async function ensureHermesAcp({ bin, env } = {}) {
-  if (child && !child.killed) return;
+export async function ensureHermesAcp({ bin, env, home } = {}) {
+  if (child && !child.killed && (!home || acpHome === home)) return;
+  if (child && !child.killed && home && acpHome !== home) stopHermesAcp();
   if (starting) return starting;
   starting = (async () => {
     const spawnEnv = { ...(env || process.env), HERMES_YOLO_MODE: "1", HERMES_ACCEPT_HOOKS: "1" };
+    if (home) spawnEnv.HERMES_HOME = home;
     const proc = spawn(bin, ["acp", "--accept-hooks"], {
       env: spawnEnv,
-      cwd: os.homedir(),
+      cwd: home || os.homedir(),
       stdio: ["pipe", "pipe", "pipe"],
     });
     attachChild(proc);
+    acpHome = home || "";
     await rpc("initialize", {
       protocolVersion: 1,
-      clientInfo: { name: "sub8", version: "0.3.14" },
+      clientInfo: { name: "sub8", version: "0.3.16" },
     });
   })();
   try {
@@ -157,36 +161,41 @@ export async function ensureHermesAcp({ bin, env } = {}) {
   }
 }
 
-export async function hermesAcpPrompt({ bot, text, mcpEnv, command, args, signal, bin, env }) {
-  await ensureHermesAcp({ bin, env });
-  const prev = sessions.get(bot.id);
-  if (prev) {
-    rpc("session/cancel", { sessionId: prev }, { hardMs: 8_000 }).catch(() => {});
-    sessions.delete(bot.id);
-    replies.delete(prev);
+export async function hermesAcpPrompt({ bot, text, mcpEnv, command, args, signal, bin, env, home }) {
+  const t0 = Date.now();
+  await ensureHermesAcp({ bin, env, home });
+  let sid = sessions.get(bot.id);
+  let reused = false;
+  if (sid) {
+    reused = true;
+  } else {
+    const envList = Object.entries(mcpEnv || {})
+      .filter(([, v]) => v != null && String(v))
+      .map(([name, value]) => ({ name, value: String(value) }));
+    const cwd = path.join(os.tmpdir(), "sub8-hermes");
+    await fs.mkdir(cwd, { recursive: true });
+    const created = await rpc("session/new", {
+      cwd,
+      mcpServers: command
+        ? [
+            {
+              name: "sub8",
+              command,
+              args: args || [],
+              env: envList,
+            },
+          ]
+        : [],
+    });
+    sid = created?.sessionId || created?.session_id;
+    if (!sid) throw new Error("Hermes ACP did not return a session");
+    sessions.set(bot.id, sid);
   }
-  const envList = Object.entries(mcpEnv || {})
-    .filter(([, v]) => v != null && String(v))
-    .map(([name, value]) => ({ name, value: String(value) }));
-  const cwd = path.join(os.tmpdir(), "sub8-hermes");
-  await fs.mkdir(cwd, { recursive: true });
-  const created = await rpc("session/new", {
-    cwd,
-    mcpServers: command
-      ? [
-          {
-            name: "sub8",
-            command,
-            args: args || [],
-            env: envList,
-          },
-        ]
-      : [],
-  });
-  const sid = created?.sessionId || created?.session_id;
-  if (!sid) throw new Error("Hermes ACP did not return a session");
-  sessions.set(bot.id, sid);
   replies.set(sid, "");
+  const promptText = reused
+    ? `NEW TASK. Ignore the previous goal completely.\n\n${text}`
+    : text;
+  console.log(`hermes-acp session ${reused ? "reuse" : "new"} ${Date.now() - t0}ms`);
   const onAbort = () => {
     rpc("session/cancel", { sessionId: sid }, { hardMs: 8_000 }).catch(() => {});
   };
@@ -196,11 +205,12 @@ export async function hermesAcpPrompt({ bot, text, mcpEnv, command, args, signal
       "session/prompt",
       {
         sessionId: sid,
-        prompt: [{ type: "text", text }],
+        prompt: [{ type: "text", text: promptText }],
       },
       { idleMs: IDLE_MS, firstIdleMs: FIRST_IDLE_MS, hardMs: HARD_MS },
     );
   } catch (err) {
+    sessions.delete(bot.id);
     const partial = (replies.get(sid) || "").trim();
     if (partial && /timed out/i.test(err.message || "")) return partial;
     const silent = /timed out/i.test(err.message || "");
@@ -213,6 +223,7 @@ export async function hermesAcpPrompt({ bot, text, mcpEnv, command, args, signal
   } finally {
     signal?.removeEventListener("abort", onAbort);
   }
+  console.log(`hermes-acp prompt ${Date.now() - t0}ms reused=${reused}`);
   return (replies.get(sid) || "").trim();
 }
 
@@ -223,5 +234,8 @@ export function stopHermesAcp() {
     /* ignore */
   }
   child = null;
+  acpHome = "";
   sessions.clear();
+  replies.clear();
+  pending.clear();
 }
