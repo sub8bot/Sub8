@@ -6,6 +6,7 @@ import * as store from "./store.mjs";
 import * as vm from "./vm.mjs";
 import * as vault from "./vault.mjs";
 import * as routines from "./routines.mjs";
+import * as teams from "./teams.mjs";
 import { resolveZone } from "./context.mjs";
 
 const botId = process.env.SUB8BOT_BOT_ID || "";
@@ -124,6 +125,53 @@ const TOOLS = [
       type: "object",
       properties: { id: { type: "string" } },
       required: ["id"],
+    },
+  },
+  {
+    name: "list_teammates",
+    description: "List the other Bots on your team (id, name, role).",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "message_teammate",
+    description: "Assign work to another Bot on your shared desk. They get it in their own chat.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        bot_id: { type: "string" },
+        content: { type: "string" },
+      },
+      required: ["bot_id", "content"],
+    },
+  },
+  {
+    name: "ask_user",
+    description: "Show a multiple-choice card in chat. Wait for the human to pick.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        question: { type: "string" },
+        hint: { type: "string" },
+        choices: {
+          type: "array",
+          items: { type: "object", properties: { id: { type: "string" }, label: { type: "string" } } },
+        },
+        allow_custom: { type: "boolean" },
+      },
+      required: ["question"],
+    },
+  },
+  {
+    name: "create_teammate",
+    description: "Create another Bot in your group on the same shared desk. If job is missing, a choice card is shown first.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        job: { type: "string" },
+        role: { type: "string" },
+      },
+      required: ["name"],
     },
   },
 ];
@@ -334,6 +382,151 @@ async function callTool(name, args = {}) {
         },
       ],
     };
+  }
+  if (name === "list_teammates") {
+    const bot = await store.getBot(botId);
+    if (!bot?.teamId) return { content: [{ type: "text", text: "You are not on a team." }] };
+    const team = await teams.getTeam(bot.teamId);
+    const mates = teams.membersOf(team, await store.loadBots()).filter((b) => b.id !== bot.id);
+    return {
+      content: [
+        {
+          type: "text",
+          text: mates.length
+            ? JSON.stringify(mates.map((b) => ({ id: b.id, name: b.name, role: b.teamRole || "member" })), null, 2)
+            : "No teammates.",
+        },
+      ],
+    };
+  }
+  if (name === "message_teammate") {
+    const bot = await store.getBot(botId);
+    if (!bot?.teamId) return { content: [{ type: "text", text: "You are not on a team." }], isError: true };
+    const toId = String(args.bot_id || "");
+    const content = String(args.content || "").trim();
+    if (!content) return { content: [{ type: "text", text: "empty message" }], isError: true };
+    const team = await teams.getTeam(bot.teamId);
+    const mate = teams.membersOf(team, await store.loadBots()).find((b) => b.id === toId);
+    if (!mate) return { content: [{ type: "text", text: "that id is not on your team" }], isError: true };
+    const posted = await teams.appendMessage(bot.teamId, {
+      role: "assistant",
+      speakerId: bot.id,
+      speakerName: bot.name,
+      speakerRole: bot.teamRole || "",
+      toId: mate.id,
+      toName: mate.name,
+      content,
+    });
+    await emit("team-message", { teamId: bot.teamId, ...posted });
+    await emit("message", {
+      id: posted.id,
+      role: "assistant",
+      speakerId: bot.id,
+      speakerName: bot.name,
+      content: `To ${mate.name}: ${content}`,
+      ts: posted.ts,
+    });
+    if (emitUrl && token) {
+      try {
+        await fetch(`${emitUrl}/api/internal/team-dispatch`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-sub8-token": token },
+          body: JSON.stringify({ fromId: bot.id, toId: mate.id, content }),
+        });
+      } catch {
+        /* dispatch is best-effort */
+      }
+    }
+    return { content: [{ type: "text", text: `sent to ${mate.name}` }] };
+  }
+  if (name === "ask_user") {
+    const bot = await store.getBot(botId);
+    if (!bot) throw new Error("Bot not found");
+    const choices = Array.isArray(args.choices) && args.choices.length
+      ? args.choices.map((c, i) => ({ id: String(c.id || String.fromCharCode(97 + i)), label: String(c.label || "").trim() })).filter((c) => c.label)
+      : teams.BOT_JOB_CHOICES;
+    const card = {
+      id: `ch${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
+      role: "assistant",
+      kind: "choices",
+      content: String(args.question || "What should we do?"),
+      hint: String(args.hint || ""),
+      choices,
+      allowCustom: args.allow_custom !== false,
+      pending: true,
+      speakerId: bot.id,
+      speakerName: bot.name,
+      ts: Date.now(),
+    };
+    await store.patchBot(botId, (b) => {
+      b.messages = b.messages || [];
+      b.messages.push(card);
+    });
+    await emit("message", card);
+    return { content: [{ type: "text", text: "asked the user; wait for their pick in chat" }] };
+  }
+  if (name === "create_teammate") {
+    const bot = await store.getBot(botId);
+    if (!bot) throw new Error("Bot not found");
+    const job = String(args.job || "").trim();
+    const nm = String(args.name || "").trim() || "Worker";
+    if (!job) {
+      const card = {
+        id: `ch${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
+        role: "assistant",
+        kind: "choices",
+        content: "What should this one do?",
+        hint: "Name + job is enough. You can also type your own.",
+        choices: teams.BOT_JOB_CHOICES,
+        allowCustom: true,
+        pending: true,
+        context: { intent: "create-teammate", name: nm },
+        speakerId: bot.id,
+        speakerName: bot.name,
+        ts: Date.now(),
+      };
+      await store.patchBot(botId, (b) => {
+        b.messages = b.messages || [];
+        b.messages.push(card);
+      });
+      await emit("message", card);
+      return { content: [{ type: "text", text: "asked the user what this Bot should do" }] };
+    }
+    let team = bot.teamId ? await teams.getTeam(bot.teamId) : null;
+    if (!team) {
+      team = await teams.saveTeam({
+        name: `${bot.name}'s team`,
+        chiefId: bot.id,
+        memberIds: [bot.id],
+        computerId: bot.vm?.computerId || null,
+      });
+      bot.teamId = team.id;
+      bot.teamRole = bot.teamRole || "chief";
+      await store.upsertBot(bot);
+    }
+    const { bot: mate } = await teams.addMember(team, {
+      name: nm,
+      job,
+      role: args.role === "chief" ? "chief" : "worker",
+      harness: bot.harness,
+    });
+    const note = {
+      id: `a${Date.now()}nb`,
+      role: "assistant",
+      speakerId: bot.id,
+      speakerName: bot.name,
+      content: `Created ${mate.name} on this desk to ${job}. They’re in the sidebar on this team.`,
+      ts: Date.now(),
+    };
+    await store.patchBot(botId, (b) => {
+      b.messages = b.messages || [];
+      b.messages.push(note);
+      b.teamId = team.id;
+      b.teamRole = b.teamRole || "chief";
+    });
+    await emit("message", note);
+    await emit("teammate", { bot: { id: mate.id, name: mate.name, teamId: mate.teamId, teamRole: mate.teamRole, color: mate.color, harness: mate.harness, vm: mate.vm } });
+    return { content: [{ type: "text", text: `created ${mate.name} (${mate.id})` }] };
   }
   throw new Error(`unknown tool ${name}`);
 }

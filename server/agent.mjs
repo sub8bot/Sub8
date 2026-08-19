@@ -9,6 +9,13 @@ import * as vault from "./vault.mjs";
 import * as hostCli from "./host-cli.mjs";
 import { detectLocalHarnesses, localSpec } from "./local-llm.mjs";
 import * as ctx from "./context.mjs";
+import * as teams from "./teams.mjs";
+import * as store from "./store.mjs";
+
+let dispatchTeammate = null;
+export function setTeamDispatch(fn) {
+  dispatchTeammate = fn;
+}
 
 const COMPUTER_ACTIONS = [
   "screenshot",
@@ -31,7 +38,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "send_message",
-      description: "User-visible chat. Ack first, then result last.",
+      description: "User-visible chat in this thread (and the team chat if you are on a team). Ack first, then result last.",
       parameters: { type: "object", properties: { content: { type: "string" } }, required: ["content"] },
     },
   },
@@ -114,6 +121,71 @@ const TOOLS = [
       name: "disable_routine",
       description: "Turn off a routine by id.",
       parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_teammates",
+      description: "List the other Bots on your team (id, name, role). Empty if you are not on a team.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "message_teammate",
+      description:
+        "Assign work to another Bot on your shared desk. That Bot gets the line in their own chat and starts working. Use this to delegate; do not expect the human to talk to both of you at once.",
+      parameters: {
+        type: "object",
+        properties: {
+          bot_id: { type: "string", description: "Teammate id from list_teammates" },
+          content: { type: "string" },
+        },
+        required: ["bot_id", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "ask_user",
+      description:
+        "Show the human a multiple-choice card in chat (A/B/C plus optional typed answer). Use this when you need them to pick before you continue, e.g. what a new Bot should do.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: { type: "string" },
+          hint: { type: "string" },
+          choices: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: { id: { type: "string" }, label: { type: "string" } },
+            },
+          },
+          allow_custom: { type: "boolean" },
+        },
+        required: ["question"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_teammate",
+      description:
+        "Create another Bot in your group on the same shared desk. Pass name and job. If the job is missing, ask the user with a choice card first.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          job: { type: "string", description: "What this Bot should do" },
+          role: { type: "string", description: "worker (default) or chief" },
+        },
+        required: ["name"],
+      },
     },
   },
   {
@@ -349,6 +421,31 @@ export async function pingHarness(settings, bot, providerOverride) {
   };
 }
 
+async function teamPrompt(bot) {
+  if (!bot?.teamId) return "";
+  const team = await teams.getTeam(bot.teamId);
+  if (!team) return "";
+  const bots = await store.loadBots();
+  const mates = teams.membersOf(team, bots);
+  const rows = mates
+    .map((b) => `- ${b.teamRole || "member"} ${b.name} (${b.id})${b.id === bot.id ? " ← you" : ""}`)
+    .join("\n");
+  const role = bot.teamRole === "chief" ? "You are the chief." : "You are a worker.";
+  const desk =
+    bot.teamRole === "chief"
+      ? "Assign work with message_teammate. You share one Linux desk. Your Chrome window title starts with Sub8: plus the first 8 of your id. Do not drive a teammate's window."
+      : "Take assignments from the chief. Drive only your Chrome window (title starts with Sub8: plus the first 8 of your id). Report back with message_teammate or send_message.";
+  return [
+    "",
+    "## Team",
+    `Team “${team.name}”. ${role} ${desk}`,
+    "Teammates:",
+    rows || "- (none)",
+    "User messages in this thread are the team chat. send_message is visible to the human and the team.",
+    "",
+  ].join("\n");
+}
+
 async function loadSystemPrompt(bot, settings, { hidden = false, compactRoutines = false } = {}) {
   const [adapter, computer, capabilities, voice] = await Promise.all([
     ctx.readPrompt("local-adapter.txt"),
@@ -362,6 +459,7 @@ ${adapter}
 ${capabilities}
 ${computer}
 ${routines.promptBlock(bot, { compact: compactRoutines, timeZone: ctx.resolveZone(settings) })}
+${await teamPrompt(bot)}
 ${voice}
 
 ## Sub8
@@ -1098,6 +1196,10 @@ async function execTool(bot, name, args, emit, settings) {
       "upsert_routine",
       "list_routines",
       "disable_routine",
+      "list_teammates",
+      "message_teammate",
+      "ask_user",
+      "create_teammate",
       "web_search",
       "vault_list",
     ]);
@@ -1117,12 +1219,145 @@ async function execTool(bot, name, args, emit, settings) {
       const out = {
         id: `a${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
         role: "assistant",
+        speakerId: bot.id,
+        speakerName: bot.name,
+        speakerRole: bot.teamRole || "",
         content: vault.redactSecrets(String(args.content || ""), secrets),
         ts: Date.now(),
       };
       bot.messages.push(out);
       emit("message", out);
+      if (bot.teamId) {
+        const posted = await teams.appendMessage(bot.teamId, { ...out, teamId: bot.teamId });
+        emit("team-message", { teamId: bot.teamId, ...posted });
+      }
       return { text: "sent" };
+    }
+    if (name === "list_teammates") {
+      if (!bot.teamId) return { text: "You are not on a team." };
+      const team = await teams.getTeam(bot.teamId);
+      const bots = await store.loadBots();
+      const mates = teams.membersOf(team, bots).filter((b) => b.id !== bot.id);
+      return {
+        text: mates.length
+          ? JSON.stringify(
+              mates.map((b) => ({ id: b.id, name: b.name, role: b.teamRole || "member" })),
+              null,
+              2,
+            )
+          : "No teammates.",
+      };
+    }
+    if (name === "message_teammate") {
+      if (!bot.teamId) return { text: "You are not on a team." };
+      const toId = String(args.bot_id || args.id || "");
+      const content = String(args.content || "").trim();
+      if (!content) return { text: "empty message" };
+      const team = await teams.getTeam(bot.teamId);
+      const bots = await store.loadBots();
+      const mate = teams.membersOf(team, bots).find((b) => b.id === toId);
+      if (!mate) return { text: "that id is not on your team" };
+      const posted = await teams.appendMessage(bot.teamId, {
+        role: "assistant",
+        speakerId: bot.id,
+        speakerName: bot.name,
+        speakerRole: bot.teamRole || "",
+        toId: mate.id,
+        toName: mate.name,
+        content,
+      });
+      emit("team-message", { teamId: bot.teamId, ...posted });
+      const note = {
+        id: `a${Date.now()}tm`,
+        role: "assistant",
+        speakerId: bot.id,
+        speakerName: bot.name,
+        content: `To ${mate.name}: ${content}`,
+        ts: Date.now(),
+      };
+      bot.messages.push(note);
+      emit("message", note);
+      if (typeof dispatchTeammate === "function") {
+        dispatchTeammate(mate.id, content, bot);
+      }
+      return { text: `sent to ${mate.name}` };
+    }
+    if (name === "ask_user") {
+      const choices = Array.isArray(args.choices) && args.choices.length
+        ? args.choices.map((c, i) => ({
+            id: String(c.id || String.fromCharCode(97 + i)),
+            label: String(c.label || "").trim(),
+          })).filter((c) => c.label)
+        : teams.BOT_JOB_CHOICES;
+      const card = {
+        id: `ch${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
+        role: "assistant",
+        kind: "choices",
+        content: String(args.question || "What should we do?"),
+        hint: String(args.hint || ""),
+        choices,
+        allowCustom: args.allow_custom !== false,
+        pending: true,
+        speakerId: bot.id,
+        speakerName: bot.name,
+        ts: Date.now(),
+      };
+      bot.messages.push(card);
+      emit("message", card);
+      return { text: "asked the user; wait for their pick in chat" };
+    }
+    if (name === "create_teammate") {
+      const job = String(args.job || "").trim();
+      const nm = String(args.name || "").trim() || "Worker";
+      if (!job) {
+        const card = {
+          id: `ch${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
+          role: "assistant",
+          kind: "choices",
+          content: "What should this one do?",
+          hint: "Name + job is enough. You can also type your own.",
+          choices: teams.BOT_JOB_CHOICES,
+          allowCustom: true,
+          pending: true,
+          context: { intent: "create-teammate", name: nm },
+          speakerId: bot.id,
+          speakerName: bot.name,
+          ts: Date.now(),
+        };
+        bot.messages.push(card);
+        emit("message", card);
+        return { text: "asked the user what this Bot should do; wait for their pick" };
+      }
+      let team = bot.teamId ? await teams.getTeam(bot.teamId) : null;
+      if (!team) {
+        team = await teams.saveTeam({
+          name: `${bot.name}'s team`,
+          chiefId: bot.id,
+          memberIds: [bot.id],
+          computerId: bot.vm?.computerId || null,
+        });
+        bot.teamId = team.id;
+        bot.teamRole = bot.teamRole || "chief";
+        await store.upsertBot(bot);
+      }
+      const { bot: mate, team: saved } = await teams.addMember(team, {
+        name: nm,
+        job,
+        role: args.role === "chief" ? "chief" : "worker",
+        harness: bot.harness,
+      });
+      emit("teammate", { bot: { id: mate.id, name: mate.name, teamId: mate.teamId, teamRole: mate.teamRole, color: mate.color, harness: mate.harness, vm: mate.vm } });
+      const note = {
+        id: `a${Date.now()}nb`,
+        role: "assistant",
+        speakerId: bot.id,
+        speakerName: bot.name,
+        content: `Created ${mate.name} on this desk to ${job}. They’re in the sidebar on this team.`,
+        ts: Date.now(),
+      };
+      bot.messages.push(note);
+      emit("message", note);
+      return { text: `created ${mate.name} (${mate.id}) job=${job}` };
     }
     if (name === "list_routines") {
       return { text: JSON.stringify(bot.routines || [], null, 2) };

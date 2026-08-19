@@ -252,6 +252,8 @@ export function newBot(partial = {}) {
     section: partial.section || "",
     unread: Boolean(partial.unread),
     hidden: Boolean(partial.hidden),
+    teamId: partial.teamId || "",
+    teamRole: partial.teamRole === "chief" || partial.teamRole === "worker" ? partial.teamRole : "",
   };
 }
 
@@ -317,6 +319,8 @@ export async function upsertBot(bot) {
           "unread",
           "hidden",
           "harness",
+          "teamId",
+          "teamRole",
         ]) {
           if (prev[key] !== undefined) bot[key] = prev[key];
         }
