@@ -4771,6 +4771,10 @@ function listen() {
     });
     es.addEventListener("teammate", (e) => {
       const data = JSON.parse(e.data);
+      if (data.gone) {
+        state.bots = state.bots.filter((b) => b.id !== data.gone);
+        if (state.selected === data.gone) rememberSelected(state.bots.find((b) => !b.hidden)?.id || null);
+      }
       if (data.bot) adoptBot(data.bot);
       api("/api/teams")
         .then((rows) => {

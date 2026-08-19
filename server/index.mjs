@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import * as store from "./store.mjs";
 import * as vm from "./vm.mjs";
 import * as routines from "./routines.mjs";
-import { runTurn, publicBot, pingHarness, webSearch, orchestratorReply, isChatQuestion, HARNESS_PROVIDERS, harnessFor, setTeamDispatch } from "./agent.mjs";
+import { runTurn, publicBot, pingHarness, webSearch, orchestratorReply, isChatQuestion, HARNESS_PROVIDERS, harnessFor, setTeamDispatch, setTeamReply, setStopBot } from "./agent.mjs";
 import { detectLocalHarnesses } from "./local-llm.mjs";
 import { collectHarnessStatus } from "./harness-status.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -235,6 +235,11 @@ app.post("/api/internal/emit", async (req, res) => {
 
 app.post("/api/internal/team-dispatch", async (req, res) => {
   if (req.get("x-sub8-token") !== internalToken) return res.status(401).json({ error: "unauthorized" });
+  if (req.body?.stopId) {
+    stopTurn(String(req.body.stopId));
+    deletedIds.add(String(req.body.stopId));
+    return res.json({ ok: true, stopped: true });
+  }
   const toId = String(req.body?.toId || "");
   const fromId = String(req.body?.fromId || "");
   const content = String(req.body?.content || "").trim();
@@ -710,6 +715,32 @@ app.post("/api/teams", async (req, res) => {
   if (chief) provision(chief.id).catch((err) => console.log("provision", err));
 });
 
+app.delete("/api/teams/:id", async (req, res) => {
+  const team = await teams.getTeam(req.params.id);
+  if (!team) return res.status(404).json({ error: "not found" });
+  const wipe = req.body?.wipe !== false && String(req.query.wipe || "1") !== "0";
+  const bots = await store.loadBots();
+  const members = teams.membersOf(team, bots);
+  const computerId = team.computerId || members[0]?.vm?.computerId || null;
+  for (const m of members) {
+    stopTurn(m.id);
+    deletedIds.add(m.id);
+    await store.deleteBot(m.id);
+  }
+  await teams.removeTeam(team.id);
+  if (wipe && computerId) {
+    const row = await computers.getComputer(computerId);
+    if (row) {
+      await vm.stopVm({ vm: { container: row.container, volume: row.volume } }, { wipe: true }).catch(() => {});
+      await computers.removeComputer(row.id);
+    }
+  }
+  sweepFromRegistry().catch((err) => console.error("sweep", err));
+  broadcast("bots", (await store.loadBots()).map(toClient));
+  broadcast("computers", { dirty: true });
+  res.json({ ok: true, deleted: members.map((m) => m.id), wiped: Boolean(wipe && computerId) });
+});
+
 app.post("/api/teams/:id/messages", async (req, res) => {
   const team = await teams.getTeam(req.params.id);
   if (!team) return res.status(404).json({ error: "not found" });
@@ -1068,7 +1099,7 @@ function enqueueTurn(botId, fn) {
 
 function dispatchToTeammate(toId, content, from) {
   const who = from?.name || "a teammate";
-  const prompt = `${who} says:\n${content}`;
+  const prompt = `${who} says:\n${content}\n\nReply with send_message (or your normal answer). ${who} will receive it.`;
   enqueueTurn(toId, async () => {
     const live = await store.getBot(toId);
     if (!live) return;
@@ -1086,11 +1117,39 @@ function dispatchToTeammate(toId, content, from) {
       b.messages.push(incoming);
     });
     broadcast("message", { botId: toId, ...incoming });
-    return runUserTurn(toId, prompt, false, [], { persistUser: false });
+    return runUserTurn(toId, prompt, false, [], { persistUser: false, replyTo: from?.id || null });
   });
 }
 
+async function deliverTeammateReply(toId, from, content) {
+  if (!toId || !content || toId === from?.id) return;
+  const text = `${from?.name || "Teammate"} replies:\n${content}`;
+  const incoming = {
+    id: `a${Date.now()}rp`,
+    role: "assistant",
+    speakerId: from?.id,
+    speakerName: from?.name,
+    speakerRole: from?.teamRole || "",
+    content: text,
+    ts: Date.now(),
+  };
+  const liveBot = await store.patchBot(toId, (b) => {
+    b.messages = b.messages || [];
+    b.messages.push(incoming);
+  });
+  if (!liveBot) return;
+  broadcast("message", { botId: toId, ...incoming });
+  const live = inflightTurns.get(toId);
+  if (live) live.nudges.push(text);
+  else enqueueTurn(toId, () => runUserTurn(toId, text, false, [], { persistUser: false }));
+}
+
 setTeamDispatch(dispatchToTeammate);
+setTeamReply(deliverTeammateReply);
+setStopBot((id) => {
+  stopTurn(id);
+  deletedIds.add(id);
+});
 
 function stopTurn(botId) {
   turnEpoch.set(botId, epochOf(botId) + 1);
@@ -1513,6 +1572,8 @@ async function runUserTurn(botId, text, hidden, images = [], opts = {}) {
     const settings = await store.loadSettings();
     settings.__internalToken = internalToken;
     settings.__port = PORT;
+    settings.__replyTo = opts.replyTo || null;
+    settings.__didReply = false;
     await runTurn({
       bot,
       settings,
@@ -1527,6 +1588,11 @@ async function runUserTurn(botId, text, hidden, images = [], opts = {}) {
         if (event === "routine" || event === "message") return store.upsertBot(bot);
       },
     });
+    if (opts.replyTo && !settings.__didReply) {
+      const latest = await store.getBot(botId);
+      const last = [...(latest?.messages || [])].reverse().find((m) => m.role === "assistant" && String(m.content || "").trim() && m.kind !== "choices");
+      if (last) await deliverTeammateReply(opts.replyTo, latest, last.content);
+    }
     // Don't let a long turn resurrect routines/vm state deleted while it ran.
     const latest = await store.getBot(botId);
     if (latest) {
