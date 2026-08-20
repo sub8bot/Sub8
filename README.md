@@ -26,8 +26,8 @@ The mascot is the Smooth octopus you see in the rail: live Three.js, emoji faces
 </p>
 
 <p align="center">
-  <a href="https://star-history.com/#sub8bot/Sub8&Date">
-    <img src="https://api.star-history.com/svg?repos=sub8bot/Sub8&type=Date" alt="Star history" width="640">
+  <a href="https://github.com/sub8bot/Sub8/stargazers">
+    <img src="docs/brand/star-history.svg" width="640" alt="Sub8 GitHub stars over time">
   </a>
 </p>
 
@@ -95,6 +95,7 @@ That writes Mac (signed + notarized when Apple credentials are in the environmen
 | [docs/brand/octobot-icon.png](docs/brand/octobot-icon.png) | App icon master (macOS applies the squircle) |
 | [docs/brand/octobot-icon-rounded.png](docs/brand/octobot-icon-rounded.png) | Rounded PNG for web / README |
 | [docs/brand/octobot-icon-source.png](docs/brand/octobot-icon-source.png) | Official purple octopus still |
+| [docs/brand/star-history.svg](docs/brand/star-history.svg) | Stargazers chart (`node scripts/star-history.mjs`) |
 | `build/icon.icns` / `build/icon.ico` | Packaged app icons (all sizes) |
 
 Not affiliated with xAI.

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="280" viewBox="0 0 720 280" role="img" aria-label="Sub8 GitHub stars over time, 31 stars">
+  <rect width="720" height="280" rx="12" fill="#fbf8fc"/>
+  <text x="48" y="22" fill="#2b2433" font-size="14" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-weight="600">Stargazers · 31</text>
+  <g font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif">
+    <line x1="48" x2="696" y1="236.0" y2="236.0" stroke="#e8e4ef" stroke-width="1"/>
+    <line x1="48" x2="696" y1="178.9" y2="178.9" stroke="#e8e4ef" stroke-width="1"/>
+    <line x1="48" x2="696" y1="121.7" y2="121.7" stroke="#e8e4ef" stroke-width="1"/>
+    <line x1="48" x2="696" y1="64.6" y2="64.6" stroke="#e8e4ef" stroke-width="1"/>
+    <path d="M48.0,207.4 L264.0,127.4 L480.0,93.1 L696.0,58.9 L696.0,236.0 L48.0,236.0 Z" fill="#c56dd1" fill-opacity="0.18"/>
+    <path d="M48.0,207.4 L264.0,127.4 L480.0,93.1 L696.0,58.9" fill="none" stroke="#9b6dd1" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="696.0" cy="58.9" r="4" fill="#9b6dd1"/>
+    <text x="40" y="240" text-anchor="end" fill="#6b6575" font-size="11">0</text>
+    <text x="40" y="182.85714285714286" text-anchor="end" fill="#6b6575" font-size="11">10</text>
+    <text x="40" y="125.71428571428572" text-anchor="end" fill="#6b6575" font-size="11">20</text>
+    <text x="40" y="68.57142857142858" text-anchor="end" fill="#6b6575" font-size="11">30</text>
+    <text x="48.0" y="266" text-anchor="middle" fill="#6b6575" font-size="11">8/17</text>
+    <text x="264.0" y="266" text-anchor="middle" fill="#6b6575" font-size="11">8/18</text>
+    <text x="480.0" y="266" text-anchor="middle" fill="#6b6575" font-size="11">8/19</text>
+    <text x="696.0" y="266" text-anchor="middle" fill="#6b6575" font-size="11">8/20</text>
+  </g>
+</svg>
