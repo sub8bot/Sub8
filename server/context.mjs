@@ -2,6 +2,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { appRoot } from "./paths.mjs";
 import * as vault from "./vault.mjs";
+import * as teams from "./teams.mjs";
+import * as store from "./store.mjs";
+import * as memory from "./memory.mjs";
 
 const TZ_HINTS = [
   [/^America\//, "en-US", "USD", "United States"],
@@ -93,6 +96,7 @@ export function clockBlock(settings = {}, { hidden = false } = {}) {
     `${when} (${zone}).`,
     `Today is ${today}. Tomorrow is ${tomorrow} (${tomorrowYmd}).`,
     `Locale: ${region}, ${locale}. Currency: ${currency}. Use this for prices, dates, and sites unless the user says otherwise.`,
+    `The computer itself may be on UTC. Always report times in ${zone} and name the zone.`,
   ];
   if (hidden) {
     lines.push(
@@ -139,7 +143,41 @@ export async function liveContext({ bot, settings, hidden = false } = {}) {
   return `${clockBlock(settings, { hidden })}
 ${harnessLine(settings, bot)}
 ${ident}
-${boot}${extra}`;
+${boot}${extra}
+${await memory.promptBlock(bot)}`;
+}
+
+export async function teamDeskPrompt(bot) {
+  if (!bot?.teamId) return "";
+  const team = await teams.getTeam(bot.teamId);
+  if (!team) return "";
+  const mates = teams.membersOf(team, await store.loadBots());
+  const role = bot.teamRole === "chief" ? "chief" : "worker";
+  const rows = mates
+    .map((b) => {
+      const you = b.id === bot.id ? " ← you" : "";
+      return `- ${b.teamRole || "member"} ${b.name} (${b.id})${you}`;
+    })
+    .join("\n");
+  const mine = bot.vm?.display || ":1";
+  const job =
+    role === "chief"
+      ? "set_job first with one step per piece the user asked for — include a step for any piece you keep (your bot id). Assign with message_teammate (that also creates the bar). That worker's tab name becomes the job-step label. Do not invent extra files as deliverables; update_task detail is the report. Do not re-do a worker's search. list_tasks; compile from those details (latest) for EVERY non-Summary step including yours; send_message that list; update_task Summary done; stop. One-shot jobs are not routines. Google URLs: add &hl=en&gl=us&curr=USD."
+      : `Your screen is display ${mine}. update_task running when you start, done (or blocked) when finished — detail is one line. message_teammate the chief ONE short line. Do not send_message a report. Do not write a report file unless asked. Long notes stay in your own chat. browser for pages; computer for pixels. Do not upsert_routine for a one-shot search. Google URLs: add &hl=en&gl=us&curr=USD.`;
+  return [
+    "",
+    "## Team — one computer, many screens",
+    `You are the ${role} on team “${team.name}”. You are NOT on your own machine.`,
+    "All of you share ONE Linux computer: same disk, same `/config`. Files you write are visible immediately. `/config/workspace/` is shared. Private notes: `/config/agent-data/agents/<id>/`.",
+    `Each Bot has a private X display and Chrome (one tab). Yours is ${mine}. Never screenshot, click, or open Chrome on a teammate's DISPLAY. Never Ctrl+T, never --new-tab.`,
+    "Web pages: browser tool (snapshot, click by ref, fill, navigate). Pixel desktop / file dialogs / drag: computer tool. Do not attach to port 9222 yourself.",
+    "Do not reboot, reset, or reinstall as if this computer were yours alone.",
+    job,
+    "Teammates:",
+    rows || "- (none)",
+    "User messages in this thread are the team chat. send_message is visible to the human and the team. message_teammate starts the other Bot's turn. If you need the user to confirm, pick an option, or grant access, call ask_user and wait.",
+    "",
+  ].join("\n");
 }
 
 export async function agentsExtra({ bot, settings, hidden = false } = {}) {
@@ -148,6 +186,8 @@ export async function agentsExtra({ bot, settings, hidden = false } = {}) {
   return `${clockBlock(settings, { hidden })}
 ${harnessLine(settings, bot)}
 ${ident}${extra}
+${await teamDeskPrompt(bot)}
+${await memory.promptBlock(bot)}
 ${await vault.promptBlock(bot?.id)}
 `;
 }

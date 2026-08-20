@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draw edge rulers and a pointer crosshair onto a desktop screenshot."""
+"""Draw a pointer crosshair onto a desktop screenshot (no edge rulers)."""
 import sys
 from pathlib import Path
 
@@ -21,16 +21,7 @@ def annotate(src: Path, dest: Path, px: int, py: int) -> None:
     overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     d = ImageDraw.Draw(overlay)
     f = font(11)
-    # edge rulers
-    d.rectangle((0, 0, w, 16), fill=(8, 8, 10, 150))
-    d.rectangle((0, 0, 28, h), fill=(8, 8, 10, 150))
-    for x in range(0, w, 50):
-        d.line((x, 0, x, 16), fill=(180, 255, 80, 200), width=1)
-        d.text((x + 2, 1), str(x), fill=(220, 255, 160, 230), font=f)
-    for y in range(0, h, 50):
-        d.line((0, y, 28, y), fill=(180, 255, 80, 200), width=1)
-        d.text((2, y + 1), str(y), fill=(220, 255, 160, 230), font=f)
-    # crosshair at pointer
+    # crosshair at pointer — do not paint edge rulers; those show on the human stream.
     if 0 <= px < w and 0 <= py < h:
         col = (255, 60, 120, 230)
         gap, arm = 6, 22

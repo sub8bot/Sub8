@@ -2,8 +2,12 @@
 set -e
 export DOCKER_HOST="${DOCKER_HOST:-unix://$HOME/.colima/default/docker.sock}"
 if ! docker info >/dev/null 2>&1; then
-  echo "Starting Colima…"
-  colima start
+  mem_gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 / 1024 / 1024 ))
+  if (( mem_gb >= 32 )); then cpus=4; ram=8
+  else cpus=2; ram=4
+  fi
+  echo "Starting Colima (${cpus} CPU, ${ram} GiB) for a ${mem_gb} GiB Mac…"
+  colima start --cpu "$cpus" --memory "$ram" --save-config
 fi
 cd "$(dirname "$0")"
 if [ -f .env ]; then

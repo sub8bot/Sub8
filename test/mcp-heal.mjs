@@ -17,7 +17,7 @@ const data = path.join(tmp, "data");
 fs.mkdirSync(path.join(asar, "server"), { recursive: true });
 fs.mkdirSync(path.join(asar, "web"), { recursive: true });
 fs.mkdirSync(path.join(unpacked, "server"), { recursive: true });
-for (const f of ["mcp-sub8", "store", "vm", "vault", "paths", "trace", "isolation", "routines", "context"]) {
+for (const f of ["mcp-sub8", "store", "vm", "vault", "paths", "trace", "isolation", "routines", "context", "teams", "memory"]) {
   fs.copyFileSync(path.join(root, "server", `${f}.mjs`), path.join(asar, "server", `${f}.mjs`));
 }
 fs.copyFileSync(path.join(root, "web", "palette.js"), path.join(asar, "web", "palette.js"));
@@ -35,7 +35,7 @@ const spec = JSON.parse(
 const entry = spec.args[0];
 assert.ok(entry.startsWith(data), `healed copy should live in the data dir, got ${entry}`);
 assert.ok(fs.existsSync(entry), "healed entry exists");
-for (const f of ["store.mjs", "vm.mjs", "vault.mjs", "paths.mjs", "trace.mjs", "isolation.mjs", "routines.mjs", "context.mjs"]) {
+for (const f of ["store.mjs", "vm.mjs", "vault.mjs", "paths.mjs", "trace.mjs", "isolation.mjs", "routines.mjs", "context.mjs", "teams.mjs", "memory.mjs"]) {
   assert.ok(fs.existsSync(path.join(path.dirname(entry), f)), `healed copy is missing ${f}`);
 }
 assert.ok(fs.existsSync(path.join(path.dirname(path.dirname(entry)), "web", "palette.js")), "healed copy is missing web/palette.js");
@@ -51,7 +51,7 @@ const tools = out
   .filter(Boolean)
   .map((l) => JSON.parse(l))
   .find((m) => m.result?.tools)?.result.tools.map((t) => t.name);
-for (const name of ["computer", "shell", "vault_list", "vault_fill", "list_routines", "upsert_routine", "disable_routine"]) {
+for (const name of ["computer", "browser", "shell", "memory", "vault_list", "vault_fill", "list_routines", "upsert_routine", "disable_routine", "send_message", "list_teammates", "message_teammate", "list_tasks", "set_job", "update_task", "ask_user", "create_teammate", "rename_bot", "update_bot", "delete_teammate"]) {
   assert.ok(tools?.includes(name), `healed server should expose ${name}, got ${tools}`);
 }
 

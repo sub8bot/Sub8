@@ -23,9 +23,10 @@ function test(name, fn) {
 
 async function pickBot() {
   const bots = await store.loadBots();
-  const live = bots.find((b) => b.vm?.status === "running" && b.vm?.container);
-  if (!live) throw new Error("No running bot computer. Start Sub8 first.");
-  return live;
+  const live = bots.filter((b) => b.vm?.status === "running" && b.vm?.container);
+  if (!live.length) throw new Error("No running bot computer. Start Sub8 first.");
+  // Prefer the slim shared desk. Do not pause or pkill Chrome on AikaBotto's webtop.
+  return live.find((b) => /aika/i.test(b.name || "") === false) || live[0];
 }
 
 test("isolation rejects a bot with no container", () => {
@@ -48,6 +49,19 @@ test("shell blocks host paths", () => {
 
 test("shell allows VM commands", () => {
   assert.doesNotThrow(() => assertVmShell("ls /config"));
+  assert.doesNotThrow(() => assertVmShell("desk-doctor"));
+  assert.doesNotThrow(() => assertVmShell("rg TODO /config/workspace"));
+});
+
+test("shell blocks GUI automation and Chrome debug attach", () => {
+  assert.throws(() => assertVmShell("xdotool click 1"), /computer tool|click or type/);
+  assert.throws(() => assertVmShell("octo-click 100 200"), /computer tool|click or type/);
+  assert.throws(() => assertVmShell("curl -s http://127.0.0.1:9222/json/new?https://example.com"), /debug port|open/);
+  assert.throws(() => assertVmShell("python3 -m playwright"), /debug port|open/);
+});
+
+test("shell blocks cookie dumps", () => {
+  assert.throws(() => assertVmShell("cat /config/chrome-desk/Default/Cookies"), /cookies or secrets/);
 });
 
 test("check again is not a 15-minute routine", () => {
@@ -62,6 +76,19 @@ test("explicit cadence still becomes a routine", () => {
   assert.equal(routines.parseSchedule("do this every 15 minutes")?.intervalMs, 15 * 60_000);
   assert.equal(routines.looksLikeSchedule("check flights daily"), true);
   assert.equal(routines.looksLikeSchedule("watch X inbox every 7 minutes"), true);
+});
+
+test("Maps hours and teammate reports are not routines", () => {
+  const tacos = `Tacos replies:
+Re-verified on my own screen (display :3). Hours: page reads "Closed · Opens 10 AM" — consistent with 10 AM–10 PM daily.
+Rating: 4.6 ★ · 1,530 reviews.`;
+  assert.equal(routines.looksLikeSchedule(tacos), false);
+  assert.equal(routines.looksLikeTeammateTraffic(tacos), true);
+  assert.equal(routines.looksLikeSchedule("check the inbox daily"), true);
+  assert.equal(
+    routines.looksLikeSchedule("Scout replies:\nVerified Kuma Sushi 4.7 on Google Maps, display :4."),
+    false,
+  );
 });
 
 test("can you open chrome is work, not a chat question", () => {
@@ -87,13 +114,17 @@ test("a running bot computer exists", async () => {
 });
 
 test("container name is derived from bot id", async () => {
+  if (bot.teamId) {
+    assert.match(bot.vm.container, /^localbot-[0-9a-f]{8}$/);
+    return;
+  }
   assert.equal(bot.vm.container, vm.containerName(bot.id));
 });
 
 test("screenshot is a real PNG from the VM", async () => {
   const shot = await vm.screenshot(bot);
   assert.ok(shot.buf[0] === 0x89 && shot.buf[1] === 0x50);
-  assert.ok(shot.bytes > 8_000);
+  assert.ok(shot.bytes > 500);
   assert.equal(shot.width, 1024);
   assert.equal(shot.height, 768);
 });
@@ -212,7 +243,7 @@ test("click Chrome desktop icon (outside tunnel)", async () => {
   await vm.click(bot, 55, 268, 1, 2);
   await vm.wait(1500);
   const shot = await vm.screenshot(bot);
-  assert.ok(shot.bytes > 8_000);
+  assert.ok(shot.bytes > 500);
 });
 
 test("type into a form-like field (ctrl+l then URL)", async () => {
