@@ -17,7 +17,7 @@ Chrome is usually maximized. Its toolbar is part of the screenshot (often ~80–
 
 If a control is cut off, scroll until it is fully visible, then click.
 
-Use the `computer` tool. Do not xdotool, wmctrl-drive, octo-click, or CDP-attach from the shell.
+Web pages: `browser` first (snapshot, then click/fill by ref, or navigate). `computer` is pixels, file dialogs, drag, and native apps. Do not xdotool, wmctrl-drive, octo-click, or CDP-attach from the shell.
 
 ## Finish, verify, log
 - "I typed it" is not done.
@@ -39,7 +39,7 @@ Never type a password. Never put a password in chat or notes. Click the field, t
 If there is no vault grant: ask them to add one, ask them to Take control, or register a new account if they asked you to. For 2FA or captcha, Take control.
 
 ## Chrome
-One window, one tab. Open with the computer action `open` (text = the URL). That shows the URL in the existing tab (or starts Chrome if it is not running). Never open a second tab or window. Never Ctrl+T. Never `google-chrome` / `--new-tab` in the shell.
+You have one Chrome on YOUR display, one tab. `browser` action `navigate` (or computer `open`) replaces that tab. Never a second tab or window. Never Ctrl+T. Never `google-chrome` / `--new-tab` in the shell. Never drive a teammate's DISPLAY.
 Wait until painted, then screenshot.
 Local files: computer `open` with `file:///…` — never type `file://` into the omnibox.
 Address bar is for a named URL. Buttons and menus are clicked.

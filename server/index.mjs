@@ -34,10 +34,15 @@ const busyIds = new Set();
 const internalToken = randomBytes(24).toString("hex");
 function toClient(bot, opts = {}) {
   const mapped = bot.vm?.container ? vm.cachedMappedPort(bot.vm.container) : null;
-  const novncPort = vm.resolveStreamPort(bot.vm?.novncPort, mapped);
+  const n = vm.displayNum(bot);
+  let novncPort = bot.vm?.novncPort;
+  if (n <= 1) novncPort = vm.resolveStreamPort(bot.vm?.novncPort, mapped);
+  else if (mapped && novncPort === mapped) novncPort = null;
   const client = publicBot(bot, { tail: opts.tail ?? 24, ...opts });
-  if (client.vm && novncPort && client.vm.novncPort !== novncPort) {
-    client.vm = { ...client.vm, novncPort };
+  if (client.vm) {
+    client.vm = { ...client.vm, display: bot.vm?.display || ":1", debugPort: bot.vm?.debugPort || vm.debugPortFor(n) };
+    if (novncPort && client.vm.novncPort !== novncPort) client.vm = { ...client.vm, novncPort };
+    if (n > 1 && !novncPort) client.vm = { ...client.vm, novncPort: null };
   }
   return {
     ...client,
@@ -711,6 +716,12 @@ app.post("/api/teams", async (req, res) => {
     created.push(bot);
   }
   const chief = created.find((b) => b.teamRole === "chief") || created[0];
+  vm.applyTeamDisplays(
+    { chiefId: chief?.id, memberIds: created.map((b) => b.id) },
+    created,
+    desk?.novncPort || null,
+  );
+  for (const b of created) await store.upsertBot(b);
   const team = await teams.saveTeam({
     id: teamId,
     name,
@@ -1145,11 +1156,11 @@ function enqueueTurn(botId, fn) {
 function dispatchToTeammate(toId, content, from) {
   const who = from?.name || "a teammate";
   const role = from?.teamRole || "teammate";
-  const prompt = `${who} (${role}) assigned you this on our shared computer:
+  const prompt = `${who} (${role}) assigned you this. Use YOUR screen (your DISPLAY / Chrome), not theirs.
 
 ${content}
 
-You have the desk. One Chrome, one tab — computer action open (or chrome-desktop) replaces the current tab. Never a second tab or window. Do the work, then send_message the result so ${who} and the human both see it.`;
+Web pages: browser snapshot, then click/fill by ref, or browser navigate. Pixels and dialogs: computer. One tab on your display. Then send_message the result so ${who} and the human both see it.`;
   enqueueTurn(toId, async () => {
     const live = await store.getBot(toId);
     if (!live) return;
@@ -1847,7 +1858,21 @@ async function provision(id) {
     });
     if (live) {
       vault.pushListToBot(live).catch(() => {});
-      broadcast("bot", toClient(live));
+      if (live.teamId) {
+        const team = await teams.getTeam(live.teamId);
+        const all = await store.loadBots();
+        const mates = teams.membersOf(team, all);
+        const assigned = vm.applyTeamDisplays(team, mates, info.novncPort);
+        await vm.bindDisplayStreams(info.container, assigned);
+        await vm.scaleDeskMemory(info.container, assigned.length).catch(() => {});
+        for (const m of assigned) {
+          await store.upsertBot(m);
+          if (vm.displayNum(m) > 1) await vm.ensureBotDisplay(m).catch((err) => noteVm(id, String(err.message || err)));
+          broadcast("bot", toClient(m));
+        }
+      } else {
+        broadcast("bot", toClient(live));
+      }
       vm.screenshotContainer(info.container, vm.computerPreviewPath(row.id)).catch(() => {});
     }
   } catch (err) {

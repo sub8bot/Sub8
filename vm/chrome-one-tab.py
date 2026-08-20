@@ -13,7 +13,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-DEBUG = "http://127.0.0.1:9222"
+DEBUG = os.environ.get("CHROME_DEBUG") or "http://127.0.0.1:9222"
 
 
 def load(path, method="GET", timeout=4):
@@ -197,7 +197,10 @@ def ws_url_for(page):
         return url
     tid = page.get("id") or ""
     if tid:
-        return f"ws://127.0.0.1:9222/devtools/page/{tid}"
+        u = urllib.parse.urlparse(DEBUG)
+        host = u.hostname or "127.0.0.1"
+        port = u.port or 9222
+        return f"ws://{host}:{port}/devtools/page/{tid}"
     return ""
 
 

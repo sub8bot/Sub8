@@ -159,18 +159,19 @@ export async function teamDeskPrompt(bot) {
       return `- ${b.teamRole || "member"} ${b.name} (${b.id})${you}`;
     })
     .join("\n");
+  const mine = bot.vm?.display || ":1";
   const job =
     role === "chief"
-      ? "Assign with message_teammate, ONE worker at a time. Wait for that worker's reply before the next. Do not hog the mouse if a worker is mid-task. Do not search Maps (or drive Chrome) yourself unless every worker failed."
-      : "You just received the desk. Do the assigned work on the shared Chrome (computer action open replaces the tab). Then send_message the result so the chief and the human both see it. Do not open a second tab. Do not keep the mouse after you have the answer.";
+      ? "Assign with message_teammate. Workers have their own screens — they can run in parallel. Do not drive a teammate's display. Compile results when they send_message back."
+      : `Your screen is display ${mine}. Do the assigned work there. browser snapshot/click/fill/navigate for web pages; computer for pixels and dialogs. One Chrome tab on YOUR display. Then send_message the result.`;
   return [
     "",
-    "## Team — one shared computer",
+    "## Team — one computer, many screens",
     `You are the ${role} on team “${team.name}”. You are NOT on your own machine.`,
-    "All of you share ONE Linux computer: same disk, same `/config`, same display `:1`, same Chrome. This is not a private VM and not a private X display. Files you write are visible to teammates immediately. `/config/workspace/` is shared. Private notes: `/config/agent-data/agents/<id>/`.",
-    "There is one Chrome window and one tab. computer action `open` (or chrome-desktop) replaces that tab. Never another tab, window, or profile. Never Ctrl+T, never --new-tab, never a second google-chrome process.",
-    "Do not reboot, reset, or reinstall as if this computer were yours alone. Do not attach to port 9222.",
-    "One pair of hands on the GUI at a time. If someone else is mid-click, wait. Coordinate with message_teammate before taking the desk.",
+    "All of you share ONE Linux computer: same disk, same `/config`. Files you write are visible immediately. `/config/workspace/` is shared. Private notes: `/config/agent-data/agents/<id>/`.",
+    `Each Bot has a private X display and Chrome (one tab). Yours is ${mine}. Never screenshot, click, or open Chrome on a teammate's DISPLAY. Never Ctrl+T, never --new-tab.`,
+    "Web pages: browser tool (snapshot, click by ref, fill, navigate). Pixel desktop / file dialogs / drag: computer tool. Do not attach to port 9222 yourself.",
+    "Do not reboot, reset, or reinstall as if this computer were yours alone.",
     job,
     "Teammates:",
     rows || "- (none)",
