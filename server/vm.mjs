@@ -1321,6 +1321,15 @@ async function annotateShot(hostPath, x, y) {
   }
 }
 
+export function screenshotCmd(dest) {
+  return [
+    `ffmpeg -y -nostdin -loglevel error -f x11grab -video_size ${SCREEN_W}x${SCREEN_H} -i "\${DISPLAY}.0" -frames:v 1 -update 1 ${dest}`,
+    `scrot -o ${dest}`,
+    `import -window root ${dest}`,
+    `xwd -root -silent | convert xwd:- png:${dest}`,
+  ].join(" || ");
+}
+
 async function takeScreenshotPng(bot, name, dest) {
   return docker([
     "exec",
@@ -1329,12 +1338,12 @@ async function takeScreenshotPng(bot, name, dest) {
     name,
     "bash",
     "-lc",
-    `${displayEnv(bot)}; xrandr --size 1024x768 >/dev/null 2>&1 || true; mkdir -p /tmp; scrot -p -o ${dest} || import -window root ${dest}`,
+    `${displayEnv(bot)}; xrandr --size ${SCREEN_W}x${SCREEN_H} >/dev/null 2>&1 || true; mkdir -p /tmp; ${screenshotCmd(dest)}`,
   ]);
 }
 
 function missingShotTool(out = "") {
-  return /scrot:.*(not found|command not found)|import:.*(not found|command not found)|command not found: (scrot|import)/i.test(out);
+  return /not found|No such file|Unrecognized option|Invalid argument/i.test(out) && /ffmpeg|scrot|import|xwd|convert/i.test(out);
 }
 
 export function computerPreviewPath(id) {
@@ -1352,7 +1361,7 @@ export async function screenshotContainer(name, hostPath) {
       name,
       "bash",
       "-lc",
-      `export DISPLAY=:1 HOME=/config; mkdir -p /tmp; scrot -p -o ${dest} 2>/tmp/scrot.err || import -window root ${dest}`,
+      `export DISPLAY=:1 HOME=/config; mkdir -p /tmp; ${screenshotCmd(dest)}`,
     ],
     { timeout: 15_000 },
   );
