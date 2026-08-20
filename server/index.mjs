@@ -2034,6 +2034,13 @@ async function ensureDesktops() {
       }
       if (name && (vm.setupProgress(name).step || 0) > 0) continue;
     }
+    if (st === "error" && name && liveBox?.running) {
+      const live = await store.patchBot(bot.id, (b) => {
+        b.vm = { ...b.vm, status: "running", error: null, hint: "" };
+      });
+      if (live) broadcast("bot", toClient(live));
+      continue;
+    }
     if (st === "running" || st === "paused" || st === "exited" || st === "stopped") continue;
     provision(bot.id).catch((err) => console.error("ensure desktop", bot.id, err));
   }

@@ -749,11 +749,15 @@ export function vmNames(bot, computer) {
   return { name, volume };
 }
 
-export async function inspectState(name) {
+export async function inspectState(name, { force = false } = {}) {
   if (!name) return { exists: false, status: "missing", running: false, paused: false, stuck: false };
-  const list = await listLocalbotStates();
+  const list = await listLocalbotStates({ force });
   if (list.stuck) return { exists: false, status: "unknown", running: false, paused: false, stuck: true };
   return list.states.get(name) || { exists: false, status: "missing", running: false, paused: false, stuck: false };
+}
+
+export function isContainerNameConflict(out) {
+  return /already in use by container|name .* is already in use/i.test(String(out || ""));
 }
 
 export async function pauseContainer(name) {
@@ -859,7 +863,7 @@ export async function startVm(bot, onLog = () => {}, shouldAbort = async () => f
     await docker(["rm", "-f", name], { timeout: 20_000 });
     throw new Error("bot deleted");
   };
-  const existing = await inspectState(name);
+  const existing = await inspectState(name, { force: true });
   if (existing.stuck) throw new Error((await dockerStatus()).hint || "Docker stopped answering.");
   if (existing.paused) {
     await resumeContainer(name);
@@ -871,7 +875,7 @@ export async function startVm(bot, onLog = () => {}, shouldAbort = async () => f
       await docker(["rm", "-f", name], { timeout: 20_000 });
     }
   }
-  const live = await inspectState(name);
+  const live = await inspectState(name, { force: true });
   if (live.exists && (live.running || live.paused)) {
     await abortIfGone();
     const mapped = live.novncPort || (await detectMappedPort(name));
@@ -895,7 +899,30 @@ export async function startVm(bot, onLog = () => {}, shouldAbort = async () => f
   const port = await allocatePort();
   onLog(`Starting computer on port ${port}…`);
   const runr = await docker(deskCreateArgs({ name, volume, port, image: resolvedImage }), { timeout: 60_000 });
-  if (!runr.ok) throw new Error(`docker run failed: ${runr.out.slice(-800)}`);
+  if (!runr.ok) {
+    if (isContainerNameConflict(runr.out)) {
+      invalidateDockerCache();
+      const again = await inspectState(name, { force: true });
+      if (again.exists && !again.running && !again.paused) await startExistingContainer(name);
+      const reuse = await inspectState(name, { force: true });
+      if (reuse.exists && (reuse.running || reuse.paused)) {
+        onLog("Computer is already running.");
+        const mapped = reuse.novncPort || (await detectMappedPort(name));
+        const bound = resolveStreamPort(bot.vm?.novncPort, mapped);
+        const chrome = await chromeReady(name);
+        finishDesktopSetup(name, onLog).catch((err) => onLog(String(err.message || err)));
+        return {
+          container: name,
+          novncPort: bound,
+          status: chrome ? "running" : "starting",
+          display: bot.vm?.display || ":1",
+          volume,
+          setup: setupProgress(name),
+        };
+      }
+    }
+    throw new Error(`docker run failed: ${runr.out.slice(-800)}`);
+  }
   invalidateDockerCache();
   await abortIfGone();
 

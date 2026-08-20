@@ -226,7 +226,7 @@ function vmStatusTitle(bot) {
 }
 
 function isTransientVmError(msg) {
-  return /app install|wget|apt|PackageKit|Unable to fetch|warming|Still setting/i.test(String(msg || ""));
+  return /app install|wget|apt|PackageKit|Unable to fetch|warming|Still setting|already in use|Conflict/i.test(String(msg || ""));
 }
 
 function vmStatusDetail(bot) {

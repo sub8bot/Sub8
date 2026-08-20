@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { parseLocalbotPs, parseDisplayPorts, resolveStreamPort, streamPortForDisplay, urlLooksOpen, screenshotCmd } from "../server/vm.mjs";
+import { parseLocalbotPs, parseDisplayPorts, resolveStreamPort, streamPortForDisplay, urlLooksOpen, screenshotCmd, isContainerNameConflict } from "../server/vm.mjs";
 import { applyHealthPort, CONNECTING_AFTER_MS, frameKey, healthIframeIsCurrent, shouldShowConnecting } from "../web/stream-bind.mjs";
 
 const states = parseLocalbotPs(
@@ -48,6 +48,14 @@ assert.equal(resolveStreamPort(13100, 13101), 13101);
 assert.equal(resolveStreamPort(13100, null), 13100);
 assert.equal(resolveStreamPort(null, 13102), 13102);
 assert.equal(resolveStreamPort(null, null), null);
+
+assert.equal(
+  isContainerNameConflict(
+    'docker: Error response from daemon: Conflict. The container name "/localbot-3c6becdd" is already in use by container "abc".',
+  ),
+  true,
+);
+assert.equal(isContainerNameConflict("docker run failed: no such image"), false);
 
 const aika = { id: "6d6cfe52", vm: { novncPort: 13100 } };
 const healed = applyHealthPort(aika, { novncPort: 13101 });
