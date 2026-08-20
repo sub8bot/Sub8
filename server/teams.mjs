@@ -368,26 +368,70 @@ export async function syncJobWorkerNames(team) {
   return renamed;
 }
 
-export async function onWorkerAssigned(teamId, workerId, { label, content, status, detail, stepId } = {}) {
+export function jobTitleFromText(text, fallback = "Job") {
+  const line = String(text || "").split("\n").find((l) => l.trim()) || "";
+  const t = line.replace(/^(please|hey|ok[,.]?)\s+/i, "").trim();
+  return (t || fallback || "Job").slice(0, 80);
+}
+
+/** Create or extend a team job so the progress bar always has a step for this assignment. */
+export function upsertJobStep(job, { botId, label, content, status, detail, stepId, chiefId, title } = {}) {
+  const stepLabel = (!isMetaStepLabel(label) && taskTabName(label)) || taskTabName(content) || "Task";
+  if (!job) {
+    return newJob({
+      title: String(title || "Job").slice(0, 80),
+      steps: [
+        { label: stepLabel, bot_id: botId, status: TASK_STATUSES.includes(status) ? status : "running", detail },
+        { label: "Summary", bot_id: chiefId || null },
+      ],
+    });
+  }
+  const hint = [label, content].filter(Boolean).join(" ");
+  let step = null;
+  if (stepId || label) step = findStep(job, { stepId, label });
+  if (!step) step = matchStepForAssignment(job, hint);
+  if (!step && botId) {
+    const owned = (job.steps || []).filter((s) => s.botId === botId && !isMetaStepLabel(s.label));
+    if (owned.length === 1) step = owned[0];
+  }
+  if (!step) {
+    step = normalizeStep({
+      label: stepLabel,
+      bot_id: botId,
+      status: TASK_STATUSES.includes(status) ? status : "running",
+      detail,
+    });
+    const i = (job.steps || []).findIndex((s) => isMetaStepLabel(s.label));
+    if (i >= 0) job.steps.splice(i, 0, step);
+    else job.steps.push(step);
+    job.updatedAt = Date.now();
+    return job;
+  }
+  applyStepUpdate(job, {
+    stepId: step.id,
+    botId,
+    ...(TASK_STATUSES.includes(status) ? { status } : {}),
+    ...(detail != null ? { detail } : {}),
+  });
+  return job;
+}
+
+export async function onWorkerAssigned(teamId, workerId, { label, content, status, detail, stepId, title } = {}) {
   const team = await getTeam(teamId);
   const bot = await store.getBot(workerId);
   if (!team || !bot || bot.teamRole === "chief") return { team, bot, step: null, renamed: [] };
-  const hint = [label, content].filter(Boolean).join(" ");
-  let step = null;
-  if (team.job) {
-    if (stepId || label) step = findStep(team.job, { stepId, label });
-    if (!step) step = matchStepForAssignment(team.job, hint);
-  }
-  if (step && team.job) {
-    for (const s of team.job.steps) {
-      if (s.botId === workerId && s.id !== step.id) s.botId = null;
-    }
-    const patch = { stepId: step.id, botId: workerId };
-    if (TASK_STATUSES.includes(status)) patch.status = status;
-    if (detail != null) patch.detail = detail;
-    applyStepUpdate(team.job, patch);
-    await saveTeam({ ...team, job: team.job });
-  }
+  const job = upsertJobStep(team.job, {
+    botId: workerId,
+    label,
+    content,
+    status,
+    detail,
+    stepId,
+    chiefId: team.chiefId,
+    title: title || team.name,
+  });
+  const saved = await saveTeam({ ...team, job });
+  const step = findStep(saved.job, { botId: workerId, label }) || saved.job.steps.find((s) => s.botId === workerId && !isMetaStepLabel(s.label));
   const nameFrom = (step && !isMetaStepLabel(step.label) ? step.label : "") || label || content;
   const before = bot.name;
   const next = await nameWorkerForTask(bot, nameFrom, { teamId, assignment: content || detail, setBrief: true });

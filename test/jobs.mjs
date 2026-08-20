@@ -8,6 +8,7 @@ import {
   newJob,
   taskTabName,
   uniqueMemberName,
+  upsertJobStep,
 } from "../server/teams.mjs";
 
 const job = newJob({
@@ -66,5 +67,18 @@ assert.equal(matchStepForAssignment(flowers, "please compile the list")?.label, 
 
 r = applyStepUpdate(flowers, { label: "San Jose shops", botId: "pizza-scout", status: "running" });
 assert.equal(r.step.botId, "pizza-scout");
+
+const auto = upsertJobStep(null, {
+  botId: "w1",
+  label: "DC→SFO",
+  content: "one-way DC to SFO",
+  chiefId: "c1",
+  title: "check flights",
+});
+assert.equal(auto.title, "check flights");
+assert.equal(auto.steps.map((s) => s.label).join(","), "DC→SFO,Summary");
+assert.equal(auto.steps[0].botId, "w1");
+const grown = upsertJobStep(auto, { botId: "w2", label: "DC→BKK", content: "DC to Bangkok", chiefId: "c1" });
+assert.equal(grown.steps.map((s) => s.label).join(","), "DC→SFO,DC→BKK,Summary");
 
 console.log("ok jobs");
