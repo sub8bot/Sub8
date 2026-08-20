@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { parseLocalbotPs, resolveStreamPort, urlLooksOpen } from "../server/vm.mjs";
+import { parseLocalbotPs, resolveStreamPort, urlLooksOpen, screenshotCmd } from "../server/vm.mjs";
 import { applyHealthPort, CONNECTING_AFTER_MS, frameKey, healthIframeIsCurrent, shouldShowConnecting } from "../web/stream-bind.mjs";
 
 const states = parseLocalbotPs(
@@ -53,4 +53,10 @@ assert.equal(shouldShowConnecting({ downSince: 1000, now: 6000 }), true);
 assert.equal(urlLooksOpen("Example Domain - Google Chrome", "https://mail.google.com"), false);
 assert.equal(urlLooksOpen("Inbox - aikabotto@gmail.com - Google Chrome", "https://mail.google.com"), true);
 assert.equal(urlLooksOpen("Octopus - Wikipedia - Google Chrome", "https://en.wikipedia.org/wiki/Octopus"), true);
+
+const shot = screenshotCmd("/tmp/shot.png");
+assert.match(shot, /ffmpeg/);
+assert.match(shot, /x11grab/);
+assert.match(shot, /scrot/);
+assert.ok(shot.indexOf("ffmpeg") < shot.indexOf("scrot"), "ffmpeg is tried before scrot");
 console.log("ok vm-status");
