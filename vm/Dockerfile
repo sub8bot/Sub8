@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates wget curl \
     xvfb xfwm4 picom x11vnc novnc python3-websockify \
     ffmpeg python3 libxtst6 libx11-6 \
-    xclip wmctrl x11-utils xdotool xterm pcmanfm \
+    xclip wmctrl x11-utils x11-xserver-utils xdotool xterm pcmanfm \
     dbus-x11 dbus \
     fonts-liberation fonts-dejavu-core \
     tini sudo procps \
