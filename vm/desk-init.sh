@@ -47,6 +47,15 @@ PICOM_PID=$!
 sleep 0.15
 xfwm4 --display :1 --replace --compositor=on --sm-client-disable >/tmp/xfwm4.log 2>&1 &
 XFWM_PID=$!
+sleep 0.3
+# Chrome is the computer. Keep a browser window on the desk.
+(
+  while true; do
+    /usr/local/bin/chrome-desktop
+    sleep 2
+  done
+) >/tmp/chrome.log 2>&1 &
+CHROME_PID=$!
 
 x11vnc -display :1 -forever -shared -nopw -xkb -repeat \
   -rfbport 5900 -localhost -noxdamage -wait 10 -defer 10 \
@@ -68,7 +77,7 @@ websockify --web="$WEB" 3000 127.0.0.1:5900 >/tmp/websockify.log 2>&1 &
 WS_PID=$!
 
 cleanup() {
-  for p in $WS_PID $VNC_PID $PICOM_PID $XFWM_PID $XVFB_PID ${DBUS_SESSION_BUS_PID:-}; do
+  for p in ${CHROME_PID:-} $WS_PID $VNC_PID $PICOM_PID $XFWM_PID $XVFB_PID ${DBUS_SESSION_BUS_PID:-}; do
     [ -n "${p:-}" ] && kill "$p" >/dev/null 2>&1 || true
   done
 }

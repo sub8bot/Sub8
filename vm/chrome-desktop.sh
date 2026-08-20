@@ -16,11 +16,14 @@ flags=(
   --no-first-run
   --no-default-browser-check
   --disable-session-crashed-bubble
+  --disable-infobars
+  --test-type
   --disable-features=TranslateUI
+  --start-maximized
   --window-position=0,0
   --window-size=1024,768
 )
 if [ "$#" -gt 0 ]; then
   exec "$CHROME" "${flags[@]}" --new-tab "$@"
 fi
-exec "$CHROME" "${flags[@]}"
+exec "$CHROME" "${flags[@]}" --new-tab "https://www.google.com/"
