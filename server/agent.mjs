@@ -58,7 +58,7 @@ const TOOLS = [
     function: {
       name: "computer",
       description:
-        "Pixel desktop. Use browser (snapshot/click ref/fill/navigate) for web pages first. This tool is for screenshots, native dialogs, drag, and clicks the page agent cannot do. x,y are pixels on the LAST screenshot (origin top-left, 1:1 with the full 1024x768 image).",
+        "Pixel desktop. Use browser (snapshot/click ref/fill/navigate) for web pages first. This tool is for screenshots, native dialogs, drag, and clicks the page agent cannot do. x,y are pixels on the LAST screenshot (origin top-left, 1:1 with the full 1024x768 image). type pastes exact text (URLs keep ://). key is Return/ctrl+l — never send a URL via key.",
       parameters: {
         type: "object",
         properties: {

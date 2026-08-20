@@ -213,7 +213,8 @@ def keysym_for_token(tok: str) -> str:
 
 
 def send_combo(d: Display, spec: str):
-    parts = [p for p in spec.split("+") if p]
+    # A lone "+" is the character, not a combo splitter.
+    parts = [spec] if spec == "+" or len(spec) == 1 else [p for p in spec.split("+") if p]
     if not parts:
         return
     names = [keysym_for_token(p) for p in parts]
@@ -265,10 +266,10 @@ def paste(text: str):
 def type_text(d: Display, text: str):
     if not text:
         return
-    if all(ord(c) < 127 and (c.isprintable() or c in "\n\t") for c in text):
-        ascii_type(d, text)
-        return
+    # XTEST keysyms skip colon/slash/dot/question (URLs become httpswww…).
+    # Clipboard paste keeps punctuation, spaces, and Unicode intact.
     paste(text)
+    time.sleep(0.05)
     send_combo(d, "ctrl+v")
 
 

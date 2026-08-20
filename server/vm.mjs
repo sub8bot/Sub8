@@ -1712,6 +1712,20 @@ export async function drag(bot, x1, y1, x2, y2) {
   if (!r.ok) throw new Error(`drag failed: ${r.out.slice(-400)}`);
 }
 
+export function looksLikeTypedText(keys) {
+  const seq = String(keys || "").trim();
+  if (!seq) return false;
+  if (/^(ctrl|control|alt|shift|super|cmd|meta|win)(\+|_|-)/i.test(seq)) return false;
+  if (/^(return|enter|escape|esc|tab|space|backspace|delete|home|end|left|right|up|down|pageup|pagedown|f\d{1,2})$/i.test(seq)) {
+    return false;
+  }
+  if (seq.length > 24) return true;
+  if (/https?:|www\./i.test(seq)) return true;
+  if (/[\/:?&=.#]/.test(seq)) return true;
+  if (/\s/.test(seq)) return true;
+  return false;
+}
+
 export async function typeText(bot, text) {
   await focusOwnedWindow(bot);
   if (!text) return;
@@ -1731,8 +1745,14 @@ export async function typeText(bot, text) {
 
 export async function key(bot, keys) {
   await focusOwnedWindow(bot);
-  const seq = String(keys).trim().replace(/\+/g, "+");
+  const seq = String(keys || "").trim();
+  if (!seq) return;
+  if (looksLikeTypedText(seq)) {
+    await typeText(bot, seq);
+    return;
+  }
   const safe = seq.replace(/[^A-Za-z0-9+_]/g, "");
+  if (!safe) return;
   const r = await docker([
     "exec",
     "-u",

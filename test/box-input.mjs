@@ -55,4 +55,14 @@ assert.match(ui, /Harness/);
 assert.match(ui, /Reload computer/);
 assert.match(ui, /no Plugins tab/);
 assert.doesNotMatch(ui, /Cmd\+,/);
+
+const boxSrc = fs.readFileSync(py, "utf8");
+assert.match(boxSrc, /Clipboard paste keeps punctuation/);
+assert.match(boxSrc, /xclip/);
+assert.match(boxSrc, /ctrl\+v/);
+assert.doesNotMatch(boxSrc, /if all\(ord\(c\) < 127/);
+
+const vmSrc = fs.readFileSync(path.join(root, "server", "vm.mjs"), "utf8");
+assert.match(vmSrc, /looksLikeTypedText/);
+assert.match(vmSrc, /never send a URL via key|looksLikeTypedText\(seq\)/);
 console.log("ok box-input");
