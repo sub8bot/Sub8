@@ -35,7 +35,7 @@ const TOOLS = [
   {
     name: "computer",
     description:
-      "Pixel desktop. Prefer browser for web pages. Screenshot/click x,y on the last 1024x768 image, native dialogs, drag.",
+      "Pixel desktop. Prefer browser for web pages. Screenshot/click x,y on the last 1024x768 image, native dialogs, drag. type pastes exact text (URLs keep ://). key is Return/ctrl+l — never send a URL via key.",
     inputSchema: {
       type: "object",
       properties: {

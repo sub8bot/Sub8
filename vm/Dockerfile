@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg python3 libxtst6 libx11-6 \
     xclip wmctrl x11-utils x11-xserver-utils xdotool xterm pcmanfm \
     dbus-x11 dbus \
-    fonts-liberation fonts-dejavu-core \
+    fonts-liberation fonts-dejavu-core fonts-noto-core \
     tini sudo procps \
     libnss3 libatk-bridge2.0-0 libgtk-3-0 libxss1 libasound2t64 \
     && rm -rf /var/lib/apt/lists/* \

@@ -40,6 +40,8 @@ flags=(
   --start-maximized
   --window-position=0,0
   --window-size=1024,768
+  --lang=en-US
+  --accept-lang=en-US,en
 )
 if curl -sf --max-time 1 "$CHROME_DEBUG/json/version" >/dev/null; then
   exec python3 /usr/local/bin/chrome-one-tab "$URL"
