@@ -984,6 +984,8 @@ async function ensureApps(name, onLog) {
       await installOctoClick(name);
       await installOctoVault(name);
       await installAgentsMd(name, "");
+      await mkdirpInContainer(name, "/config/agent-data/workflows").catch(() => {});
+      await mkdirpInContainer(name, "/config/workspace").catch(() => {});
       onLog("Computer is ready.");
       return;
     }
@@ -1033,6 +1035,35 @@ export async function writeFileToContainer(container, dest, text) {
   } finally {
     await fs.unlink(tmp).catch(() => {});
   }
+}
+
+export async function mkdirpInContainer(container, dir) {
+  const d = String(dir || "");
+  if (!d.startsWith("/config")) throw new Error("mkdir must be under /config");
+  await docker([
+    "exec",
+    "-u",
+    "abc",
+    "-e",
+    "HOME=/config",
+    container,
+    "bash",
+    "-lc",
+    `mkdir -p ${JSON.stringify(d)}`,
+  ]);
+}
+
+export async function readFileFromContainer(container, dest) {
+  const r = await docker([
+    "exec",
+    "-u",
+    "abc",
+    container,
+    "bash",
+    "-lc",
+    `if [ -f ${JSON.stringify(dest)} ]; then cat ${JSON.stringify(dest)}; else echo -n ""; fi`,
+  ]);
+  return r.ok ? String(r.out || "") : "";
 }
 
 export async function installAgentsMd(container, extra = "") {

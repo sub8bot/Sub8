@@ -54,6 +54,8 @@ export async function saveTeam(partial) {
         chiefId: partial.chiefId || null,
         memberIds: Array.isArray(partial.memberIds) ? partial.memberIds : [],
         computerId: partial.computerId || null,
+        section: partial.section || "",
+        pinned: Boolean(partial.pinned),
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };

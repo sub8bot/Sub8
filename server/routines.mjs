@@ -299,9 +299,309 @@ export function scheduleLabel(schedule, timeZone = "") {
 }
 
 export function cadenceLabel(routine, timeZone = "") {
+  const list = triggersOf(routine);
+  if (list.length) return list.map((t) => triggerLabel(t)).join(", ");
   const schedule = normalizeSchedule(routine?.schedule);
   if (schedule) return scheduleLabel(schedule, timeZone);
   return `Every ${Math.round((routine?.intervalMs || 0) / 60000)} min`;
+}
+
+function asInt(value, fallback = null) {
+  const n = Number(value);
+  return Number.isInteger(n) ? n : fallback;
+}
+
+function normalizeTimes(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const row of list) {
+    const hour = asInt(row?.hour, asInt(row?.h));
+    const minute = asInt(row?.minute, asInt(row?.m, 0));
+    if (!Number.isInteger(hour) || hour < 0 || hour > 23) continue;
+    if (!Number.isInteger(minute) || minute < 0 || minute > 59) continue;
+    const key = `${hour}:${minute}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ hour, minute });
+  }
+  return out.sort((a, b) => a.hour - b.hour || a.minute - b.minute);
+}
+
+function parseCronField(field, min, max, { sundaySeven = false } = {}) {
+  const raw = String(field || "").trim();
+  if (!raw) return null;
+  const allowed = new Set();
+  const add = (n) => {
+    if (sundaySeven && n === 7) n = 0;
+    if (n < min || n > max) return;
+    allowed.add(n);
+  };
+  for (const part of raw.split(",")) {
+    const stepMatch = part.match(/^(.*?)\/(\d+)$/);
+    const body = stepMatch ? stepMatch[1] : part;
+    const step = stepMatch ? Number(stepMatch[2]) : 1;
+    if (!Number.isInteger(step) || step < 1) return null;
+    let start = min;
+    let end = max;
+    if (body === "*") {
+      /* full range */
+    } else if (/^\d+$/.test(body)) {
+      start = Number(body);
+      end = stepMatch ? max : start;
+    } else {
+      const range = body.match(/^(\d+)-(\d+)$/);
+      if (!range) return null;
+      start = Number(range[1]);
+      end = Number(range[2]);
+    }
+    if (start > end) return null;
+    for (let n = start; n <= end; n += step) add(n);
+  }
+  return allowed.size ? allowed : null;
+}
+
+export function parseCron(expr) {
+  const parts = String(expr || "").trim().split(/\s+/);
+  if (parts.length !== 5) return null;
+  const minute = parseCronField(parts[0], 0, 59);
+  const hour = parseCronField(parts[1], 0, 23);
+  const dom = parseCronField(parts[2], 1, 31);
+  const month = parseCronField(parts[3], 1, 12);
+  const dow = parseCronField(parts[4], 0, 7, { sundaySeven: true });
+  if (!minute || !hour || !dom || !month || !dow) return null;
+  return { minute, hour, dom, month, dow, source: parts.join(" ") };
+}
+
+function localWeekdayFromKey(key, timeZone) {
+  const ms = localDateTimeToMillis(key, { hour: 12, minute: 0 }, timeZone);
+  const txt = new Intl.DateTimeFormat("en-US", {
+    timeZone: timeZoneOrLocal(timeZone),
+    weekday: "short",
+  }).format(new Date(ms));
+  return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(txt);
+}
+
+function lastDayOfMonth(year, month) {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function nextTimesOnDays(now, times, timeZone, { inclusive = true, matchDay } = {}) {
+  const stamps = normalizeTimes(times);
+  if (!stamps.length) return null;
+  const zone = timeZoneOrLocal(timeZone);
+  const current = asMillis(now);
+  let key = localDateKey(localParts(current, zone));
+  for (let i = 0; i < 420; i++) {
+    if (!matchDay || matchDay(key, zone)) {
+      const instants = stamps.map((t) => localDateTimeToMillis(key, t, zone)).sort((a, b) => a - b);
+      for (const stamp of instants) {
+        if (inclusive ? stamp >= current : stamp > current) return stamp;
+      }
+    }
+    key = addLocalDays(key, 1);
+  }
+  return null;
+}
+
+function cronMatchesKey(parsed, key, timeZone, hour, minute) {
+  const [year, month, day] = key.split("-").map(Number);
+  const dow = localWeekdayFromKey(key, timeZone);
+  if (!parsed.minute.has(minute) || !parsed.hour.has(hour) || !parsed.month.has(month)) return false;
+  const starDom = parsed.dom.size === 31;
+  const starDow = parsed.dow.size === 7;
+  const domOk = parsed.dom.has(day);
+  const dowOk = parsed.dow.has(dow);
+  if (!starDom && !starDow) return domOk || dowOk;
+  return (starDom || domOk) && (starDow || dowOk);
+}
+
+export function nextCronOccurrence(now, expr, timeZone, { inclusive = false } = {}) {
+  const parsed = parseCron(expr);
+  if (!parsed) return null;
+  const zone = timeZoneOrLocal(timeZone);
+  const current = asMillis(now);
+  const start = new Date(inclusive ? current : current + 60_000);
+  start.setUTCSeconds(0, 0);
+  let cursor = start.getTime();
+  for (let i = 0; i < 366 * 24 * 60; i++) {
+    const parts = localParts(cursor, zone);
+    const key = localDateKey(parts);
+    if (cronMatchesKey(parsed, key, zone, parts.hour, parts.minute)) return cursor;
+    cursor += 60_000;
+  }
+  return null;
+}
+
+export function normalizeTrigger(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const kind = String(raw.kind || "").toLowerCase();
+  const id = String(raw.id || "").trim() || null;
+  const times = normalizeTimes(raw.times);
+  const lastRunAt = Number(raw.lastRunAt);
+  const nextRunAt = Number(raw.nextRunAt);
+  const stamp = {
+    lastRunAt: Number.isFinite(lastRunAt) ? lastRunAt : 0,
+    nextRunAt: Number.isFinite(nextRunAt) ? nextRunAt : null,
+  };
+  if (kind === "hourly") return { id, kind: "hourly", intervalMs: 3600_000, ...stamp };
+  if (kind === "interval") {
+    const intervalMs = Number(raw.intervalMs);
+    if (!Number.isFinite(intervalMs) || intervalMs < 60_000) return null;
+    return { id, kind: "interval", intervalMs, ...stamp };
+  }
+  if (kind === "daily") {
+    if (!times.length) return null;
+    return { id, kind: "daily", times, ...stamp };
+  }
+  if (kind === "weekdays") {
+    if (!times.length) return null;
+    return { id, kind: "weekdays", times, ...stamp };
+  }
+  if (kind === "weekly") {
+    const weekday = ((asInt(raw.weekday, 1) % 7) + 7) % 7;
+    return { id, kind: "weekly", weekday, times: times.length ? times : [{ hour: 9, minute: 0 }], ...stamp };
+  }
+  if (kind === "monthly") {
+    const monthDay = Math.min(31, Math.max(1, asInt(raw.monthDay, 1)));
+    return { id, kind: "monthly", monthDay, times: times.length ? times : [{ hour: 9, minute: 0 }], ...stamp };
+  }
+  if (kind === "advanced") {
+    const months = Array.isArray(raw.months)
+      ? [...new Set(raw.months.map((n) => asInt(n)).filter((n) => n >= 1 && n <= 12))]
+      : [];
+    const days = raw.days === "weekdays" ? "weekdays" : "every";
+    return {
+      id,
+      kind: "advanced",
+      months,
+      days,
+      times: times.length ? times : [{ hour: 8, minute: 0 }],
+      ...stamp,
+    };
+  }
+  if (kind === "cron") {
+    const cron = String(raw.cron || "").trim();
+    if (!parseCron(cron)) return null;
+    return { id, kind: "cron", cron, ...stamp };
+  }
+  return null;
+}
+
+export function triggerLabel(trigger) {
+  const t = normalizeTrigger(trigger);
+  if (!t) return "";
+  const clocks = (t.times || []).map((x) => clockLabel(x));
+  const clock = clocks.join(", ");
+  if (t.kind === "hourly") return "Every hour";
+  if (t.kind === "interval") {
+    const mins = Math.max(1, Math.round(t.intervalMs / 60_000));
+    if (mins % 60 === 0) {
+      const hours = mins / 60;
+      return `Every ${hours} hour${hours === 1 ? "" : "s"}`;
+    }
+    return `Every ${mins} minute${mins === 1 ? "" : "s"}`;
+  }
+  if (t.kind === "daily") return clocks.length > 1 ? `Every day at ${clock}` : `Every day at ${clock}`;
+  if (t.kind === "weekdays") return `Weekdays at ${clock}`;
+  if (t.kind === "weekly") {
+    const day = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][t.weekday] || "week";
+    return `Every week on ${day} at ${clock}`;
+  }
+  if (t.kind === "monthly") return `Every month on the ${t.monthDay} at ${clock}`;
+  if (t.kind === "advanced") return clocks.length ? `Advanced · ${clock}` : "Advanced";
+  if (t.kind === "cron") return t.cron;
+  return "";
+}
+
+export function triggersOf(routine) {
+  if (Array.isArray(routine?.triggers) && routine.triggers.length) {
+    return routine.triggers.map(normalizeTrigger).filter(Boolean);
+  }
+  const schedule = normalizeSchedule(routine?.schedule);
+  if (schedule) return [{ kind: "daily", times: [{ hour: schedule.hour, minute: schedule.minute }], nextRunAt: routine.nextRunAt || null, lastRunAt: routine.lastRunAt || 0 }];
+  if (Number(routine?.intervalMs) > 0) {
+    const intervalMs = Number(routine.intervalMs);
+    return [{ kind: intervalMs === 3600_000 ? "hourly" : "interval", intervalMs, lastRunAt: routine.lastRunAt || 0, nextRunAt: routine.nextRunAt || null }];
+  }
+  return [];
+}
+
+export function nextTriggerOccurrence(trigger, now, timeZone, { inclusive = true } = {}) {
+  const t = normalizeTrigger(trigger);
+  if (!t) return null;
+  const current = asMillis(now);
+  if (t.kind === "hourly" || t.kind === "interval") {
+    const base = t.lastRunAt > 0 ? t.lastRunAt : current;
+    const wait = t.intervalMs || 3600_000;
+    const next = base + wait;
+    if (inclusive) return next <= current ? current : next;
+    return next <= current ? current + wait : next;
+  }
+  if (t.kind === "cron") return nextCronOccurrence(now, t.cron, timeZone, { inclusive });
+  const times = t.times || [{ hour: 9, minute: 0 }];
+  const matchDay = (key, zone) => {
+    const dow = localWeekdayFromKey(key, zone);
+    const [year, month, day] = key.split("-").map(Number);
+    if (t.kind === "weekdays") return dow >= 1 && dow <= 5;
+    if (t.kind === "weekly") return dow === t.weekday;
+    if (t.kind === "monthly") return day === Math.min(t.monthDay, lastDayOfMonth(year, month));
+    if (t.kind === "advanced") {
+      if (t.months?.length && !t.months.includes(month)) return false;
+      if (t.days === "weekdays") return dow >= 1 && dow <= 5;
+      return true;
+    }
+    return true;
+  };
+  return nextTimesOnDays(now, times, timeZone, { inclusive, matchDay });
+}
+
+export function triggerDue(trigger, now, timeZone) {
+  const t = normalizeTrigger(trigger);
+  if (!t) return false;
+  const current = asMillis(now);
+  if (t.kind === "hourly" || t.kind === "interval") {
+    return current - (t.lastRunAt || 0) >= (t.intervalMs || 3600_000);
+  }
+  const next = Number.isFinite(t.nextRunAt) && t.nextRunAt > 0 ? t.nextRunAt : nextTriggerOccurrence(t, current, timeZone);
+  return Number.isFinite(next) && current >= next;
+}
+
+export function advanceTrigger(trigger, now, timeZone) {
+  const t = normalizeTrigger(trigger);
+  if (!t) return trigger;
+  const current = asMillis(now);
+  t.lastRunAt = current;
+  t.nextRunAt = nextTriggerOccurrence(t, current, timeZone, { inclusive: false });
+  Object.assign(trigger, t);
+  return trigger;
+}
+
+export function syncLegacyFromTriggers(routine, now = Date.now(), timeZone) {
+  const list = (routine.triggers || []).map(normalizeTrigger).filter(Boolean);
+  routine.triggers = list.map((t) => ({ ...t, id: t.id || randomUUID() }));
+  const only = list.length === 1 ? list[0] : null;
+  if (only && (only.kind === "interval" || only.kind === "hourly")) {
+    routine.intervalMs = only.intervalMs;
+    delete routine.schedule;
+    delete routine.nextRunAt;
+    delete routine.nextRunTimeZone;
+    return routine;
+  }
+  if (only && only.kind === "daily" && only.times.length === 1) {
+    routine.schedule = { type: "daily", hour: only.times[0].hour, minute: only.times[0].minute };
+    delete routine.intervalMs;
+    routine.nextRunAt = nextTriggerOccurrence(only, now, timeZone);
+    if (timeZone) routine.nextRunTimeZone = timeZone;
+    return routine;
+  }
+  if (list.length) {
+    delete routine.intervalMs;
+    delete routine.schedule;
+    delete routine.nextRunAt;
+    delete routine.nextRunTimeZone;
+  }
+  return routine;
 }
 
 function cadenceOverlaps(row, spec) {
@@ -403,6 +703,14 @@ export function upsertRoutine(bot, spec) {
     }
     if (spec.name) existing.name = spec.name;
     if (spec.groupKey) existing.groupKey = spec.groupKey;
+    if (Array.isArray(spec.triggers)) {
+      existing.triggers = spec.triggers.map(normalizeTrigger).filter(Boolean).map((t) => ({
+        ...t,
+        id: t.id || randomUUID(),
+        lastRunAt: t.lastRunAt || Date.now(),
+      }));
+      syncLegacyFromTriggers(existing, spec.now ?? Date.now(), spec.timeZone);
+    }
     if (typeof spec.enabled === "boolean") existing.enabled = spec.enabled;
     else if (existing.enabled === false && !spec.forceNew) existing.enabled = true;
     existing.updatedAt = Date.now();
@@ -435,6 +743,14 @@ export function upsertRoutine(bot, spec) {
   } else {
     routine.intervalMs = intervalMs;
   }
+  if (Array.isArray(spec.triggers) && spec.triggers.length) {
+    routine.triggers = spec.triggers.map(normalizeTrigger).filter(Boolean).map((t) => ({
+      ...t,
+      id: t.id || randomUUID(),
+      lastRunAt: t.lastRunAt || Date.now(),
+    }));
+    syncLegacyFromTriggers(routine, spec.now ?? Date.now(), spec.timeZone);
+  }
   bot.routines.push(routine);
   return { routine, merged: false };
 }
@@ -443,6 +759,9 @@ export function dueRoutines(bot, now = Date.now(), { timeZone } = {}) {
   return (bot.routines || []).filter((r) => {
     hydrateRoutine(r, now, timeZone);
     if (r.enabled === false) return false;
+    if (Array.isArray(r.triggers) && r.triggers.length) {
+      return r.triggers.some((t) => triggerDue(t, now, timeZone));
+    }
     const schedule = normalizeSchedule(r.schedule);
     if (schedule) {
       const next = calendarNextRunAt(r, now, timeZone);

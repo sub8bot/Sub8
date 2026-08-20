@@ -19,6 +19,7 @@ import * as computers from "./computers.mjs";
 import * as hostCli from "./host-cli.mjs";
 import { resolveZone } from "./context.mjs";
 import * as teams from "./teams.mjs";
+import * as memory from "./memory.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = appRoot;
@@ -31,10 +32,10 @@ app.use("/vendor/three", express.static(path.join(root, "node_modules", "three")
 
 const busyIds = new Set();
 const internalToken = randomBytes(24).toString("hex");
-function toClient(bot) {
+function toClient(bot, opts = {}) {
   const mapped = bot.vm?.container ? vm.cachedMappedPort(bot.vm.container) : null;
   const novncPort = vm.resolveStreamPort(bot.vm?.novncPort, mapped);
-  const client = publicBot(bot);
+  const client = publicBot(bot, { tail: opts.tail ?? 24, ...opts });
   if (client.vm && novncPort && client.vm.novncPort !== novncPort) {
     client.vm = { ...client.vm, novncPort };
   }
@@ -541,6 +542,14 @@ app.put("/api/vault/grants/:botId", async (req, res) => {
   res.json({ botId: req.params.botId, accountIds: ids });
 });
 
+app.put("/api/vault/accounts/:id/grants", async (req, res) => {
+  const snap = await vault.setAccountGrants(req.params.id, req.body?.botIds || []);
+  if (!snap) return res.status(404).json({ error: "not found" });
+  const bots = await store.loadBots();
+  for (const bot of bots) vault.pushListToBot(bot).catch(() => {});
+  res.json(snap);
+});
+
 app.put("/api/settings", async (req, res) => {
   const prev = await store.loadSettings();
   const next = { ...prev, ...req.body };
@@ -640,10 +649,10 @@ app.post("/api/search", async (req, res) => {
 });
 
 app.get("/api/bots", async (_req, res) => {
-  res.json((await store.loadBots()).map(toClient));
+  res.json((await store.loadBots()).map((b) => toClient(b, { tail: 8 })));
 });
 
-app.get("/api/teams", async (_req, res) => {
+async function publicTeams() {
   const [rows, bots] = await Promise.all([teams.listTeams(), store.loadBots()]);
   const out = [];
   for (const t of rows) {
@@ -654,7 +663,11 @@ app.get("/api/teams", async (_req, res) => {
       messages,
     });
   }
-  res.json(out);
+  return out;
+}
+
+app.get("/api/teams", async (_req, res) => {
+  res.json(await publicTeams());
 });
 
 app.post("/api/teams", async (req, res) => {
@@ -707,6 +720,7 @@ app.post("/api/teams", async (req, res) => {
   });
   broadcast("bots", (await store.loadBots()).map(toClient));
   broadcast("computers", { dirty: true });
+  broadcast("teams", await publicTeams());
   res.json({
     ...team,
     members: created.map((b) => ({ id: b.id, name: b.name, role: b.teamRole, color: b.color })),
@@ -738,6 +752,7 @@ app.delete("/api/teams/:id", async (req, res) => {
   sweepFromRegistry().catch((err) => console.error("sweep", err));
   broadcast("bots", (await store.loadBots()).map(toClient));
   broadcast("computers", { dirty: true });
+  broadcast("teams", await publicTeams());
   res.json({ ok: true, deleted: members.map((m) => m.id), wiped: Boolean(wipe && computerId) });
 });
 
@@ -772,6 +787,18 @@ app.post("/api/teams/:id/messages", async (req, res) => {
   res.json({ ok: true, message: posted, toIds: deliver });
 });
 
+app.patch("/api/teams/:id", async (req, res) => {
+  const team = await teams.getTeam(req.params.id);
+  if (!team) return res.status(404).json({ error: "not found" });
+  const patch = {};
+  if (typeof req.body?.name === "string" && req.body.name.trim()) patch.name = req.body.name.trim();
+  if ("section" in (req.body || {})) patch.section = String(req.body.section || "");
+  if ("pinned" in (req.body || {})) patch.pinned = Boolean(req.body.pinned);
+  const saved = await teams.saveTeam({ ...team, ...patch });
+  broadcast("teams", await publicTeams());
+  res.json(saved);
+});
+
 app.post("/api/teams/:id/focus", async (req, res) => {
   const team = await teams.getTeam(req.params.id);
   if (!team) return res.status(404).json({ error: "not found" });
@@ -796,7 +823,20 @@ app.get("/api/bots/:id/trace", async (req, res) => {
 app.get("/api/bots/:id", async (req, res) => {
   const bot = await store.getBot(req.params.id);
   if (!bot) return res.status(404).json({ error: "not found" });
-  res.json(toClient(bot));
+  const all = bot.messages || [];
+  if (req.query.before) {
+    const i = all.findIndex((m) => m.id === req.query.before);
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 80));
+    const start = i > 0 ? Math.max(0, i - limit) : 0;
+    const slice = i > 0 ? all.slice(start, i) : [];
+    return res.json({
+      id: bot.id,
+      messages: slice.map((m) => ({ ...m, imagePath: undefined, imageB64: undefined })),
+      hasMore: start > 0,
+    });
+  }
+  const tail = Math.min(400, Math.max(1, Number(req.query.tail) || 120));
+  res.json(toClient(bot, { tail }));
 });
 
 app.post("/api/bots", async (req, res) => {
@@ -966,11 +1006,16 @@ app.delete("/api/bots/:id", async (req, res) => {
   } catch {
     /* already gone */
   }
+  if (bot.teamId) {
+    const team = await teams.getTeam(bot.teamId);
+    if (team) await teams.removeMember(team, bot.id);
+  }
   const next = await store.deleteBot(bot.id);
   if (!next) return res.status(404).json({ error: "not found" });
   sweepFromRegistry().catch((err) => console.error("sweep", err));
   broadcast("bots", next.map(toClient));
   broadcast("computers", { dirty: true });
+  broadcast("teams", await publicTeams());
   res.json({ ok: true, keepComputer: Boolean(keepComputer) });
 });
 
@@ -1367,13 +1412,14 @@ app.post("/api/bots/:id/routines", async (req, res) => {
   const minutes = Number(body.interval_minutes ?? body.intervalMinutes);
   const explicitInterval = Number.isFinite(minutes) && minutes > 0;
   const intervalProvided = Object.prototype.hasOwnProperty.call(body, "interval_minutes") || Object.prototype.hasOwnProperty.call(body, "intervalMinutes");
-  if (typeof body.instruction === "string" && routines.isRejectedRoutineInstruction(body.instruction, { explicitInterval })) {
+  const hasTriggers = Array.isArray(body.triggers) && body.triggers.length;
+  if (typeof body.instruction === "string" && routines.isRejectedRoutineInstruction(body.instruction, { explicitInterval: explicitInterval || hasTriggers })) {
     return res.status(400).json({ error: "routine instruction is not a standing scheduled job" });
   }
   if (intervalProvided && !explicitInterval) {
     return res.status(400).json({ error: "invalid routine interval" });
   }
-  if (!explicitInterval && body.schedule != null && !routines.normalizeSchedule(body.schedule)) {
+  if (!explicitInterval && !hasTriggers && body.schedule != null && !routines.normalizeSchedule(body.schedule)) {
     return res.status(400).json({ error: "invalid routine schedule" });
   }
   const settings = await store.loadSettings();
@@ -1385,6 +1431,7 @@ app.post("/api/bots/:id/routines", async (req, res) => {
       groupKey: body.group_key || body.groupKey,
       intervalMs: explicitInterval ? minutes * 60_000 : body.intervalMs,
       schedule: body.schedule,
+      triggers: body.triggers,
       forceNew: body.force_new === true,
       solo: body.solo !== false,
       timeZone: resolveZone(settings),
@@ -1405,7 +1452,7 @@ app.patch("/api/bots/:id/routines/:rid", async (req, res) => {
   if (intervalProvided && !explicitInterval) {
     return res.status(400).json({ error: "invalid routine interval" });
   }
-  if (!explicitInterval && body.schedule != null && !routines.normalizeSchedule(body.schedule)) {
+  if (!explicitInterval && !Array.isArray(body.triggers) && body.schedule != null && !routines.normalizeSchedule(body.schedule)) {
     return res.status(400).json({ error: "invalid routine schedule" });
   }
   let updated = null;
@@ -1422,11 +1469,18 @@ app.patch("/api/bots/:id/routines/:rid", async (req, res) => {
     if (typeof body.group_key === "string" || typeof body.groupKey === "string") {
       r.groupKey = body.group_key || body.groupKey;
     }
-    if (Number.isFinite(minutes) && minutes > 0) {
+    if (Array.isArray(body.triggers)) {
+      r.triggers = body.triggers.map(routines.normalizeTrigger).filter(Boolean).map((t) => ({
+        ...t,
+        id: t.id || randomUUID(),
+      }));
+      routines.syncLegacyFromTriggers(r, Date.now(), resolveZone(settings));
+    } else if (Number.isFinite(minutes) && minutes > 0) {
       r.intervalMs = minutes * 60_000;
       delete r.schedule;
       delete r.nextRunAt;
       delete r.nextRunTimeZone;
+      delete r.triggers;
     } else if (body.schedule != null) {
       const schedule = routines.normalizeSchedule(body.schedule);
       const previous = routines.normalizeSchedule(r.schedule);
@@ -1438,6 +1492,7 @@ app.patch("/api/bots/:id/routines/:rid", async (req, res) => {
         Number.isFinite(r.nextRunAt);
       r.schedule = schedule;
       delete r.intervalMs;
+      delete r.triggers;
       const now = Date.now();
       r.nextRunAt = unchanged
         ? routines.calendarNextRunAt(r, now, resolveZone(settings))
@@ -1464,6 +1519,25 @@ app.delete("/api/bots/:id/routines/:rid", async (req, res) => {
   if (!live) return res.status(404).json({ error: "not found" });
   if (missing) return res.status(404).json({ error: "routine not found" });
   broadcast("bot", toClient(live));
+  res.json({ ok: true });
+});
+
+app.post("/api/bots/:id/routines/:rid/run", async (req, res) => {
+  const bot = await store.getBot(req.params.id);
+  if (!bot) return res.status(404).json({ error: "not found" });
+  const routine = (bot.routines || []).find((r) => r.id === req.params.rid);
+  if (!routine) return res.status(404).json({ error: "routine not found" });
+  const now = Date.now();
+  await store.patchBot(bot.id, (live) => {
+    const r = (live.routines || []).find((x) => x.id === routine.id);
+    if (!r) return;
+    r.lastRunAt = now;
+    r.updatedAt = now;
+    r.runs = [...(Array.isArray(r.runs) ? r.runs : []), { ts: now, kind: "test" }].slice(-24);
+  });
+  const prompt = `Standing routine "${routine.name || "Routine"}" was started with Test run. Do this work now, then stop if nothing changed:\n${routine.instruction || ""}`;
+  enqueueTurn(bot.id, () => runUserTurn(bot.id, prompt, true));
+  broadcast("bot", toClient(await store.getBot(bot.id)));
   res.json({ ok: true });
 });
 
@@ -1644,9 +1718,18 @@ async function tickRoutines() {
       intervalMs: r.intervalMs,
       schedule: r.schedule,
       nextRunAt: r.nextRunAt,
+      triggers: JSON.stringify(r.triggers || []),
     }));
     for (const r of bot.routines || []) {
       routines.hydrateRoutine(r, now, timeZone);
+      if (Array.isArray(r.triggers) && r.triggers.length) {
+        for (const t of r.triggers) {
+          if (!Number.isFinite(t.nextRunAt) || t.nextRunAt <= 0) {
+            t.nextRunAt = routines.nextTriggerOccurrence(t, now, timeZone);
+          }
+        }
+        continue;
+      }
       if (!routines.isCalendarRoutine(r)) continue;
       const next = routines.calendarNextRunAt(r, now, timeZone);
       if (Number.isFinite(next) && next !== r.nextRunAt) {
@@ -1656,13 +1739,21 @@ async function tickRoutines() {
     }
     const dirty = (bot.routines || []).some((r, i) => {
       const prev = snapshot[i];
-      return prev.intervalMs !== r.intervalMs || JSON.stringify(prev.schedule) !== JSON.stringify(r.schedule) || prev.nextRunAt !== r.nextRunAt;
+      return prev.intervalMs !== r.intervalMs || JSON.stringify(prev.schedule) !== JSON.stringify(r.schedule) || prev.nextRunAt !== r.nextRunAt || prev.triggers !== JSON.stringify(r.triggers || []);
     });
     if (dirty) {
       bot =
         (await store.patchBot(bot.id, (live) => {
           for (const r of live.routines || []) {
             routines.hydrateRoutine(r, now, timeZone);
+            if (Array.isArray(r.triggers) && r.triggers.length) {
+              for (const t of r.triggers) {
+                if (!Number.isFinite(t.nextRunAt) || t.nextRunAt <= 0) {
+                  t.nextRunAt = routines.nextTriggerOccurrence(t, now, timeZone);
+                }
+              }
+              continue;
+            }
             if (!routines.isCalendarRoutine(r)) continue;
             const next = routines.calendarNextRunAt(r, now, timeZone);
             if (Number.isFinite(next) && next !== r.nextRunAt) {
@@ -1684,17 +1775,23 @@ async function tickRoutines() {
           const r = currentDue.get(id);
           if (r) {
             r.lastRunAt = now;
-            if (routines.isCalendarRoutine(r)) routines.advanceCalendarRoutine(r, now, timeZone);
+            if (Array.isArray(r.triggers) && r.triggers.length) {
+              for (const t of r.triggers) {
+                if (routines.triggerDue(t, now, timeZone)) routines.advanceTrigger(t, now, timeZone);
+              }
+            } else if (routines.isCalendarRoutine(r)) routines.advanceCalendarRoutine(r, now, timeZone);
             r.updatedAt = now;
             r.runs = [...(Array.isArray(r.runs) ? r.runs : []), { ts: now }].slice(-24);
-            accepted.push({ name: r.name, instruction: r.instruction });
+            accepted.push(r);
           }
         }
       });
       if (!accepted.length) continue;
-      const prompt = `Standing routine "${accepted[0].name || pack.name}" is due. Do this work now, then stop if nothing changed:\n${accepted
-        .map((r) => r.instruction)
-        .join("\n")}`;
+      const live = (await store.getBot(bot.id)) || bot;
+      const prompt = await memory.routineFirePrompt(live, accepted, now, timeZone).catch(
+        () =>
+          `Standing routine "${accepted[0].name}" is due (repeating job, run ${(accepted[0].runs || []).length || 1}). Continue from previous progress. Do not start over.\n${accepted[0].instruction || ""}`,
+      );
       enqueueTurn(bot.id, () => runUserTurn(bot.id, prompt, true));
     }
   }

@@ -6,6 +6,7 @@ import path from "node:path";
 import { appRoot, dataDir } from "./paths.mjs";
 import * as vault from "./vault.mjs";
 import * as ctx from "./context.mjs";
+import * as memory from "./memory.mjs";
 
 export function extraPath() {
   const home = process.env.HOME || os.homedir() || "";
@@ -488,13 +489,14 @@ export async function runHostCli({ provider, model, userText, signal, bot, setti
   if (!box) return "This harness only runs after the Bot computer is up.";
   const work = await fs.mkdtemp(path.join(os.tmpdir(), `sub8-${provider}-`));
   const extra = await ctx.agentsExtra({ bot, settings, hidden });
+  await memory.ensureLayout(bot).catch(() => {});
   const hermesFast = provider === "hermes";
   const grokFast = provider === "grok-build";
   const rules = hermesFast
     ? `${extra}
 
 You are Sub8 on this Bot's Linux desktop. Call it "my computer".
-Drive it only through MCP tools: computer, shell, vault_list, vault_fill, list_routines, upsert_routine, disable_routine, list_teammates, message_teammate, ask_user, create_teammate, rename_bot, update_bot, delete_teammate.
+Drive it only through MCP tools: computer, shell, memory, vault_list, vault_fill, list_routines, upsert_routine, disable_routine, list_teammates, message_teammate, ask_user, create_teammate, rename_bot, update_bot, delete_teammate.
 You MAY edit standing routines: list_routines, then upsert_routine with that id. Overlapping jobs (same group or similar interval) must update the existing id, not create a second one.
 Always call a tool before you reply. Do not only describe the next step.
 computer action=open text=https://… already returns a screenshot. Do not screenshot again unless the page is wrong. Do not curl a page you opened. Do not use xdotool or host Bash.`
@@ -502,7 +504,7 @@ computer action=open text=https://… already returns a screenshot. Do not scree
       ? `${extra}
 
 You are Sub8 on this Bot's Linux desktop. Call it "my computer".
-MCP server "sub8" is already connected. Its tools are: computer, shell, vault_list, vault_fill, list_routines, upsert_routine, disable_routine, list_teammates, message_teammate, ask_user, create_teammate, rename_bot, update_bot, delete_teammate.
+MCP server "sub8" is already connected. Its tools are: computer, shell, memory, vault_list, vault_fill, list_routines, upsert_routine, disable_routine, list_teammates, message_teammate, ask_user, create_teammate, rename_bot, update_bot, delete_teammate.
 You MAY edit standing routines (list_routines, then upsert_routine with that id). Do not create a second job that overlaps.
 Call computer immediately. Never search for tools, never invent APIs, never curl localhost, never say tools are missing unless a computer call returned an error.
 Do not print a user-visible sentence between every click. One short ack, then tools until the job is done, then one result with the answer.
@@ -511,13 +513,14 @@ computer action=open text=https://… already returns a screenshot.`
 ${extra}
 
 You are Sub8 on this Bot's Linux desktop (display :1, home /config). Call it "my computer". Never say box, container, Docker, VM, or Mac in user-facing replies.
-Drive the desktop through MCP tools: computer, shell, vault_list, vault_fill. You MAY edit standing routines with list_routines, upsert_routine (pass id), and disable_routine. Do not create overlapping jobs — update the existing id.
+Drive the desktop through MCP tools: computer, shell, memory, vault_list, vault_fill, list_routines, upsert_routine, disable_routine, list_teammates, message_teammate, ask_user, create_teammate, rename_bot, update_bot, delete_teammate. Do not create overlapping jobs — update the existing id. Repeating jobs must continue from /config/agent-data history, not start over.
 To open a site: computer action=open text=https://…
 To see the screen: computer action=screenshot
 To click: computer action=left_click with x,y from the screenshot.
 To type: computer action=type. To press a key: computer action=key.
 To sign in: vault_fill. Never print a password.
-Do not drive Chrome with xdotool, wmctrl, octo-click, or host Bash. The sub8 tools are computer, shell, vault_list, and vault_fill — call them. Do not announce they are missing unless a tool call returned an error.
+Talk to teammates with message_teammate (pass their bot id from list_teammates). If you need a yes/no, a pick, or confirmation from the user, call ask_user and wait — do not guess.
+Do not drive Chrome with xdotool, wmctrl, octo-click, or host Bash. Call the sub8 tools. Do not announce they are missing unless a tool call returned an error.
 `;
   const prompt = `${userText}
 

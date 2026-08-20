@@ -4,6 +4,7 @@ import { appRoot } from "./paths.mjs";
 import * as vault from "./vault.mjs";
 import * as teams from "./teams.mjs";
 import * as store from "./store.mjs";
+import * as memory from "./memory.mjs";
 
 const TZ_HINTS = [
   [/^America\//, "en-US", "USD", "United States"],
@@ -141,25 +142,51 @@ export async function liveContext({ bot, settings, hidden = false } = {}) {
   return `${clockBlock(settings, { hidden })}
 ${harnessLine(settings, bot)}
 ${ident}
-${boot}${extra}`;
+${boot}${extra}
+${await memory.promptBlock(bot)}`;
+}
+
+export async function teamDeskPrompt(bot) {
+  if (!bot?.teamId) return "";
+  const team = await teams.getTeam(bot.teamId);
+  if (!team) return "";
+  const mates = teams.membersOf(team, await store.loadBots());
+  const role = bot.teamRole === "chief" ? "chief" : "worker";
+  const mine = `Sub8:${String(bot.id).slice(0, 8)}`;
+  const rows = mates
+    .map((b) => {
+      const win = `Sub8:${String(b.id).slice(0, 8)}`;
+      const you = b.id === bot.id ? " ← you" : "";
+      return `- ${b.teamRole || "member"} ${b.name} (${b.id}, Chrome “${win}”)${you}`;
+    })
+    .join("\n");
+  const job =
+    role === "chief"
+      ? "Assign work with message_teammate. Do not hog the mouse if a worker is mid-task."
+      : "Take assignments from the chief. Report back with message_teammate. Drive only your Chrome window.";
+  return [
+    "",
+    "## Team — one shared computer",
+    `You are the ${role} on team “${team.name}”. You are NOT on your own machine.`,
+    "The whole team shares ONE Linux computer: same disk, same `/config` home, same desktop, same Chrome install. Files you write are immediately visible to teammates. `/config/workspace/` is the shared working folder. Each Bot also has a private notes folder: `/config/agent-data/agents/<id>/`.",
+    "Do not reboot, reset, or reinstall as if this computer were yours alone. Do not close a teammate's Chrome window. Yours is titled “" + mine + "”.",
+    "One pair of hands on the GUI at a time. Coordinate with message_teammate before taking the desk.",
+    job,
+    "Teammates:",
+    rows || "- (none)",
+    "User messages in this thread are the team chat. send_message is visible to the human and the team. If you need the user to confirm, pick an option, or grant access, call ask_user and wait.",
+    "",
+  ].join("\n");
 }
 
 export async function agentsExtra({ bot, settings, hidden = false } = {}) {
   const ident = `You are the Bot named "${bot?.name || "Bot"}". ${bot?.description || ""}`.trim();
   const extra = bot?.instructions?.trim() ? `\nStanding instructions:\n${bot.instructions.trim()}` : "";
-  let teamLine = "";
-  if (bot?.teamId) {
-    const team = await teams.getTeam(bot.teamId);
-    if (team) {
-      const mates = teams.membersOf(team, await store.loadBots());
-      const role = bot.teamRole === "chief" ? "chief" : "worker";
-      const names = mates.map((b) => `${b.name} (${b.teamRole || "member"}, ${b.id})`).join("; ");
-      teamLine = `\nYou are the ${role} on team “${team.name}”. Shared desk. Teammates: ${names}. Use list_teammates and message_teammate. Your Chrome window title starts with Sub8:${String(bot.id).slice(0, 8)}.`;
-    }
-  }
   return `${clockBlock(settings, { hidden })}
 ${harnessLine(settings, bot)}
-${ident}${extra}${teamLine}
+${ident}${extra}
+${await teamDeskPrompt(bot)}
+${await memory.promptBlock(bot)}
 ${await vault.promptBlock(bot?.id)}
 `;
 }
