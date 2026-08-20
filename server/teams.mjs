@@ -263,18 +263,20 @@ export function applyStepUpdate(job, patch = {}) {
   if (!job?.steps) return { job, step: null };
   const step = findStep(job, patch);
   if (!step) return { job, step: null };
-  const next = TASK_STATUSES.includes(patch.status) ? patch.status : step.status;
-  if (next === "running" && (step.status === "running" || step.status === "looping")) {
+  const hasStatus = TASK_STATUSES.includes(patch.status);
+  const next = hasStatus ? patch.status : step.status;
+  if (hasStatus && next === "running" && (step.status === "running" || step.status === "looping")) {
     step.loopCount = (step.loopCount || 0) + 1;
     step.status = step.loopCount >= 2 ? "looping" : "running";
-  } else {
+  } else if (hasStatus) {
     step.status = next;
     if (next === "done" || next === "pending") step.loopCount = 0;
   }
   if (patch.detail != null) step.detail = String(patch.detail).slice(0, 160);
   if (patch.botId) {
+    const meta = isMetaStepLabel(step.label);
     for (const s of job.steps) {
-      if (s.botId === patch.botId && s.id !== step.id) s.botId = null;
+      if (s.botId === patch.botId && s.id !== step.id && isMetaStepLabel(s.label) === meta) s.botId = null;
     }
     step.botId = patch.botId;
   }
@@ -463,9 +465,29 @@ export async function setTeamJob(teamId, spec) {
 
 export async function patchTeamStep(teamId, patch) {
   const team = await getTeam(teamId);
-  if (!team?.job) return null;
-  const { job, step } = applyStepUpdate(team.job, patch);
-  if (!step) return { team, job, step: null, renamed: [] };
+  if (!team) return null;
+  let job = team.job;
+  let step = null;
+  if (isMetaStepLabel(patch.label)) {
+    if (!job) return { team, job: null, step: null, renamed: [] };
+    ({ job, step } = applyStepUpdate(job, patch));
+    if (!step) return { team, job, step: null, renamed: [] };
+  } else {
+    job = upsertJobStep(job, {
+      botId: patch.botId,
+      label: patch.label,
+      status: patch.status,
+      detail: patch.detail,
+      stepId: patch.stepId,
+      chiefId: team.chiefId,
+      title: job?.title || team.name,
+    });
+    step =
+      findStep(job, { stepId: patch.stepId, label: patch.label }) ||
+      (job.steps || []).find((s) => s.botId === patch.botId && !isMetaStepLabel(s.label)) ||
+      null;
+    if (!step) return { team, job, step: null, renamed: [] };
+  }
   const saved = await saveTeam({ ...team, job });
   const renamed = [];
   if (step.botId && !isMetaStepLabel(step.label)) {

@@ -229,20 +229,30 @@ export function hostEnv() {
   return env;
 }
 
-function parseClaudeStream(line, acc) {
+export function parseClaudeStream(line, acc) {
   let evt;
   try {
     evt = JSON.parse(line);
   } catch {
     return;
   }
+  acc.parts = acc.parts || [];
   if (evt.type === "assistant" && Array.isArray(evt.message?.content)) {
     for (const part of evt.message.content) {
-      if (part.type === "text" && part.text) acc.reply += part.text;
+      if (part.type === "text" && part.text) acc.parts.push(String(part.text).trim());
     }
   }
-  if (evt.type === "content_block_delta" && evt.delta?.text) acc.reply += evt.delta.text;
-  if (evt.type === "result" && typeof evt.result === "string" && !acc.reply) acc.reply = evt.result;
+  if (evt.type === "content_block_delta" && evt.delta?.text) {
+    acc.deltaBuf = (acc.deltaBuf || "") + evt.delta.text;
+  }
+  if (evt.type === "content_block_stop" && acc.deltaBuf) {
+    acc.parts.push(String(acc.deltaBuf).trim());
+    acc.deltaBuf = "";
+  }
+  if (evt.type === "result" && typeof evt.result === "string" && !acc.parts.length) {
+    acc.parts.push(evt.result.trim());
+  }
+  acc.reply = foldClaudeVisibleText(acc.parts);
 }
 
 function parseCodexStream(line, acc) {
@@ -279,6 +289,14 @@ export function foldGrokVisibleText(parts) {
   const list = (parts || []).map((p) => String(p || "").trim()).filter(Boolean);
   const kept = list.filter(grokShouldKeepText);
   return (kept.length ? kept : list.slice(-1)).join("\n");
+}
+
+export function foldClaudeVisibleText(parts) {
+  const list = (parts || []).map((p) => String(p || "").trim()).filter(Boolean);
+  if (list.length <= 1) return foldGrokVisibleText(list);
+  const kept = list.filter(grokShouldKeepText);
+  if (kept.length) return kept[kept.length - 1];
+  return list[list.length - 1];
 }
 
 function parseGrokStream(line, acc) {
@@ -520,7 +538,7 @@ Web pages: browser action=navigate / snapshot / click (ref from snapshot) / fill
 Pixels and native UI: computer screenshot and left_click.
 To type text or a URL: computer action=type (pastes exactly, including ://). computer action=key is Return / ctrl+l / Escape — never put a URL in key.
 To sign in: vault_fill. Never print a password.
-Talk to teammates with message_teammate (one short line; pass their bot id from list_teammates). Each Bot has its own Chrome tab on its display. Workers: update_task then one-line the chief — do not send a long report. Chief: list_tasks, send_message a short compiled list, update_task Summary done. If you need a yes/no, a pick, or confirmation from the user, call ask_user and wait — do not guess.
+Talk to teammates with message_teammate (one short line; pass their bot id from list_teammates). Each Bot has its own Chrome tab on its display. Workers: update_task then one-line the chief — do not send a long report. Chief: set_job with a step per user-requested piece (including any you keep). list_tasks, send_message a short compiled list of EVERY non-Summary step including yours, update_task Summary done. Do not invent extra files. Do not print a user-visible sentence between every click — tools until done, then one result. Google URLs: &hl=en&gl=us&curr=USD. If you need a yes/no, a pick, or confirmation from the user, call ask_user and wait — do not guess.
 Do not drive Chrome with xdotool, wmctrl, octo-click, CDP, or host Bash. Call the sub8 tools. If the desktop is sick, shell desk-doctor. Do not announce tools are missing unless a tool call returned an error.
 `;
   const prompt = `${userText}

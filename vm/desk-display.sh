@@ -11,6 +11,8 @@ export HOME="${HOME:-/config}"
 export XAUTHORITY="${XAUTHORITY:-/config/.Xauthority}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-abc}"
 export LANG="${LANG:-C.UTF-8}"
+export LANGUAGE="${LANGUAGE:-en_US:en}"
+export LC_ALL="${LC_ALL:-C.UTF-8}"
 VNC=$((5899 + N))
 WEB=$((2999 + N))
 
@@ -60,6 +62,16 @@ if [ -f "$WEBROOT/vnc.html" ] && [ ! -e "$WEBROOT/index.html" ]; then
 fi
 if ! port_up "$WEB"; then
   websockify --web="$WEBROOT" "$WEB" "127.0.0.1:$VNC" >/tmp/websockify-"$N".log 2>&1 &
+fi
+
+# One Chrome on this display so page-agent CDP is up before the first turn.
+if ! pgrep -f "chrome-desk-${N}|remote-debugging-port=$((9221 + N))" >/dev/null 2>&1; then
+  (
+    while true; do
+      /usr/local/bin/chrome-desktop
+      sleep 2
+    done
+  ) >/tmp/chrome-"$N".log 2>&1 &
 fi
 
 echo "DISPLAY=:$N vnc=$VNC novnc=$WEB"

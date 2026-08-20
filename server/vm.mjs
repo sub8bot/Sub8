@@ -1255,7 +1255,23 @@ export async function installChromeDesk(container) {
   if (!parts.length) return;
   parts.push("ln -sfn /usr/local/bin/chrome-desktop /usr/local/bin/chrome");
   parts.push("ln -sfn /usr/local/bin/chrome-desktop /usr/local/bin/box-chrome");
+  parts.push("mkdir -p /config/chrome-desk /config/workspace");
+  parts.push("chown -R abc:abc /config/chrome-desk /config/workspace");
+  parts.push("chown -R abc:abc /config/chrome-desk-* 2>/dev/null || true");
   await docker(["exec", "-u", "root", container, "bash", "-lc", parts.join(" && ")]);
+  await docker([
+    "exec",
+    "-u",
+    "abc",
+    "-e",
+    "DISPLAY=:1",
+    "-e",
+    "HOME=/config",
+    container,
+    "bash",
+    "-lc",
+    "ps -eo pid= -o args= | awk '/--type=/ {next} /crashpad/ {next} /user-data-dir=/ {next} /chrome-desktop|chrome-one-tab|box-chrome/ {next} /google-chrome|chromium|\\/chrome\\/chrome/ {print $1}' | while read -r pid; do kill \"$pid\" 2>/dev/null || true; done",
+  ]).catch(() => {});
 }
 
 export async function installDeskDoctor(container) {

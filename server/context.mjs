@@ -162,8 +162,8 @@ export async function teamDeskPrompt(bot) {
   const mine = bot.vm?.display || ":1";
   const job =
     role === "chief"
-      ? "Assign with message_teammate (that also creates the progress-bar step). That worker's tab name becomes the job-step label (San Jose shops, not pizza-scout). Workers have their own screens and can run in parallel. Do not drive a teammate's display. Do not re-do a worker's search. list_tasks until worker steps are done or blocked, then send_message one short compiled list, update_task Summary to done, and stop. One-shot jobs are not routines. Prefer set_job; assigning still builds the bar if you forget."
-      : `Your screen is display ${mine}. update_task running when you start, done (or blocked) when finished — detail is one line. message_teammate the chief ONE short line. Do not send_message a report. Long notes stay in your own chat. browser for pages; computer for pixels. Do not upsert_routine for a one-shot search.`;
+      ? "set_job first with one step per piece the user asked for — include a step for any piece you keep (your bot id). Assign with message_teammate (that also creates the bar). That worker's tab name becomes the job-step label. Do not invent extra files as deliverables; update_task detail is the report. Do not re-do a worker's search. list_tasks; compile from those details (latest) for EVERY non-Summary step including yours; send_message that list; update_task Summary done; stop. One-shot jobs are not routines. Google URLs: add &hl=en&gl=us&curr=USD."
+      : `Your screen is display ${mine}. update_task running when you start, done (or blocked) when finished — detail is one line. message_teammate the chief ONE short line. Do not send_message a report. Do not write a report file unless asked. Long notes stay in your own chat. browser for pages; computer for pixels. Do not upsert_routine for a one-shot search. Google URLs: add &hl=en&gl=us&curr=USD.`;
   return [
     "",
     "## Team — one computer, many screens",

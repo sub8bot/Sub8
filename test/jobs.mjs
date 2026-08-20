@@ -81,4 +81,34 @@ assert.equal(auto.steps[0].botId, "w1");
 const grown = upsertJobStep(auto, { botId: "w2", label: "DC→BKK", content: "DC to Bangkok", chiefId: "c1" });
 assert.equal(grown.steps.map((s) => s.label).join(","), "DC→SFO,DC→BKK,Summary");
 
+const own = upsertJobStep(grown, { botId: "c1", label: "SF→DC", status: "running", chiefId: "c1" });
+assert.equal(own.steps.map((s) => s.label).join(","), "DC→SFO,DC→BKK,SF→DC,Summary");
+assert.equal(own.steps.find((s) => s.label === "SF→DC").botId, "c1");
+assert.equal(own.steps.find((s) => s.label === "Summary").botId, "c1");
+
+const loopJob = newJob({
+  title: "x",
+  steps: [
+    { label: "A", bot_id: "w" },
+    { label: "Summary", bot_id: "c" },
+  ],
+});
+applyStepUpdate(loopJob, { botId: "w", status: "running" });
+applyStepUpdate(loopJob, { botId: "w", detail: "still going" });
+assert.equal(loopJob.steps[0].status, "running");
+assert.equal(loopJob.steps[0].loopCount || 0, 0);
+applyStepUpdate(loopJob, { botId: "w", status: "running", detail: "again" });
+assert.equal(loopJob.steps[0].loopCount, 1);
+
+const dual = newJob({
+  title: "flights",
+  steps: [
+    { label: "SF→DC", bot_id: "c" },
+    { label: "Summary", bot_id: "c" },
+  ],
+});
+applyStepUpdate(dual, { label: "SF→DC", botId: "c", status: "done", detail: "$240 Frontier" });
+assert.equal(dual.steps.find((s) => s.label === "SF→DC").botId, "c");
+assert.equal(dual.steps.find((s) => s.label === "Summary").botId, "c");
+
 console.log("ok jobs");

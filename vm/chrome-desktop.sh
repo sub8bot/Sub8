@@ -12,7 +12,7 @@ if [ -z "$CHROME" ]; then
   echo "Chrome is not installed" >&2
   exit 1
 fi
-URL="${1:-https://www.google.com/?hl=en}"
+URL="${1:-https://www.google.com/?hl=en&gl=us}"
 N="${DISPLAY#:}"
 N="${N%%.*}"
 if [ -z "$N" ] || [ "$N" = "1" ]; then
@@ -22,7 +22,41 @@ else
   PROFILE="/config/chrome-desk-${N}"
   DEBUG_PORT=$((9221 + N))
 fi
+
+kill_unprofiled_chrome() {
+  # Old webtop/boot Chromes have no --user-data-dir and steal :1 / RAM.
+  # ps pads PIDs with spaces — use awk $1, not ${line%% *}.
+  local pids
+  pids="$(ps -eo pid= -o args= 2>/dev/null | awk '
+    /--type=/ { next }
+    /crashpad/ { next }
+    /user-data-dir=/ { next }
+    /chrome-desktop|chrome-one-tab|box-chrome/ { next }
+    /google-chrome|chromium|\/chrome\/chrome/ { print $1 }
+  ')"
+  for pid in $pids; do
+    kill "$pid" 2>/dev/null || true
+  done
+}
+
 mkdir -p "$PROFILE"
+if [ ! -w "$PROFILE" ]; then
+  if command -v sudo >/dev/null 2>&1; then
+    sudo chown -R "$(id -u):$(id -g)" "$PROFILE" 2>/dev/null || true
+  fi
+fi
+if [ ! -w "$PROFILE" ]; then
+  PROFILE="/tmp/chrome-desk-${N:-1}"
+  mkdir -p "$PROFILE"
+fi
+mkdir -p "$PROFILE/Default"
+prefs="$PROFILE/Default/Preferences"
+if [ ! -f "$prefs" ]; then
+  cat > "$prefs" << 'EOF'
+{"intl":{"accept_languages":"en-US,en"},"translate":{"enabled":false},"webkit":{"webprefs":{"default_text_encoding_name":"UTF-8"}}}
+EOF
+fi
+
 export CHROME_DEBUG="http://127.0.0.1:${DEBUG_PORT}"
 flags=(
   --no-sandbox
@@ -46,6 +80,7 @@ flags=(
   --lang=en-US
   --accept-lang=en-US,en
 )
+kill_unprofiled_chrome || true
 if curl -sf --max-time 1 "$CHROME_DEBUG/json/version" >/dev/null; then
   exec python3 /usr/local/bin/chrome-one-tab "$URL"
 fi
