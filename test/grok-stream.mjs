@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { foldGrokVisibleText, grokShouldKeepText } from "../server/host-cli.mjs";
+import { foldGrokVisibleText, grokShouldKeepText, parseClaudeStream } from "../server/host-cli.mjs";
 
 assert.equal(grokShouldKeepText("I'll look up the sub8 desktop tools by name."), false);
 assert.equal(grokShouldKeepText("Let me take a screenshot."), false);
@@ -23,6 +23,20 @@ assert.match(foldGrokVisibleText(wall), /\$240 Frontier/);
 assert.doesNotMatch(foldGrokVisibleText(wall), /I'll search Google Flights/);
 
 assert.equal(foldGrokVisibleText(["I'll click next."]), "I'll click next.");
+
+const claudeAcc = { parts: [], reply: "" };
+for (const text of [
+  "I'll spin up two helper bots and take one leg myself.",
+  "Both helpers are working. Taking leg 1 myself.",
+  "Prices are showing in Thai Baht — switching to USD.",
+  "**Leg 1 — San Francisco → Washington DC**\n| $240 | Frontier | SFO–DCA |",
+]) {
+  parseClaudeStream(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text }] } }), claudeAcc);
+}
+assert.match(claudeAcc.reply, /\$240/);
+assert.match(claudeAcc.reply, /Frontier/);
+assert.doesNotMatch(claudeAcc.reply, /I'll spin up two helper bots/);
+assert.doesNotMatch(claudeAcc.reply, /Thai Baht/);
 
 const hostCli = fs.readFileSync(new URL("../server/host-cli.mjs", import.meta.url), "utf8");
 assert.match(hostCli, /"--effort",\s*"low"/);

@@ -6,6 +6,7 @@ import path from "node:path";
 import { appRoot, dataDir } from "./paths.mjs";
 import * as vault from "./vault.mjs";
 import * as ctx from "./context.mjs";
+import * as memory from "./memory.mjs";
 
 export function extraPath() {
   const home = process.env.HOME || os.homedir() || "";
@@ -228,20 +229,30 @@ export function hostEnv() {
   return env;
 }
 
-function parseClaudeStream(line, acc) {
+export function parseClaudeStream(line, acc) {
   let evt;
   try {
     evt = JSON.parse(line);
   } catch {
     return;
   }
+  acc.parts = acc.parts || [];
   if (evt.type === "assistant" && Array.isArray(evt.message?.content)) {
     for (const part of evt.message.content) {
-      if (part.type === "text" && part.text) acc.reply += part.text;
+      if (part.type === "text" && part.text) acc.parts.push(String(part.text).trim());
     }
   }
-  if (evt.type === "content_block_delta" && evt.delta?.text) acc.reply += evt.delta.text;
-  if (evt.type === "result" && typeof evt.result === "string" && !acc.reply) acc.reply = evt.result;
+  if (evt.type === "content_block_delta" && evt.delta?.text) {
+    acc.deltaBuf = (acc.deltaBuf || "") + evt.delta.text;
+  }
+  if (evt.type === "content_block_stop" && acc.deltaBuf) {
+    acc.parts.push(String(acc.deltaBuf).trim());
+    acc.deltaBuf = "";
+  }
+  if (evt.type === "result" && typeof evt.result === "string" && !acc.parts.length) {
+    acc.parts.push(evt.result.trim());
+  }
+  acc.reply = foldClaudeVisibleText(acc.parts);
 }
 
 function parseCodexStream(line, acc) {
@@ -278,6 +289,14 @@ export function foldGrokVisibleText(parts) {
   const list = (parts || []).map((p) => String(p || "").trim()).filter(Boolean);
   const kept = list.filter(grokShouldKeepText);
   return (kept.length ? kept : list.slice(-1)).join("\n");
+}
+
+export function foldClaudeVisibleText(parts) {
+  const list = (parts || []).map((p) => String(p || "").trim()).filter(Boolean);
+  if (list.length <= 1) return foldGrokVisibleText(list);
+  const kept = list.filter(grokShouldKeepText);
+  if (kept.length) return kept[kept.length - 1];
+  return list[list.length - 1];
 }
 
 function parseGrokStream(line, acc) {
@@ -488,13 +507,15 @@ export async function runHostCli({ provider, model, userText, signal, bot, setti
   if (!box) return "This harness only runs after the Bot computer is up.";
   const work = await fs.mkdtemp(path.join(os.tmpdir(), `sub8-${provider}-`));
   const extra = await ctx.agentsExtra({ bot, settings, hidden });
+  await memory.ensureLayout(bot).catch(() => {});
   const hermesFast = provider === "hermes";
   const grokFast = provider === "grok-build";
   const rules = hermesFast
     ? `${extra}
 
 You are Sub8 on this Bot's Linux desktop. Call it "my computer".
-Drive it only through MCP tools: computer, shell, vault_list, vault_fill, list_routines, upsert_routine, disable_routine.
+Drive it only through MCP tools: browser, computer, shell, memory, vault_list, vault_fill, list_routines, upsert_routine, disable_routine, send_message, list_teammates, message_teammate, list_tasks, update_task, set_job, ask_user, create_teammate, rename_bot, update_bot, delete_teammate.
+Web pages: browser snapshot / click ref / fill / navigate. computer is pixels, dialogs, drag.
 You MAY edit standing routines: list_routines, then upsert_routine with that id. Overlapping jobs (same group or similar interval) must update the existing id, not create a second one.
 Always call a tool before you reply. Do not only describe the next step.
 computer action=open text=https://… already returns a screenshot. Do not screenshot again unless the page is wrong. Do not curl a page you opened. Do not use xdotool or host Bash.`
@@ -502,7 +523,8 @@ computer action=open text=https://… already returns a screenshot. Do not scree
       ? `${extra}
 
 You are Sub8 on this Bot's Linux desktop. Call it "my computer".
-MCP server "sub8" is already connected. Its tools are: computer, shell, vault_list, vault_fill, list_routines, upsert_routine, disable_routine.
+MCP server "sub8" is already connected. Its tools are: browser, computer, shell, memory, vault_list, vault_fill, list_routines, upsert_routine, disable_routine, send_message, list_teammates, message_teammate, list_tasks, update_task, set_job, ask_user, create_teammate, rename_bot, update_bot, delete_teammate.
+Prefer browser for websites (snapshot, click ref, fill, navigate).
 You MAY edit standing routines (list_routines, then upsert_routine with that id). Do not create a second job that overlaps.
 Call computer immediately. Never search for tools, never invent APIs, never curl localhost, never say tools are missing unless a computer call returned an error.
 Do not print a user-visible sentence between every click. One short ack, then tools until the job is done, then one result with the answer.
@@ -511,13 +533,13 @@ computer action=open text=https://… already returns a screenshot.`
 ${extra}
 
 You are Sub8 on this Bot's Linux desktop (display :1, home /config). Call it "my computer". Never say box, container, Docker, VM, or Mac in user-facing replies.
-Drive the desktop through MCP tools: computer, shell, vault_list, vault_fill. You MAY edit standing routines with list_routines, upsert_routine (pass id), and disable_routine. Do not create overlapping jobs — update the existing id.
-To open a site: computer action=open text=https://…
-To see the screen: computer action=screenshot
-To click: computer action=left_click with x,y from the screenshot.
-To type: computer action=type. To press a key: computer action=key.
+Drive the desktop through MCP tools: browser, computer, shell, memory, vault_list, vault_fill, list_routines, upsert_routine, disable_routine, send_message, list_teammates, message_teammate, list_tasks, update_task, set_job, ask_user, create_teammate, rename_bot, update_bot, delete_teammate. Do not create overlapping jobs — update the existing id. Repeating jobs must continue from /config/agent-data history, not start over.
+Web pages: browser action=navigate / snapshot / click (ref from snapshot) / fill.
+Pixels and native UI: computer screenshot and left_click.
+To type text or a URL: computer action=type (pastes exactly, including ://). computer action=key is Return / ctrl+l / Escape — never put a URL in key.
 To sign in: vault_fill. Never print a password.
-Do not drive Chrome with xdotool, wmctrl, octo-click, or host Bash. The sub8 tools are computer, shell, vault_list, and vault_fill — call them. Do not announce they are missing unless a tool call returned an error.
+Talk to teammates with message_teammate (one short line; pass their bot id from list_teammates). Each Bot has its own Chrome tab on its display. Workers: update_task then one-line the chief — do not send a long report. Chief: set_job with a step per user-requested piece (including any you keep). list_tasks, send_message a short compiled list of EVERY non-Summary step including yours, update_task Summary done. Do not invent extra files. Do not print a user-visible sentence between every click — tools until done, then one result. Google URLs: &hl=en&gl=us&curr=USD. If you need a yes/no, a pick, or confirmation from the user, call ask_user and wait — do not guess.
+Do not drive Chrome with xdotool, wmctrl, octo-click, CDP, or host Bash. Call the sub8 tools. If the desktop is sick, shell desk-doctor. Do not announce tools are missing unless a tool call returned an error.
 `;
   const prompt = `${userText}
 

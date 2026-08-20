@@ -9,6 +9,22 @@ import * as vault from "./vault.mjs";
 import * as hostCli from "./host-cli.mjs";
 import { detectLocalHarnesses, localSpec } from "./local-llm.mjs";
 import * as ctx from "./context.mjs";
+import * as memory from "./memory.mjs";
+import * as teams from "./teams.mjs";
+import * as store from "./store.mjs";
+
+let dispatchTeammate = null;
+let deliverReply = null;
+let stopBotFn = null;
+export function setTeamDispatch(fn) {
+  dispatchTeammate = fn;
+}
+export function setTeamReply(fn) {
+  deliverReply = fn;
+}
+export function setStopBot(fn) {
+  stopBotFn = fn;
+}
 
 const COMPUTER_ACTIONS = [
   "screenshot",
@@ -26,12 +42,14 @@ const COMPUTER_ACTIONS = [
   "open",
 ];
 
+const BROWSER_ACTIONS = ["snapshot", "click", "fill", "navigate", "press", "wait"];
+
 const TOOLS = [
   {
     type: "function",
     function: {
       name: "send_message",
-      description: "User-visible chat. Ack first, then result last.",
+      description: "User-visible chat in this thread (and the team chat if you are on a team). Chief: compiled result for the human. Workers: do not send reports here — message_teammate the chief one line.",
       parameters: { type: "object", properties: { content: { type: "string" } }, required: ["content"] },
     },
   },
@@ -40,7 +58,7 @@ const TOOLS = [
     function: {
       name: "computer",
       description:
-        "Drive the desktop. x,y are pixels on the LAST screenshot (origin top-left, 1:1 with the full 1024x768 image). Click the visual CENTER of a control you can see. After type, click the primary button (Send/Save/Search/OK/Post), then screenshot to verify. Scroll if the control is off-screen. The pointer is drawn on the image.",
+        "Pixel desktop. Use browser (snapshot/click ref/fill/navigate) for web pages first. This tool is for screenshots, native dialogs, drag, and clicks the page agent cannot do. x,y are pixels on the LAST screenshot (origin top-left, 1:1 with the full 1024x768 image). type pastes exact text (URLs keep ://). key is Return/ctrl+l — never send a URL via key.",
       parameters: {
         type: "object",
         properties: {
@@ -62,9 +80,47 @@ const TOOLS = [
   {
     type: "function",
     function: {
+      name: "browser",
+      description:
+        "Drive YOUR Chrome tab by page structure (not pixels). snapshot returns [n] refs. click/fill those refs. navigate replaces the tab. Prefer this over computer clicks on websites. File dialogs, drag, and native apps still use computer.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: BROWSER_ACTIONS },
+          ref: { type: "number", description: "Node number from the last snapshot" },
+          text: { type: "string", description: "Fill text, or a URL for navigate" },
+          url: { type: "string" },
+          keys: { type: "string", description: "For press: Enter, Tab, Escape" },
+          ms: { type: "number" },
+        },
+        required: ["action"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "shell",
-      description: "Run a command on your computer.",
+      description:
+        "Run a command on your computer (home /config). Files, apt, desk-doctor. Not the user's Mac. Do not click, type, or drive Chrome from the shell.",
       parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "memory",
+      description:
+        "Read or write lasting notes on my computer (markdown under /config/agent-data and /config/workspace). Not HTTP. Use this for durable facts and repeating-job history.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["read", "write", "append", "list"] },
+          path: { type: "string", description: "Absolute under /config/agent-data or /config/workspace, or relative to this Bot's agent folder." },
+          content: { type: "string", description: "For write or append." },
+        },
+        required: ["action"],
+      },
     },
   },
   {
@@ -114,6 +170,176 @@ const TOOLS = [
       name: "disable_routine",
       description: "Turn off a routine by id.",
       parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_teammates",
+      description: "List the other Bots on your team (id, name, role). Empty if you are not on a team.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "message_teammate",
+      description:
+        "Talk to a teammate. Keep it to ONE short line (place and rating, or a blocker). Long writeups stay in your own chat. Chief: assigning a new task renames that Bot's tab to the step label. Optional status/detail also updates the team job bar.",
+      parameters: {
+        type: "object",
+        properties: {
+          bot_id: { type: "string", description: "Teammate id from list_teammates" },
+          content: { type: "string", description: "One short line. Long notes stay in your own chat." },
+          label: { type: "string", description: "Job-step label. Chief: this becomes the worker's tab name." },
+          status: { type: "string", enum: ["pending", "running", "done", "blocked", "looping"] },
+          detail: { type: "string", description: "Short progress line for the job bar (max ~160 chars)" },
+        },
+        required: ["bot_id", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_tasks",
+      description: "Show the current team job and each step (pending/running/done/blocked/looping).",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_job",
+      description: "Chief: replace the team job on the progress bar. steps: [{label, bot_id}]. Worker tab names follow those labels. One-shot work uses this, not upsert_routine.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          steps: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                label: { type: "string" },
+                bot_id: { type: "string" },
+                status: { type: "string" },
+                detail: { type: "string" },
+              },
+            },
+          },
+        },
+        required: ["title", "steps"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_task",
+      description: "Set your step on the team progress bar: pending, running, done, blocked, or looping. detail is a short result (e.g. place and rating). Call running when you start, done when finished. If you are stuck repeating, status=looping.",
+      parameters: {
+        type: "object",
+        properties: {
+          step_id: { type: "string" },
+          label: { type: "string" },
+          status: { type: "string", enum: ["pending", "running", "done", "blocked", "looping"] },
+          detail: { type: "string" },
+        },
+        required: ["status"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "ask_user",
+      description:
+        "Show the human a multiple-choice card in chat (A/B/C plus optional typed answer). Use this when you need them to pick before you continue, e.g. what a new Bot should do.",
+      parameters: {
+        type: "object",
+        properties: {
+          question: { type: "string" },
+          hint: { type: "string" },
+          choices: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: { id: { type: "string" }, label: { type: "string" } },
+            },
+          },
+          allow_custom: { type: "boolean" },
+        },
+        required: ["question"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "create_teammate",
+      description:
+        "Create another Bot in your group on the same shared desk. Pass name and job. You MAY set harness (claude, grok-build, hermes, codex, ollama, lmstudio), model, instructions, color. If the job is missing, ask the user with a choice card first.",
+      parameters: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          job: { type: "string", description: "What this Bot should do" },
+          role: { type: "string", description: "worker (default) or chief" },
+          harness: { type: "string" },
+          model: { type: "string" },
+          instructions: { type: "string" },
+          color: { type: "string" },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "rename_bot",
+      description: "Rename yourself or a teammate on this desk.",
+      parameters: {
+        type: "object",
+        properties: {
+          bot_id: { type: "string", description: "Defaults to yourself" },
+          name: { type: "string" },
+        },
+        required: ["name"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_bot",
+      description: "Change settings for yourself or a teammate: harness, model, instructions, description, color, role.",
+      parameters: {
+        type: "object",
+        properties: {
+          bot_id: { type: "string", description: "Defaults to yourself" },
+          name: { type: "string" },
+          harness: { type: "string" },
+          model: { type: "string" },
+          instructions: { type: "string" },
+          description: { type: "string" },
+          color: { type: "string" },
+          role: { type: "string" },
+        },
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_teammate",
+      description: "Remove a Bot from this group when asked. Their chat is deleted. The shared desk stays if anyone remains.",
+      parameters: {
+        type: "object",
+        properties: { bot_id: { type: "string" } },
+        required: ["bot_id"],
+      },
     },
   },
   {
@@ -349,6 +575,10 @@ export async function pingHarness(settings, bot, providerOverride) {
   };
 }
 
+async function teamPrompt(bot) {
+  return ctx.teamDeskPrompt(bot);
+}
+
 async function loadSystemPrompt(bot, settings, { hidden = false, compactRoutines = false } = {}) {
   const [adapter, computer, capabilities, voice] = await Promise.all([
     ctx.readPrompt("local-adapter.txt"),
@@ -362,10 +592,11 @@ ${adapter}
 ${capabilities}
 ${computer}
 ${routines.promptBlock(bot, { compact: compactRoutines, timeZone: ctx.resolveZone(settings) })}
+${await teamPrompt(bot)}
 ${voice}
 
 ## Sub8
-After send_message, if the user asked for something on the desktop (research, Chrome, files they can see, clicks): call \`computer\` screenshot next, then click like a human.
+After send_message, if the user asked for something on the desktop (research, Chrome, files they can see, clicks): web pages go through \`browser\` (navigate/snapshot/click ref); pixels and dialogs through \`computer\`.
 web_search is available for facts. Prefer it over opening Google unless the user asked to use the browser.
 Routines: ONE standing job, and only when the user asked to keep doing something on a clock (every N minutes, hourly, daily, or every morning). "Check again", "try again", "resume", and one-shot desktop work are NOT routines — do the work now, do not upsert. "Run" / "resume" means execute, not rewrite. Never replace a long brief with the chat line. Never delete the only routine unless they said delete.
 If a submit already landed or the UI is still loading, do not submit the same thing again. If a click fails twice, stop repeating it.
@@ -373,11 +604,16 @@ ${await vault.promptBlock(bot.id)}
 `;
 }
 
-export function publicBot(bot) {
+export function publicBot(bot, { tail } = {}) {
+  const all = bot.messages || [];
+  const limit = Number.isFinite(tail) ? Math.max(0, tail) : 24;
+  const messages = all.length > limit ? all.slice(-limit) : all;
   return {
     ...bot,
-    messages: (bot.messages || []).map((m) => ({ ...m, imagePath: undefined, imageB64: undefined })),
+    messages: messages.map((m) => ({ ...m, imagePath: undefined, imageB64: undefined })),
     routines: bot.routines || [],
+    messageCount: all.length,
+    messagesTruncated: all.length > messages.length,
   };
 }
 
@@ -393,7 +629,13 @@ const AUTO_SHOT = new Set([
 
 export async function runTurn({ bot, settings, userText, emit, hidden = false, images = [], signal, pullNudges, persistUser = true } = {}) {
   if (!Array.isArray(bot.routines)) bot.routines = [];
-  if (!hidden && routines.looksLikeSchedule(userText)) {
+  await memory.ensureLayout(bot).catch(() => {});
+  if (
+    !hidden &&
+    !settings?.__replyTo &&
+    !routines.looksLikeTeammateTraffic(userText) &&
+    routines.looksLikeSchedule(userText)
+  ) {
     const parsed = routines.parseSchedule(userText);
     const { routine, merged, rejected } = routines.upsertRoutine(bot, {
       instruction: userText,
@@ -523,7 +765,7 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
     const grokText = savedLogin?.did
       ? `${userText}\n\n${savedLogin.brief}`
       : desktop
-        ? `${userText}\n\nUse the desktop this turn. To open Chrome: nohup /usr/local/bin/chrome-desktop 'https://…' >/tmp/chrome.log 2>&1 &\nThen look at the screen. Do not only send a text plan.`
+        ? `${userText}\n\nUse the desktop this turn. Open a URL with /usr/local/bin/chrome-desktop 'https://…' (replaces the current tab). Then look at the screen. Do not only send a text plan. Never --new-tab.`
         : userText;
     emit("tool", { name: "computer", args: { action: "screenshot" } });
     const work = {
@@ -720,7 +962,7 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
 export function localContinueQuery(userText) {
   const t = String(userText || "").trim();
   if (t.length < 1600) return t || "Continue.";
-  return "Continue the same standing job. Do not re-read MEMORY.md, VOICE.md, or X-JOURNAL unless a specific fact is missing. Prefer computer screenshot / open / click on x.com. One real desktop step.";
+  return "Continue the same standing job. Do not re-read memory files unless a specific fact is missing. Prefer computer screenshot / open / click. One real desktop step.";
 }
 
 function lastVisualImage(history) {
@@ -890,6 +1132,14 @@ function toolSummary(name, args = {}, result = "") {
   if (name === "shell") {
     const c = String(args.command || "").trim();
     return c ? `Ran ${c.slice(0, 48)}${c.length > 48 ? "…" : ""}` : "Ran a command";
+  }
+  if (name === "memory") {
+    const a = String(args.action || "read");
+    const p = String(args.path || "").split("/").pop() || "notes";
+    if (a === "list") return "Listed memory files";
+    if (a === "append") return `Noted ${p}`;
+    if (a === "write") return `Updated ${p}`;
+    return `Read ${p}`;
   }
   if (name === "upsert_routine") return args.name ? `Set up “${args.name}”` : "Updated a routine";
   if (name === "list_routines") return "Checked routines";
@@ -1098,11 +1348,42 @@ async function execTool(bot, name, args, emit, settings) {
       "upsert_routine",
       "list_routines",
       "disable_routine",
+      "list_teammates",
+      "message_teammate",
+      "list_tasks",
+      "set_job",
+      "update_task",
+      "ask_user",
+      "create_teammate",
+      "rename_bot",
+      "update_bot",
+      "delete_teammate",
       "web_search",
       "vault_list",
+      "memory",
     ]);
     if (bot.vm?.status !== "running" && !hostTools.has(name)) {
       return { text: "Computer is not running yet." };
+    }
+    if (name === "browser") {
+      const r = await vm.pageAgent(bot, args);
+      emit("tool", { name: "browser", args });
+      const activity = {
+        id: `tl${Date.now()}br`,
+        role: "activity",
+        kind: "tool",
+        name: "browser",
+        action: args.action,
+        summary: args.action === "snapshot" ? "Read the page" : `Browser ${args.action}`,
+        ts: Date.now(),
+      };
+      bot.messages.push(activity);
+      emit("message", activity);
+      return { text: r.text };
+    }
+    if (name === "memory") {
+      const r = await memory.handleMemory(bot, args);
+      return { text: r.text };
     }
     if (name === "vault_list") {
       const rows = await vault.grantedAccounts(bot.id);
@@ -1117,12 +1398,280 @@ async function execTool(bot, name, args, emit, settings) {
       const out = {
         id: `a${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
         role: "assistant",
+        speakerId: bot.id,
+        speakerName: bot.name,
+        speakerRole: bot.teamRole || "",
         content: vault.redactSecrets(String(args.content || ""), secrets),
         ts: Date.now(),
       };
       bot.messages.push(out);
       emit("message", out);
+      if (bot.teamId) {
+        const posted = await teams.appendMessage(bot.teamId, { ...out, teamId: bot.teamId });
+        emit("team-message", { teamId: bot.teamId, ...posted });
+        if (bot.teamRole === "chief") {
+          const team = await teams.getTeam(bot.teamId);
+          const { job, finalized } = teams.maybeFinalizeSummary(team?.job);
+          if (finalized) {
+            await teams.saveTeam({ ...team, job });
+            emit("job", { teamId: bot.teamId, job });
+          }
+        }
+      }
       return { text: "sent" };
+    }
+    if (name === "list_teammates") {
+      if (!bot.teamId) return { text: "You are not on a team." };
+      const team = await teams.getTeam(bot.teamId);
+      const bots = await store.loadBots();
+      const mates = teams.membersOf(team, bots).filter((b) => b.id !== bot.id);
+      return {
+        text: mates.length
+          ? JSON.stringify(
+              mates.map((b) => ({ id: b.id, name: b.name, role: b.teamRole || "member" })),
+              null,
+              2,
+            )
+          : "No teammates.",
+      };
+    }
+    if (name === "message_teammate") {
+      if (!bot.teamId) return { text: "You are not on a team." };
+      const toId = String(args.bot_id || args.id || "");
+      const content = String(args.content || "").trim().slice(0, 240);
+      if (!content) return { text: "empty message" };
+      const team = await teams.getTeam(bot.teamId);
+      const bots = await store.loadBots();
+      const mate = teams.membersOf(team, bots).find((b) => b.id === toId);
+      if (!mate) return { text: "that id is not on your team" };
+      const posted = await teams.appendMessage(bot.teamId, {
+        role: "assistant",
+        speakerId: bot.id,
+        speakerName: bot.name,
+        speakerRole: bot.teamRole || "",
+        toId: mate.id,
+        toName: mate.name,
+        content,
+      });
+      emit("team-message", { teamId: bot.teamId, ...posted });
+      const note = {
+        id: `a${Date.now()}tm`,
+        role: "assistant",
+        speakerId: bot.id,
+        speakerName: bot.name,
+        speakerRole: bot.teamRole || "",
+        toId: mate.id,
+        toName: mate.name,
+        content: `To ${mate.name}: ${content}`,
+        ts: Date.now(),
+      };
+      bot.messages.push(note);
+      emit("message", note);
+      const status = teams.TASK_STATUSES.includes(args.status) ? args.status : null;
+      if (bot.teamRole === "chief") {
+        const assigned = await teams.onWorkerAssigned(bot.teamId, mate.id, {
+          label: args.label,
+          content,
+          status,
+          detail: args.detail,
+          stepId: args.step_id,
+        });
+        if (assigned?.team?.job) emit("job", { teamId: bot.teamId, job: assigned.team.job });
+        for (const b of assigned?.renamed || []) {
+          emit("teammate", {
+            bot: { id: b.id, name: b.name, teamId: b.teamId, teamRole: b.teamRole, color: b.color, harness: b.harness, vm: b.vm, description: b.description },
+          });
+        }
+        if (assigned?.bot?.name && assigned.bot.name !== mate.name) mate.name = assigned.bot.name;
+      } else if (status) {
+        const bumped = await teams.patchTeamStep(bot.teamId, {
+          botId: bot.id,
+          status,
+          detail: args.detail || content,
+        });
+        if (bumped?.job) emit("job", { teamId: bot.teamId, job: bumped.job });
+        for (const b of bumped?.renamed || []) {
+          emit("teammate", {
+            bot: { id: b.id, name: b.name, teamId: b.teamId, teamRole: b.teamRole, color: b.color, harness: b.harness, vm: b.vm, description: b.description },
+          });
+        }
+      }
+      if (typeof dispatchTeammate === "function") {
+        dispatchTeammate(mate.id, content, bot);
+      }
+      return { text: `sent to ${mate.name}` };
+    }
+    if (name === "list_tasks") {
+      if (!bot.teamId) return { text: "You are not on a team." };
+      const team = await teams.getTeam(bot.teamId);
+      if (!team?.job) return { text: "No team job yet. Chief: set_job with title and steps." };
+      return { text: JSON.stringify({ title: team.job.title, ...teams.jobProgress(team.job), steps: team.job.steps }, null, 2) };
+    }
+    if (name === "set_job") {
+      if (!bot.teamId) return { text: "You are not on a team." };
+      const saved = await teams.setTeamJob(bot.teamId, { title: args.title, steps: args.steps });
+      if (!saved?.job) return { text: "could not set job" };
+      emit("job", { teamId: bot.teamId, job: saved.job });
+      for (const b of saved.renamed || []) {
+        emit("teammate", {
+          bot: { id: b.id, name: b.name, teamId: b.teamId, teamRole: b.teamRole, color: b.color, harness: b.harness, vm: b.vm, description: b.description },
+        });
+      }
+      return { text: `Job “${saved.job.title}” · ${saved.job.steps.length} steps` };
+    }
+    if (name === "update_task") {
+      if (!bot.teamId) return { text: "You are not on a team." };
+      const bumped = await teams.patchTeamStep(bot.teamId, {
+        stepId: args.step_id,
+        label: args.label,
+        botId: bot.id,
+        status: args.status,
+        detail: args.detail,
+      });
+      if (!bumped?.step) return { text: "no matching step — list_tasks and use label or step_id" };
+      emit("job", { teamId: bot.teamId, job: bumped.job });
+      for (const b of bumped.renamed || []) {
+        emit("teammate", {
+          bot: { id: b.id, name: b.name, teamId: b.teamId, teamRole: b.teamRole, color: b.color, harness: b.harness, vm: b.vm, description: b.description },
+        });
+      }
+      return { text: `${bumped.step.label}: ${bumped.step.status}${bumped.step.detail ? ` · ${bumped.step.detail}` : ""}` };
+    }
+    if (name === "ask_user") {
+      const choices = Array.isArray(args.choices) && args.choices.length
+        ? args.choices.map((c, i) => ({
+            id: String(c.id || String.fromCharCode(97 + i)),
+            label: String(c.label || "").trim(),
+          })).filter((c) => c.label)
+        : teams.BOT_JOB_CHOICES;
+      const card = {
+        id: `ch${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
+        role: "assistant",
+        kind: "choices",
+        content: String(args.question || "What should we do?"),
+        hint: String(args.hint || ""),
+        choices,
+        allowCustom: args.allow_custom !== false,
+        pending: true,
+        speakerId: bot.id,
+        speakerName: bot.name,
+        ts: Date.now(),
+      };
+      bot.messages.push(card);
+      emit("message", card);
+      return { text: "asked the user; wait for their pick in chat" };
+    }
+    if (name === "create_teammate") {
+      const job = String(args.job || "").trim();
+      const nm = String(args.name || "").trim() || "Worker";
+      if (!job) {
+        const card = {
+          id: `ch${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
+          role: "assistant",
+          kind: "choices",
+          content: "What should this one do?",
+          hint: "Name + job is enough. You can also type your own.",
+          choices: teams.BOT_JOB_CHOICES,
+          allowCustom: true,
+          pending: true,
+          context: { intent: "create-teammate", name: nm },
+          speakerId: bot.id,
+          speakerName: bot.name,
+          ts: Date.now(),
+        };
+        bot.messages.push(card);
+        emit("message", card);
+        return { text: "asked the user what this Bot should do; wait for their pick" };
+      }
+      let team = bot.teamId ? await teams.getTeam(bot.teamId) : null;
+      if (!team) {
+        team = await teams.saveTeam({
+          name: `${bot.name}'s team`,
+          chiefId: bot.id,
+          memberIds: [bot.id],
+          computerId: bot.vm?.computerId || null,
+        });
+        bot.teamId = team.id;
+        bot.teamRole = bot.teamRole || "chief";
+        await store.upsertBot(bot);
+      }
+      const harness = {
+        ...(bot.harness || {}),
+        ...(args.harness || args.provider ? { provider: String(args.harness || args.provider) } : {}),
+        ...(args.model ? { model: String(args.model) } : {}),
+      };
+      const { bot: mate } = await teams.addMember(team, {
+        name: nm,
+        job: args.instructions ? `${job}\n${args.instructions}` : job,
+        role: args.role === "chief" ? "chief" : "worker",
+        harness,
+        color: args.color,
+        instructions: args.instructions || job,
+      });
+      emit("teammate", { bot: { id: mate.id, name: mate.name, teamId: mate.teamId, teamRole: mate.teamRole, color: mate.color, harness: mate.harness, vm: mate.vm } });
+      if (mate.teamRole !== "chief") {
+        const assigned = await teams.onWorkerAssigned(team.id, mate.id, {
+          label: mate.name,
+          content: job,
+          status: "pending",
+        });
+        if (assigned?.team?.job) emit("job", { teamId: team.id, job: assigned.team.job });
+        for (const b of assigned?.renamed || []) {
+          emit("teammate", {
+            bot: { id: b.id, name: b.name, teamId: b.teamId, teamRole: b.teamRole, color: b.color, harness: b.harness, vm: b.vm, description: b.description },
+          });
+        }
+      }
+      const note = {
+        id: `a${Date.now()}nb`,
+        role: "assistant",
+        speakerId: bot.id,
+        speakerName: bot.name,
+        content: `Created ${mate.name} on this desk to ${job}. They’re in the sidebar on this team.`,
+        ts: Date.now(),
+      };
+      bot.messages.push(note);
+      emit("message", note);
+      return { text: `created ${mate.name} (${mate.id}) job=${job}` };
+    }
+    if (name === "rename_bot" || name === "update_bot") {
+      const targetId = String(args.bot_id || bot.id);
+      const team = bot.teamId ? await teams.getTeam(bot.teamId) : null;
+      const bots = await store.loadBots();
+      const target = bots.find((b) => b.id === targetId);
+      if (!target) return { text: "bot not found" };
+      if (target.id !== bot.id && (!team || !team.memberIds?.includes(target.id))) {
+        return { text: "that Bot is not on your team" };
+      }
+      if (args.name) target.name = String(args.name).trim() || target.name;
+      if (typeof args.instructions === "string") target.instructions = args.instructions;
+      if (typeof args.description === "string") target.description = args.description;
+      if (args.color) target.color = String(args.color);
+      if (args.role === "chief" || args.role === "worker") target.teamRole = args.role;
+      if (args.harness || args.provider || args.model) {
+        target.harness = {
+          ...(target.harness || {}),
+          ...(args.harness || args.provider ? { provider: String(args.harness || args.provider) } : {}),
+          ...(args.model ? { model: String(args.model) } : {}),
+        };
+      }
+      await store.upsertBot(target);
+      emit("teammate", { bot: { id: target.id, name: target.name, teamId: target.teamId, teamRole: target.teamRole, color: target.color, harness: target.harness, vm: target.vm } });
+      return { text: `updated ${target.name} (${target.id})` };
+    }
+    if (name === "delete_teammate") {
+      const targetId = String(args.bot_id || "");
+      if (!targetId) return { text: "bot_id required" };
+      if (targetId === bot.id) return { text: "You cannot delete yourself with this tool. Ask the human." };
+      const team = bot.teamId ? await teams.getTeam(bot.teamId) : null;
+      if (!team || !team.memberIds?.includes(targetId)) return { text: "that Bot is not on your team" };
+      const target = await store.getBot(targetId);
+      const label = target?.name || targetId;
+      if (typeof stopBotFn === "function") stopBotFn(targetId);
+      await teams.removeMember(team, targetId);
+      await store.deleteBot(targetId);
+      emit("teammate", { gone: targetId });
+      return { text: `deleted ${label}` };
     }
     if (name === "list_routines") {
       return { text: JSON.stringify(bot.routines || [], null, 2) };
@@ -1483,7 +2032,7 @@ function runGrokBuild(harness, userText, signal, bot, emit, { settings, hidden =
         "-e",
         "HOME=/config",
         "-e",
-        "DISPLAY=:1",
+        `DISPLAY=${bot.vm?.display || ":1"}`,
         "-e",
         "PATH=/usr/local/bin:/usr/bin:/bin",
         "-w",

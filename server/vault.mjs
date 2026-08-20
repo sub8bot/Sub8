@@ -256,6 +256,25 @@ export async function setGrants(botId, accountIds) {
   });
 }
 
+export async function setAccountGrants(accountId, botIds) {
+  return withLock(async () => {
+    const v = await readVault();
+    if (!v.accounts.some((a) => a.id === accountId)) return null;
+    const allow = new Set((botIds || []).map(String).filter(Boolean));
+    for (const botId of Object.keys(v.grants)) {
+      v.grants[botId] = (v.grants[botId] || []).filter((id) => id !== accountId);
+      if (!v.grants[botId].length) delete v.grants[botId];
+    }
+    for (const botId of allow) {
+      const cur = v.grants[botId] || [];
+      if (!cur.includes(accountId)) cur.push(accountId);
+      v.grants[botId] = cur;
+    }
+    await writeVault(v);
+    return snapshotUnlocked(v);
+  });
+}
+
 export async function grantedAccounts(botId) {
   const v = await readVault();
   const ids = new Set(v.grants[botId] || []);

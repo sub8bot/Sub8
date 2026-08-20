@@ -78,6 +78,16 @@ test("legacy daily parser remains an elapsed interval", () => {
   assert.equal(parsed.schedule, undefined);
 });
 
+test("restaurant hours daily is not a standing job", () => {
+  const blob = `Tacos replies:
+Every field holds up. Hours: Closed · Opens 10 AM — consistent with 10 AM–10 PM daily.
+Rating 4.6 ★ · 1,530 reviews on Google Maps.`;
+  assert.equal(routines.looksLikeSchedule(blob), false);
+  assert.equal(routines.looksLikeTeammateTraffic(blob), true);
+  const r = upsertRoutine({ routines: [] }, { instruction: blob });
+  assert.equal(r.routine, null);
+});
+
 test("one-shot chat instructions remain rejected", () => {
   for (const text of ["check again", "try again", "resume"]) {
     assert.equal(routines.parseSchedule(text), null);
@@ -369,6 +379,47 @@ test("legacy morning interval data migrates to a 9 AM calendar schedule", () => 
   assert.deepEqual(legacy.schedule, morning);
   assert.equal(legacy.intervalMs, undefined);
   assert.equal(legacy.nextRunAt, at("2026-01-15T14:00:00Z"));
+});
+
+test("interval and daily triggers can share a routine", () => {
+  const now = at("2026-01-15T12:00:00Z");
+  const bot = { routines: [] };
+  const { routine } = upsertRoutine(bot, {
+    instruction: "Watch the inbox and send a digest.",
+    triggers: [
+      { kind: "interval", intervalMs: 2 * 3600_000, lastRunAt: now },
+      { kind: "daily", times: [{ hour: 8, minute: 0 }] },
+    ],
+    timeZone: NEW_YORK,
+    now,
+  });
+  assert.equal(routine.triggers.length, 2);
+  assert.equal(routines.dueRoutines(bot, now, { timeZone: NEW_YORK }).length, 0);
+  assert.equal(routines.dueRoutines(bot, now + 2 * 3600_000, { timeZone: NEW_YORK }).length, 1);
+});
+
+test("weekdays skip Saturday", () => {
+  const fridayNight = at("2026-01-16T23:00:00Z");
+  const next = routines.nextTriggerOccurrence(
+    { kind: "weekdays", times: [{ hour: 8, minute: 0 }] },
+    fridayNight,
+    NEW_YORK,
+  );
+  assert.equal(next, at("2026-01-19T13:00:00Z"));
+});
+
+test("cron 0 8 * * * is 8 AM local", () => {
+  assert.ok(routines.parseCron("0 8 * * *"));
+  const now = at("2026-01-15T12:00:00Z");
+  const next = routines.nextCronOccurrence(now, "0 8 * * *", NEW_YORK);
+  assert.equal(next, at("2026-01-15T13:00:00Z"));
+});
+
+test("trigger labels match the schedule chips", () => {
+  assert.equal(routines.triggerLabel({ kind: "hourly" }), "Every hour");
+  assert.equal(routines.triggerLabel({ kind: "interval", intervalMs: 2 * 3600_000 }), "Every 2 hours");
+  assert.equal(routines.triggerLabel({ kind: "daily", times: [{ hour: 8, minute: 0 }] }), "Every day at 8:00 AM");
+  assert.equal(routines.triggerLabel({ kind: "cron", cron: "0 8 * * *" }), "0 8 * * *");
 });
 
 console.log("ok routines");

@@ -6,6 +6,7 @@ assert.equal(isLongDocker(["exec", "-u", "root", "box", "bash", "-lc", "apt-get 
 assert.equal(isLongDocker(["ps", "--format", "{{.Names}}"], { timeout: 8_000 }), false);
 assert.equal(isLongDocker(["exec", "box", "bash", "-lc", "command -v google-chrome"], { timeout: 12_000 }), false);
 assert.equal(isLongDocker(["pull", "linuxserver/webtop:ubuntu-xfce"], { timeout: 120_000 }), true);
+assert.equal(isLongDocker(["build", "-t", "sub8-desk:trixie", "."], { timeout: 600_000 }), true);
 
 const q = dockerQueueStats();
 assert.equal(typeof q.short.active, "number");

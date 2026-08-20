@@ -11,6 +11,7 @@ ok("clock names America/New_York", ny.includes("America/New_York"));
 ok("clock has currency USD", /Currency: USD/.test(ny));
 ok("clock has today yyyy-mm-dd", /Today is \d{4}-\d{2}-\d{2}/.test(ny));
 ok("clock has tomorrow", /Tomorrow is /.test(ny));
+ok("clock says report times in user zone", /report times in America\/New_York/.test(ny));
 
 const hide = clockBlock({ userTimeZoneOverride: "America/New_York" }, { hidden: true });
 ok("routine fire is labeled", /scheduled routine fire/.test(hide));
@@ -22,6 +23,12 @@ const tokyo = localeForZone("Asia/Tokyo");
 ok("Tokyo is JPY", tokyo.currency === "JPY");
 
 ok("bad zone falls back", resolveZone({ userTimeZoneOverride: "Not/AZone" }) === "America/New_York");
+
+const { readFileSync } = await import("node:fs");
+const ctxSrc = readFileSync(new URL("../server/context.mjs", import.meta.url), "utf8");
+ok("chief prompt asks for own steps", /piece you keep/.test(ctxSrc));
+ok("chief prompt forbids extra files", /invent extra files/.test(ctxSrc));
+ok("prompt forces USD on Google", /curr=USD/.test(ctxSrc));
 
 const failed = checks.filter((c) => !c.ok);
 if (failed.length) {

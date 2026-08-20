@@ -441,6 +441,11 @@ export function faceList() {
   return Object.entries(EXPRESSIONS).map(([id, exp]) => ({ id, label: exp.label }));
 }
 
+export function randomCreateFace() {
+  const ids = faceList().map((f) => f.id);
+  return ids[Math.floor(Math.random() * ids.length)] || "think";
+}
+
 const HAPPY_FACES = ["happy", "blush", "grin", "beam", "laugh", "joy", "wink", "love", "hearts", "star", "yum"];
 const HAPPY_ANIMS = ["bounce", "cheer", "pulse", "excited"];
 const IDLE_FACES = [
