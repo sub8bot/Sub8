@@ -83,8 +83,10 @@ export function isWeakRoutineInstruction(text) {
 
 export function isRejectedRoutineInstruction(text, { explicitInterval = false } = {}) {
   if (isWeakRoutineInstruction(text)) return true;
+  if (looksLikeTeammateTraffic(text)) return true;
   const allowUnsupportedMorningClock = explicitInterval && morningClockAttached(String(text || "")) && !morningQuestionOrNegation(text);
   if (blockedMorningInstruction(text) && !allowUnsupportedMorningClock) return true;
+  if (cadenceIsBusinessHours(text) && !explicitInterval) return true;
   if (parseSchedule(text) && !looksLikeSchedule(text)) return !allowUnsupportedMorningClock;
   return false;
 }
@@ -112,9 +114,29 @@ export function looksLikeChatLine(text) {
   return false;
 }
 
+export function looksLikeTeammateTraffic(text) {
+  const t = String(text || "").trim();
+  if (/^[^\n]{1,80}\s+replies:\s/i.test(t)) return true;
+  if (/assigned you this\b/i.test(t) && /YOUR screen/i.test(t)) return true;
+  if (/\bteammate report, not a new job\b/i.test(t)) return true;
+  return false;
+}
+
+function cadenceIsBusinessHours(text) {
+  const t = String(text || "");
+  if (/\b(open|opens|closed|hours?)\b[\s\S]{0,80}\b(daily|every day|each day)\b/i.test(t)) return true;
+  if (/\b(daily|every day|each day)\b[\s\S]{0,40}\b(\d{1,2}\s*(?:am|pm)|open|hours?)\b/i.test(t) && !/\b(check|watch|run|remind|job|routine)\b/i.test(t)) {
+    return true;
+  }
+  if (/\d{1,2}\s*(?:am|pm)\s*[–—\-to]+\s*\d{1,2}\s*(?:am|pm)\s+(?:daily|every day)\b/i.test(t)) return true;
+  return false;
+}
+
 export function looksLikeSchedule(text) {
   const t = String(text || "");
   if (isWeakRoutineInstruction(t)) return false;
+  if (looksLikeTeammateTraffic(t)) return false;
+  if (cadenceIsBusinessHours(t)) return false;
   if (/[?]\s*$/.test(t)) return false;
   if (/^\s*(what|why|when|how|who|which|where)\b/i.test(t)) return false;
   if (/\b(?:what|why|when|how|who|which|where)\b.*\b(?:every|each|daily|weekly|hourly)\b/i.test(t)) return false;
@@ -124,6 +146,7 @@ export function looksLikeSchedule(text) {
   if (blockedMorningInstruction(t)) return false;
   if (/\b(update|edit|change|rewrite|which|list|have|having)\b.{0,40}\b(routine|cron|schedule)\b/i.test(t)) return false;
   if (/\b(routine details|cronjob|the routine)\b/i.test(t) && !/\bevery\s+\d+\s*(min|hour)/i.test(t)) return false;
+  if (/\b(google maps|display :\d|\d\.\d\s*★|reviews?)\b/i.test(t) && t.length > 280) return false;
   if (!parseSchedule(t)) return false;
   return /\b(every|hourly|daily|weekly|each day|once a day|each morning|every morning)\b/i.test(t);
 }

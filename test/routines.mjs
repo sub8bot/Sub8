@@ -78,6 +78,16 @@ test("legacy daily parser remains an elapsed interval", () => {
   assert.equal(parsed.schedule, undefined);
 });
 
+test("restaurant hours daily is not a standing job", () => {
+  const blob = `Tacos replies:
+Every field holds up. Hours: Closed · Opens 10 AM — consistent with 10 AM–10 PM daily.
+Rating 4.6 ★ · 1,530 reviews on Google Maps.`;
+  assert.equal(routines.looksLikeSchedule(blob), false);
+  assert.equal(routines.looksLikeTeammateTraffic(blob), true);
+  const r = upsertRoutine({ routines: [] }, { instruction: blob });
+  assert.equal(r.routine, null);
+});
+
 test("one-shot chat instructions remain rejected", () => {
   for (const text of ["check again", "try again", "resume"]) {
     assert.equal(routines.parseSchedule(text), null);

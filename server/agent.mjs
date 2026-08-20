@@ -576,7 +576,12 @@ const AUTO_SHOT = new Set([
 export async function runTurn({ bot, settings, userText, emit, hidden = false, images = [], signal, pullNudges, persistUser = true } = {}) {
   if (!Array.isArray(bot.routines)) bot.routines = [];
   await memory.ensureLayout(bot).catch(() => {});
-  if (!hidden && routines.looksLikeSchedule(userText)) {
+  if (
+    !hidden &&
+    !settings?.__replyTo &&
+    !routines.looksLikeTeammateTraffic(userText) &&
+    routines.looksLikeSchedule(userText)
+  ) {
     const parsed = routines.parseSchedule(userText);
     const { routine, merged, rejected } = routines.upsertRoutine(bot, {
       instruction: userText,
