@@ -51,7 +51,7 @@ const tools = out
   .filter(Boolean)
   .map((l) => JSON.parse(l))
   .find((m) => m.result?.tools)?.result.tools.map((t) => t.name);
-for (const name of ["computer", "browser", "shell", "memory", "vault_list", "vault_fill", "list_routines", "upsert_routine", "disable_routine", "list_teammates", "message_teammate", "ask_user", "create_teammate", "rename_bot", "update_bot", "delete_teammate"]) {
+for (const name of ["computer", "browser", "shell", "memory", "vault_list", "vault_fill", "list_routines", "upsert_routine", "disable_routine", "send_message", "list_teammates", "message_teammate", "list_tasks", "set_job", "update_task", "ask_user", "create_teammate", "rename_bot", "update_bot", "delete_teammate"]) {
   assert.ok(tools?.includes(name), `healed server should expose ${name}, got ${tools}`);
 }
 

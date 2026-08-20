@@ -49,27 +49,9 @@ async function waitUntil(fn, { timeoutMs, every = 4000 } = {}) {
 
 function lastAssistant(bot) {
   const msgs = (bot.messages || []).filter((m) => m.role === "assistant" && m.content);
-  return msgs.length ? msgs[msgs.length - 1].content : "";
-}
-
-function anyReport(bot) {
-  const msgs = (bot.messages || []).filter((m) => m.role === "assistant" && m.content);
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    if (looksLikeReport(msgs[i].content)) return msgs[i].content;
-  }
-  return "";
-}
-
-function looksLikeReport(text) {
-  const t = String(text || "").toLowerCase();
-  if (t.length < 80) return false;
-  if (/assign(ed|ing)? all|running in parallel|i'll compile|i will compile|once all five|holding off the desk|i'll load the tools/i.test(t)) {
-    if (!/\d\.\d/.test(t) && !/★/.test(t)) return false;
-  }
-  const foods = FOODS.filter((f) => t.includes(f.name.toLowerCase()));
-  const rated = (t.match(/\d\.\d/g) || []).length;
-  const failed = /failed|none|couldn't|could not|no result/i.test(t);
-  return foods.length >= 4 && (rated >= 3 || (rated >= 1 && failed));
+  const own = msgs.filter((m) => !m.speakerName || m.speakerName === bot.name);
+  const pick = own.length ? own : msgs;
+  return pick.length ? pick[pick.length - 1].content : "";
 }
 
 function dockerEnv() {
@@ -180,17 +162,28 @@ async function main() {
     console.log(" ", b.name, b.teamRole || "", b.vm?.display || "?", b.vm?.debugPort || "");
   }
 
-  const assigns = FOODS.map((f) => `- ${f.name}: on YOUR screen, open Maps for "${f.query}", reply with the top restaurant name and rating (or "none").`).join("\n");
-  const prompt = `You are Scout, chief of Maps Kitchen. Workers: ${FOODS.map((f) => f.name).join(", ")}.
+  const job = await api(`/api/teams/${created.id}/job`, {
+    method: "PUT",
+    body: {
+      title: "SF food map",
+      steps: [
+        ...FOODS.map((f) => {
+          const w = workers.find((x) => x.name === f.name);
+          return { label: f.name, bot_id: w?.id };
+        }),
+        { label: "Summary", bot_id: chiefId },
+      ],
+    },
+  });
+  console.log("job", job.title, job.steps.map((s) => s.label).join(", "));
 
-This team shares ONE Linux computer (same /config disk) but EACH worker has their own X display and Chrome (one tab). Do not drive a teammate's screen. Do not search Maps yourself.
+  const assigns = FOODS.map((f) => `- ${f.name}: Maps "${f.query}" on YOUR screen. update_task running, then done with detail "<place> <rating>". message_teammate Scout ONE line.`).join("\n");
+  const prompt = `You are Scout, chief of Maps Kitchen. The progress bar already has steps: ${FOODS.map((f) => f.name).join(", ")}, Summary.
 
-Assign ALL five workers now via message_teammate (they can run in parallel):
+Do not search Maps yourself. Assign ALL five via message_teammate (parallel is fine):
 ${assigns}
 
-Tell each worker: use the browser tool (navigate + snapshot + click/fill by ref). computer is only for dialogs. One tab. City is ${CITY}. This is a one-shot. Do not upsert_routine.
-
-When all five have replied, send_message a short list: food → place → rating. Then STOP. Do not re-search Maps. Do not verify a worker's listing unless they reported none. If someone failed after one reminder, mark them failed and finish with what you have.`;
+Watch list_tasks. When the five food steps are done (or blocked), send_message a short 5-line list: food → place → rating. Then update_task label=Summary status=done and STOP. No re-search. No upsert_routine. City is ${CITY}.`;
 
   console.log("dispatching Maps food job to Scout");
   await api(`/api/teams/${created.id}/messages`, {
@@ -198,23 +191,21 @@ When all five have replied, send_message a short list: food → place → rating
     body: { content: prompt, toIds: [chiefId] },
   });
 
-  const t0 = Date.now();
   const done = await waitUntil(
     async () => {
-      const bots = await api("/api/bots");
-      const chief = bots.find((b) => b.id === chiefId);
-      if (!chief) return null;
-      const compiled = anyReport(chief);
-      if (compiled) return { chief, text: compiled, bots };
-      if (chief.busy) return null;
-      const text = lastAssistant(chief);
-      const ids = new Set(created.memberIds);
-      if (bots.some((b) => ids.has(b.id) && b.busy)) return null;
-      const spoken = workers.filter((w) => lastAssistant(bots.find((x) => x.id === w.id)).length > 60).length;
-      if (spoken >= 4 && looksLikeReport(text)) return { chief, text, bots };
-      if (spoken >= 4 && Date.now() - t0 > 3 * 60_000 && text && text.length > 80 && /pizza|tacos|sushi|ramen|burger/i.test(text)) {
-        return { chief, text, bots, weak: true };
+      const teams = await api("/api/teams");
+      const t = teams.find((x) => x.id === created.id);
+      const steps = t?.job?.steps || [];
+      const foods = steps.filter((s) => s.label !== "Summary");
+      const summary = steps.find((s) => s.label === "Summary");
+      const foodsDone = foods.length === FOODS.length && foods.every((s) => s.status === "done" || s.status === "blocked");
+      if (foodsDone && summary?.status === "done") {
+        const bots = await api("/api/bots");
+        const chief = bots.find((x) => x.id === chiefId);
+        return { job: t.job, chief, bots, text: lastAssistant(chief) };
       }
+      const line = steps.map((s) => `${s.label}:${s.status}${s.detail ? `(${s.detail.slice(0, 24)})` : ""}`).join(" ");
+      console.log("job", line || "(none)");
       return null;
     },
     { timeoutMs: DEADLINE_MS, every: 5000 },
@@ -223,21 +214,15 @@ When all five have replied, send_message a short list: food → place → rating
   if (!done) {
     const bots = await api("/api/bots");
     const chief = bots.find((b) => b.id === chiefId);
-    console.error("TIMEOUT. last Scout message:\n", lastAssistant(chief));
-    for (const w of workers) {
-      const b = bots.find((x) => x.id === w.id);
-      console.error(w.name, lastAssistant(b).slice(0, 240));
-    }
+    const teams = await api("/api/teams");
+    console.error("TIMEOUT. job", JSON.stringify(teams.find((t) => t.id === created.id)?.job || {}, null, 2));
+    console.error("last Scout:\n", lastAssistant(chief));
     process.exit(1);
   }
 
-  console.log(done.weak ? "WEAK report (desk went quiet)" : "OK report");
-  console.log(done.text);
-  for (const w of workers) {
-    const b = done.bots.find((x) => x.id === w.id);
-    const t = lastAssistant(b);
-    if (t) console.log(`--- ${w.name} ---\n${t.slice(0, 400)}\n`);
-  }
+  console.log("OK job complete");
+  console.log(done.job.steps.map((s) => `${s.label} ${s.status} ${s.detail || ""}`).join("\n"));
+  if (done.text) console.log("\nScout:\n", done.text.slice(0, 800));
 }
 
 main().catch((err) => {

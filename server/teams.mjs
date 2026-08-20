@@ -190,3 +190,107 @@ export function mentionedMemberIds(text, members) {
   }
   return [...new Set(ids)];
 }
+
+export const TASK_STATUSES = ["pending", "running", "done", "blocked", "looping"];
+
+export function newJob({ title, steps } = {}) {
+  const now = Date.now();
+  return {
+    id: randomUUID(),
+    title: String(title || "Job").slice(0, 80),
+    createdAt: now,
+    updatedAt: now,
+    steps: (Array.isArray(steps) ? steps : []).map((s) => normalizeStep(s, now)),
+  };
+}
+
+function normalizeStep(s = {}, now = Date.now()) {
+  const status = TASK_STATUSES.includes(s.status) ? s.status : "pending";
+  return {
+    id: s.id || randomUUID(),
+    label: String(s.label || "step").slice(0, 48),
+    botId: s.botId || s.bot_id || null,
+    status,
+    detail: String(s.detail || "").slice(0, 160),
+    loopCount: Number(s.loopCount) > 0 ? Number(s.loopCount) : 0,
+    updatedAt: s.updatedAt || now,
+  };
+}
+
+export function jobProgress(job) {
+  const steps = job?.steps || [];
+  const done = steps.filter((s) => s.status === "done").length;
+  const blocked = steps.filter((s) => s.status === "blocked").length;
+  const looping = steps.filter((s) => s.status === "looping").length;
+  return {
+    total: steps.length,
+    done,
+    blocked,
+    looping,
+    pending: steps.filter((s) => s.status === "pending").length,
+    running: steps.filter((s) => s.status === "running").length,
+    complete: steps.length > 0 && done + blocked === steps.length,
+  };
+}
+
+export function findStep(job, { stepId, label, botId } = {}) {
+  const steps = job?.steps || [];
+  if (stepId) return steps.find((s) => s.id === stepId) || null;
+  if (botId) {
+    const hits = steps.filter((s) => s.botId === botId);
+    if (hits.length === 1) return hits[0];
+    if (label) return hits.find((s) => s.label.toLowerCase() === String(label).toLowerCase()) || hits[0] || null;
+  }
+  if (label) {
+    const want = String(label).toLowerCase();
+    return steps.find((s) => s.label.toLowerCase() === want) || steps.find((s) => s.label.toLowerCase().includes(want)) || null;
+  }
+  return null;
+}
+
+export function applyStepUpdate(job, patch = {}) {
+  if (!job?.steps) return { job, step: null };
+  const step = findStep(job, patch);
+  if (!step) return { job, step: null };
+  const next = TASK_STATUSES.includes(patch.status) ? patch.status : step.status;
+  if (next === "running" && (step.status === "running" || step.status === "looping")) {
+    step.loopCount = (step.loopCount || 0) + 1;
+    step.status = step.loopCount >= 2 ? "looping" : "running";
+  } else {
+    step.status = next;
+    if (next === "done" || next === "pending") step.loopCount = 0;
+  }
+  if (patch.detail != null) step.detail = String(patch.detail).slice(0, 160);
+  step.updatedAt = Date.now();
+  job.updatedAt = Date.now();
+  return { job, step };
+}
+
+/** When every non-summary step is done/blocked, mark Summary done. No text matching. */
+export function maybeFinalizeSummary(job) {
+  if (!job?.steps?.length) return { job, finalized: false };
+  const summary = job.steps.find((s) => String(s.label || "").toLowerCase() === "summary");
+  if (!summary || summary.status === "done") return { job, finalized: false };
+  const others = job.steps.filter((s) => s !== summary);
+  if (!others.length || !others.every((s) => s.status === "done" || s.status === "blocked")) {
+    return { job, finalized: false };
+  }
+  applyStepUpdate(job, { stepId: summary.id, status: "done", detail: summary.detail || "compiled" });
+  return { job, finalized: true };
+}
+
+export async function setTeamJob(teamId, spec) {
+  const team = await getTeam(teamId);
+  if (!team) return null;
+  const job = newJob(spec);
+  return saveTeam({ ...team, job });
+}
+
+export async function patchTeamStep(teamId, patch) {
+  const team = await getTeam(teamId);
+  if (!team?.job) return null;
+  const { job, step } = applyStepUpdate(team.job, patch);
+  if (!step) return { team, job, step: null };
+  const saved = await saveTeam({ ...team, job });
+  return { team: saved, job: saved.job, step };
+}

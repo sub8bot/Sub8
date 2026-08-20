@@ -788,11 +788,21 @@ function namedBubble(m, assistant) {
   const avatar = aid
     ? `<span class="msg-ava msg-ava-ink" style="background:${escapeHtml(color)}">${escapeHtml(letter)}</span>`
     : `<span class="msg-ava msg-ava-empty"></span>`;
+  const raw = String(m.content || "").trim();
+  const first = (raw.split("\n").find((l) => l.trim()) || "").replace(/^To [^:]+:\s*/i, "");
+  const fromWorker = m.speakerRole === "worker" || Boolean(m.toId);
+  const openBtn = aid && aid !== state.selected
+    ? `<button type="button" class="mate-open" data-act="team-tab" data-id="${escapeHtml(aid)}">Open ${name}</button>`
+    : "";
+  const body = fromWorker
+    ? `<div class="bubble mate-card">${escapeHtml(first.slice(0, 140))}${first.length > 140 ? "…" : ""}
+        ${openBtn}</div>`
+    : `<div class="bubble">${assistant ? formatChatText(m.content) : escapeHtml(m.content)}${openBtn}</div>`;
   return `<div class="msg ${assistant ? "asst" : "mate"}" data-mid="${escapeHtml(m.id || "")}">
     ${avatar}
     <div class="msg-col">
       <div class="msg-meta">${name}${role}</div>
-      <div class="bubble">${assistant ? formatChatText(m.content) : escapeHtml(m.content)}</div>
+      ${body}
     </div>
   </div>`;
 }
@@ -1688,6 +1698,50 @@ function setTeamBriefHidden(teamId, hidden) {
   }
 }
 
+function paintJobBar(bot) {
+  const host = $("#job-progress");
+  if (!host) return;
+  const team = teamOf(bot);
+  const job = team?.job;
+  const steps = job?.steps || [];
+  if (!job || !steps.length) {
+    host.hidden = true;
+    host.innerHTML = "";
+    return;
+  }
+  const done = steps.filter((s) => s.status === "done").length;
+  const blocked = steps.filter((s) => s.status === "blocked").length;
+  const looping = steps.filter((s) => s.status === "looping" || (s.loopCount || 0) >= 2).length;
+  const resolved = done + blocked;
+  const pct = Math.round((resolved / steps.length) * 100);
+  const bits = [`${done}/${steps.length}`];
+  if (blocked) bits.push(`${blocked} blocked`);
+  if (looping) bits.push(`${looping} looping`);
+  host.hidden = false;
+  host.innerHTML = `
+    <div class="job-progress-head">
+      <span class="job-progress-title">${escapeHtml(job.title || "Job")}</span>
+      <span class="job-progress-count">${bits.join(" · ")}</span>
+    </div>
+    <div class="job-progress-track${looping ? " is-looping" : ""}"><i style="width:${pct}%"></i></div>
+    <div class="job-progress-steps">
+      ${steps
+        .map((s) => {
+          const who = state.bots.find((b) => b.id === s.botId);
+          const st = s.status || "pending";
+          const loop = st === "looping" || (s.loopCount || 0) >= 2;
+          const label = escapeHtml(s.label || who?.name || "step");
+          const extra = s.detail ? escapeHtml(String(s.detail).slice(0, 48)) : st;
+          return `<button type="button" class="job-step is-${escapeHtml(st)}${loop ? " is-looping" : ""}" data-act="team-tab" data-id="${escapeHtml(s.botId || "")}" title="${escapeHtml(s.detail || st)}">
+            <span class="job-step-dot"></span>
+            <span class="job-step-name">${label}</span>
+            <span class="job-step-meta">${loop ? `looping${s.loopCount ? ` ×${s.loopCount}` : ""}` : extra}</span>
+          </button>`;
+        })
+        .join("")}
+    </div>`;
+}
+
 function paintTeamBrief(bot) {
   const host = $("#team-brief");
   if (!host) return;
@@ -1743,8 +1797,8 @@ function paintChatPane(bot) {
     chat.innerHTML = `<div class="empty">Create a Bot to get started.</div>`;
     return;
   }
-  if (chat.dataset.ui !== "chrome-tabs-4" || !$("#thread") || !$("#send textarea[name=q]") || !$(".composer-mic") || !$(".chat-head") || !$("#composer-mentions") || !$("#team-brief") || !$("#chat [data-act=stop-turn]")) {
-    chat.dataset.ui = "chrome-tabs-4";
+  if (chat.dataset.ui !== "chrome-tabs-5" || !$("#thread") || !$("#send textarea[name=q]") || !$(".composer-mic") || !$(".chat-head") || !$("#composer-mentions") || !$("#team-brief") || !$("#job-progress") || !$("#chat [data-act=stop-turn]")) {
+    chat.dataset.ui = "chrome-tabs-5";
     chat.innerHTML = `
       <div class="chat-head">
         <div class="chat-head-row">
@@ -1755,6 +1809,7 @@ function paintChatPane(bot) {
       </div>
       <div class="thread" id="thread"></div>
       <div class="composer">
+        <div class="job-progress" id="job-progress" hidden></div>
         <div class="composer-mentions" id="composer-mentions"></div>
         <form class="input" id="send">
           <button type="button" class="composer-plus" data-act="plus-menu" title="Add">${iconPlus()}</button>
@@ -1812,6 +1867,7 @@ function paintChatPane(bot) {
     if (halt) halt.hidden = !bot.busy;
   }
   paintTeamTabs(bot);
+  paintJobBar(bot);
   paintChat(bot);
   const mentions = $("#composer-mentions");
   if (mentions) {
@@ -6241,6 +6297,21 @@ function listen() {
         /* keep */
       }
       render();
+    });
+    es.addEventListener("job", (e) => {
+      try {
+        const { teamId, job } = JSON.parse(e.data);
+        if (!teamId || !job) return;
+        const rows = Array.isArray(state.teams) ? state.teams : [];
+        const i = rows.findIndex((t) => t.id === teamId);
+        if (i >= 0) rows[i] = { ...rows[i], job };
+        else rows.push({ id: teamId, job });
+        state.teams = rows;
+      } catch {
+        /* keep */
+      }
+      const selected = state.bots.find((b) => b.id === state.selected);
+      if (selected) paintJobBar(selected);
     });
     es.addEventListener("computers", () => {
       loadComputers();

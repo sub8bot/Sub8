@@ -800,6 +800,28 @@ app.post("/api/teams/:id/messages", async (req, res) => {
   res.json({ ok: true, message: posted, toIds: deliver });
 });
 
+app.put("/api/teams/:id/job", async (req, res) => {
+  const team = await teams.getTeam(req.params.id);
+  if (!team) return res.status(404).json({ error: "not found" });
+  const saved = await teams.setTeamJob(team.id, {
+    title: req.body?.title,
+    steps: req.body?.steps,
+  });
+  broadcast("job", { teamId: team.id, job: saved.job });
+  broadcast("teams", await publicTeams());
+  res.json(saved.job);
+});
+
+app.patch("/api/teams/:id/job", async (req, res) => {
+  const team = await teams.getTeam(req.params.id);
+  if (!team) return res.status(404).json({ error: "not found" });
+  const bumped = await teams.patchTeamStep(team.id, req.body || {});
+  if (!bumped?.step) return res.status(404).json({ error: "step not found" });
+  broadcast("job", { teamId: team.id, job: bumped.job });
+  broadcast("teams", await publicTeams());
+  res.json(bumped.job);
+});
+
 app.patch("/api/teams/:id", async (req, res) => {
   const team = await teams.getTeam(req.params.id);
   if (!team) return res.status(404).json({ error: "not found" });
@@ -1169,14 +1191,26 @@ function enqueueTurn(botId, fn) {
   return next;
 }
 
+const notifiedThisTurn = new Set();
+function notifyKey(fromId, toId) {
+  return `${fromId || ""}->${toId || ""}`;
+}
+
 function dispatchToTeammate(toId, content, from) {
+  const text = String(content || "").trim();
+  if (!toId || !text) return;
+  if (from?.teamRole !== "chief") {
+    notifiedThisTurn.add(notifyKey(from?.id, toId));
+    deliverTeammateReply(toId, from, text.slice(0, 240));
+    return;
+  }
   const who = from?.name || "a teammate";
   const role = from?.teamRole || "teammate";
   const prompt = `${who} (${role}) assigned you this. Use YOUR screen (your DISPLAY / Chrome), not theirs.
 
-${content}
+${text}
 
-Web pages: browser snapshot, then click/fill by ref, or browser navigate. Pixels and dialogs: computer. One tab on your display. Then send_message the result so ${who} and the human both see it.`;
+Start with update_task status=running. When finished: update_task status=done (or blocked) with a one-line detail, then message_teammate ${who} ONE short line. Do not write a long report to the chief. Long notes stay in your own chat. Web: browser navigate/snapshot/click. Then stop.`;
   enqueueTurn(toId, async () => {
     const live = await store.getBot(toId);
     if (!live) return;
@@ -1198,18 +1232,42 @@ Web pages: browser snapshot, then click/fill by ref, or browser navigate. Pixels
   });
 }
 
+async function shortStepPing(bot) {
+  if (!bot?.teamId) return "done";
+  const team = await teams.getTeam(bot.teamId);
+  const step = team?.job ? teams.findStep(team.job, { botId: bot.id }) : null;
+  if (step?.detail) return `${step.status}: ${step.detail}`;
+  if (step) return `${step.label} ${step.status}`;
+  return "done";
+}
+
+async function finalizeChiefJob(bot) {
+  if (bot?.teamRole !== "chief" || !bot.teamId) return null;
+  const team = await teams.getTeam(bot.teamId);
+  const { job, finalized } = teams.maybeFinalizeSummary(team?.job);
+  if (!finalized) return null;
+  const saved = await teams.saveTeam({ ...team, job });
+  broadcast("job", { teamId: team.id, job: saved.job });
+  broadcast("teams", await publicTeams());
+  return saved.job;
+}
+
 async function deliverTeammateReply(toId, from, content) {
   if (!toId || !content || toId === from?.id) return;
-  const text = `${from?.name || "Teammate"} replies:
-${content}
+  const short = String(content || "").trim().slice(0, 240);
+  const to = await store.getBot(toId);
+  const text = to?.teamRole === "chief"
+    ? `${from?.name || "Teammate"} replies: ${short}
 
-This is a teammate report, not a new job and not a routine. Do not upsert_routine. Do not open Chrome or re-search unless the report is empty or failed. If you were waiting on several reports, add this one. When you have them all, send_message one short list and stop.`;
+This is a teammate report, not a new job and not a routine. Do not upsert_routine. Do not open Chrome or re-search unless they said failed/blocked. list_tasks. When every worker step is done or blocked, send_message one short compiled list, update_task Summary done, and stop.`
+    : `${from?.name || "Teammate"}: ${short}`;
   const incoming = {
     id: `a${Date.now()}rp`,
     role: "assistant",
     speakerId: from?.id,
     speakerName: from?.name,
     speakerRole: from?.teamRole || "",
+    toId,
     content: text,
     ts: Date.now(),
   };
@@ -1219,6 +1277,8 @@ This is a teammate report, not a new job and not a routine. Do not upsert_routin
   });
   if (!liveBot) return;
   broadcast("message", { botId: toId, ...incoming });
+  const team = from?.teamId ? await teams.getTeam(from.teamId) : (to?.teamId ? await teams.getTeam(to.teamId) : null);
+  if (to?.teamRole === "chief" && team?.job && teams.jobProgress(team.job).complete) return;
   const live = inflightTurns.get(toId);
   if (live) live.nudges.push(text);
   else enqueueTurn(toId, () => runUserTurn(toId, text, false, [], { persistUser: false }));
@@ -1697,10 +1757,16 @@ async function runUserTurn(botId, text, hidden, images = [], opts = {}) {
         if (event === "routine" || event === "message") return store.upsertBot(bot);
       },
     });
-    if (opts.replyTo && !settings.__didReply) {
+    if (opts.replyTo && !settings.__didReply && !notifiedThisTurn.has(notifyKey(botId, opts.replyTo))) {
+      const latest = await store.getBot(botId);
+      const ping = await shortStepPing(latest);
+      await deliverTeammateReply(opts.replyTo, latest, ping);
+    }
+    notifiedThisTurn.delete(notifyKey(botId, opts.replyTo));
+    {
       const latest = await store.getBot(botId);
       const last = [...(latest?.messages || [])].reverse().find((m) => m.role === "assistant" && String(m.content || "").trim() && m.kind !== "choices");
-      if (last) await deliverTeammateReply(opts.replyTo, latest, last.content);
+      if (last && latest?.teamRole === "chief") await finalizeChiefJob(latest);
     }
     // Don't let a long turn resurrect routines/vm state deleted while it ran.
     const latest = await store.getBot(botId);
