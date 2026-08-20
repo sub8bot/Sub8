@@ -17,6 +17,7 @@
   --bubble-user-link: #4f46e5;
   --composer: #f4f4f5;
   --composer-focus: #ececee;
+  --input: #f4f4f5;
   --menu: #fff;
   --chip: #fff;
   --seg: #f3f4f6;
@@ -43,6 +44,7 @@ html[data-theme="dark"] {
   --bubble-user-link: #c7d2fe;
   --composer: #1c1c1f;
   --composer-focus: #27272a;
+  --input: #27272a;
   --menu: #1c1c1f;
   --chip: #1c1c1f;
   --seg: #18181b;
@@ -66,6 +68,7 @@ html[data-theme="dark"] {
     --bubble-user-link: #c7d2fe;
     --composer: #1c1c1f;
     --composer-focus: #27272a;
+    --input: #27272a;
     --menu: #1c1c1f;
     --chip: #1c1c1f;
     --seg: #18181b;
@@ -1405,7 +1408,7 @@ h2.md-h { font-size: 16px; }
 }
 .bot-editor .field {
   border: 1px solid var(--ring);
-  background: var(--pill);
+  background: var(--input);
   border-radius: 12px;
   padding: 12px 14px;
   margin: 6px 0 14px;
@@ -1506,7 +1509,7 @@ h2.md-h { font-size: 16px; }
 }
 .modal.create-modal #confirm-create {
   flex-shrink: 0;
-  margin-top: 10px;
+  margin-top: 16px;
 }
 @media (max-width: 640px) {
   .modal.create-modal .create-top {
@@ -2368,7 +2371,9 @@ select.vault-kv-in { appearance: none; cursor: pointer; }
   background: #fff; border-radius: 50%; transition: left .15s;
 }
 .toggle.on i { left: 20px; }
-.field { width: 100%; border: 0; background: var(--pill); color: var(--text); border-radius: 10px; padding: 10px 12px; font: inherit; }
+.field { width: 100%; border: 1px solid var(--ring); background: var(--input); color: var(--text); border-radius: 10px; padding: 10px 12px; font: inherit; }
+.field:focus { outline: none; border-color: color-mix(in srgb, var(--accent) 45%, var(--ring)); background: var(--bg); }
+.field-static { display: flex; align-items: center; min-height: 42px; color: var(--text); }
 textarea.field { min-height: 88px; resize: vertical; }
 .banner {
   background: #e8f0ff; color: #1d4ed8; border-radius: 10px; padding: 10px 12px; font-size: 13px;
