@@ -1103,6 +1103,7 @@ async function ensureApps(name, onLog) {
       if (auth.ok) onLog("Grok session copied onto the computer.");
       await installOctoClick(name);
       await installChromeDesk(name);
+      await installDeskDoctor(name);
       await installOctoVault(name);
       await installAgentsMd(name, "");
       await mkdirpInContainer(name, "/config/agent-data/workflows").catch(() => {});
@@ -1158,7 +1159,38 @@ export async function installChromeDesk(container) {
   if (one.ok) parts.push("install -m 755 /tmp/chrome-one-tab.py /usr/local/bin/chrome-one-tab");
   if (!parts.length) return;
   parts.push("ln -sfn /usr/local/bin/chrome-desktop /usr/local/bin/chrome");
+  parts.push("ln -sfn /usr/local/bin/chrome-desktop /usr/local/bin/box-chrome");
   await docker(["exec", "-u", "root", container, "bash", "-lc", parts.join(" && ")]);
+}
+
+export async function installDeskDoctor(container) {
+  const doctorHost = path.resolve(fileRoot, "vm", "desk-doctor.sh");
+  const debugHost = path.resolve(fileRoot, "vm", "reference", "debugging.md");
+  const uiHost = path.resolve(fileRoot, "vm", "reference", "app-ui.md");
+  const doc = await docker(["cp", doctorHost, `${container}:/tmp/desk-doctor.sh`]);
+  await docker(["exec", "-u", "root", container, "bash", "-lc", "mkdir -p /config/reference && chown abc:abc /config/reference"]);
+  if (doc.ok) {
+    await docker([
+      "exec",
+      "-u",
+      "root",
+      container,
+      "bash",
+      "-lc",
+      "install -m 755 /tmp/desk-doctor.sh /usr/local/bin/desk-doctor && ln -sfn /usr/local/bin/desk-doctor /usr/local/bin/box-doctor",
+    ]);
+  }
+  await docker(["cp", debugHost, `${container}:/config/reference/debugging.md`]).catch(() => {});
+  await docker(["cp", uiHost, `${container}:/config/reference/app-ui.md`]).catch(() => {});
+  await docker([
+    "exec",
+    "-u",
+    "root",
+    container,
+    "bash",
+    "-lc",
+    "chown -R abc:abc /config/reference",
+  ]);
 }
 
 export async function writeFileToContainer(container, dest, text) {

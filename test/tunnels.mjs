@@ -23,9 +23,10 @@ function test(name, fn) {
 
 async function pickBot() {
   const bots = await store.loadBots();
-  const live = bots.find((b) => b.vm?.status === "running" && b.vm?.container);
-  if (!live) throw new Error("No running bot computer. Start Sub8 first.");
-  return live;
+  const live = bots.filter((b) => b.vm?.status === "running" && b.vm?.container);
+  if (!live.length) throw new Error("No running bot computer. Start Sub8 first.");
+  // Prefer the slim shared desk. Do not pause or pkill Chrome on AikaBotto's webtop.
+  return live.find((b) => /aika/i.test(b.name || "") === false) || live[0];
 }
 
 test("isolation rejects a bot with no container", () => {
@@ -48,6 +49,19 @@ test("shell blocks host paths", () => {
 
 test("shell allows VM commands", () => {
   assert.doesNotThrow(() => assertVmShell("ls /config"));
+  assert.doesNotThrow(() => assertVmShell("desk-doctor"));
+  assert.doesNotThrow(() => assertVmShell("rg TODO /config/workspace"));
+});
+
+test("shell blocks GUI automation and Chrome debug attach", () => {
+  assert.throws(() => assertVmShell("xdotool click 1"), /computer tool|click or type/);
+  assert.throws(() => assertVmShell("octo-click 100 200"), /computer tool|click or type/);
+  assert.throws(() => assertVmShell("curl -s http://127.0.0.1:9222/json/new?https://example.com"), /debug port|open/);
+  assert.throws(() => assertVmShell("python3 -m playwright"), /debug port|open/);
+});
+
+test("shell blocks cookie dumps", () => {
+  assert.throws(() => assertVmShell("cat /config/chrome-desk/Default/Cookies"), /cookies or secrets/);
 });
 
 test("check again is not a 15-minute routine", () => {

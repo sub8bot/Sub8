@@ -11,6 +11,7 @@ ok("clock names America/New_York", ny.includes("America/New_York"));
 ok("clock has currency USD", /Currency: USD/.test(ny));
 ok("clock has today yyyy-mm-dd", /Today is \d{4}-\d{2}-\d{2}/.test(ny));
 ok("clock has tomorrow", /Tomorrow is /.test(ny));
+ok("clock says report times in user zone", /report times in America\/New_York/.test(ny));
 
 const hide = clockBlock({ userTimeZoneOverride: "America/New_York" }, { hidden: true });
 ok("routine fire is labeled", /scheduled routine fire/.test(hide));

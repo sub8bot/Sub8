@@ -67,7 +67,8 @@ const TOOLS = [
   },
   {
     name: "shell",
-    description: "Run a command inside the bot Linux desktop (home /config). Not the host Mac.",
+    description:
+      "Run a command inside the bot Linux desktop (home /config). Files, apt, desk-doctor. Not the host Mac. Do not click, type, or drive Chrome from the shell.",
     inputSchema: {
       type: "object",
       properties: { command: { type: "string" } },
