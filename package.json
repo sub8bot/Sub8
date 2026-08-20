@@ -12,7 +12,7 @@
     "start": "node server/index.mjs",
     "app": "zsh start.sh",
     "electron": "zsh scripts/macos-dev-app.sh >/dev/null && open -n -a .app/Sub8.app --args \"$PWD\"",
-    "test": "node test/vault.mjs && node test/context.mjs && node test/tunnels.mjs && node test/update.mjs && node test/vm-status.mjs && node test/login-intent.mjs && node test/host-cli-auth.mjs && node test/docker-queue.mjs && node test/qwen-pack.mjs && node test/hermes-config.mjs && node test/mcp-config.mjs && node test/mcp-heal.mjs && node test/harness-models.mjs && node test/codex-catalog.mjs && node test/grok-stream.mjs && node test/routines.mjs && node test/teams.mjs && node test/memory.mjs && node test/box-input.mjs",
+    "test": "node test/vault.mjs && node test/context.mjs && node test/tunnels.mjs && node test/update.mjs && node test/vm-status.mjs && node test/login-intent.mjs && node test/host-cli-auth.mjs && node test/docker-queue.mjs && node test/qwen-pack.mjs && node test/hermes-config.mjs && node test/mcp-config.mjs && node test/mcp-heal.mjs && node test/harness-models.mjs && node test/codex-catalog.mjs && node test/grok-stream.mjs && node test/routines.mjs && node test/teams.mjs && node test/memory.mjs && node test/box-input.mjs && node test/desk.mjs",
     "icons": "python3 scripts/make-icons.py && iconutil -c icns build/icon.iconset -o build/icon.icns",
     "logo": "node scripts/render-logo.mjs",
     "dist": "electron-builder --mac --win --linux",
