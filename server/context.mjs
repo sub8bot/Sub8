@@ -152,24 +152,22 @@ export async function teamDeskPrompt(bot) {
   if (!team) return "";
   const mates = teams.membersOf(team, await store.loadBots());
   const role = bot.teamRole === "chief" ? "chief" : "worker";
-  const mine = `Sub8:${String(bot.id).slice(0, 8)}`;
   const rows = mates
     .map((b) => {
-      const win = `Sub8:${String(b.id).slice(0, 8)}`;
       const you = b.id === bot.id ? " ← you" : "";
-      return `- ${b.teamRole || "member"} ${b.name} (${b.id}, Chrome “${win}”)${you}`;
+      return `- ${b.teamRole || "member"} ${b.name} (${b.id})${you}`;
     })
     .join("\n");
   const job =
     role === "chief"
       ? "Assign work with message_teammate. Do not hog the mouse if a worker is mid-task."
-      : "Take assignments from the chief. Report back with message_teammate. Drive only your Chrome window.";
+      : "Take assignments from the chief. Report back with message_teammate. Use computer action open to change the current tab — never a second tab or window.";
   return [
     "",
     "## Team — one shared computer",
     `You are the ${role} on team “${team.name}”. You are NOT on your own machine.`,
-    "The whole team shares ONE Linux computer: same disk, same `/config` home, same desktop, same Chrome install. Files you write are immediately visible to teammates. `/config/workspace/` is the shared working folder. Each Bot also has a private notes folder: `/config/agent-data/agents/<id>/`.",
-    "Do not reboot, reset, or reinstall as if this computer were yours alone. Do not close a teammate's Chrome window. Yours is titled “" + mine + "”.",
+    "The whole team shares ONE Linux computer: same disk, same `/config` home, same desktop, same Chrome. There is one Chrome window and one tab. computer action `open` replaces that tab. Never open another tab, window, or profile. Never Ctrl+T, never --new-tab, never a second google-chrome process.",
+    "Do not reboot, reset, or reinstall as if this computer were yours alone.",
     "One pair of hands on the GUI at a time. Coordinate with message_teammate before taking the desk.",
     job,
     "Teammates:",

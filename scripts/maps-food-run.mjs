@@ -61,7 +61,7 @@ function looksLikeReport(text) {
   return foods.length >= 4 && resultish;
 }
 
-async function dockerUpdateMem(container, mem = "4g") {
+async function dockerUpdateMem(container, mem = "2g") {
   const { spawn } = await import("node:child_process");
   const env = { ...process.env };
   if (!env.DOCKER_HOST) {
@@ -122,7 +122,7 @@ async function main() {
   if (!ready) throw new Error("desk did not become ready");
   const container = ready.vm?.container;
   console.log("desk ready", container, ready.vm?.status);
-  if (container) await dockerUpdateMem(container, "4g");
+  if (container) await dockerUpdateMem(container, process.env.LOCALBOT_MEMORY || "2g");
 
   const assigns = FOODS.map((f) => `- ${f.name}: search Maps for "${f.query}", reply with the top restaurant name and rating (or "none").`).join("\n");
   const prompt = `You are Scout, chief of Maps Kitchen. Workers: ${FOODS.map((f) => f.name).join(", ")}.

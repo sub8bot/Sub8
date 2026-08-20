@@ -1102,6 +1102,7 @@ async function ensureApps(name, onLog) {
       const auth = await pushHostGrokAuth(name);
       if (auth.ok) onLog("Grok session copied onto the computer.");
       await installOctoClick(name);
+      await installChromeDesk(name);
       await installOctoVault(name);
       await installAgentsMd(name, "");
       await mkdirpInContainer(name, "/config/agent-data/workflows").catch(() => {});
@@ -1145,6 +1146,19 @@ export async function installOctoClick(container) {
     "install -m 755 /tmp/octo-click.sh /usr/local/bin/octo-click" +
       (input.ok ? " && install -m 755 /tmp/box-input.py /usr/local/bin/box-input" : ""),
   ]);
+}
+
+export async function installChromeDesk(container) {
+  const deskHost = path.resolve(fileRoot, "vm", "chrome-desktop.sh");
+  const oneTabHost = path.resolve(fileRoot, "vm", "chrome-one-tab.py");
+  const desk = await docker(["cp", deskHost, `${container}:/tmp/chrome-desktop.sh`]);
+  const one = await docker(["cp", oneTabHost, `${container}:/tmp/chrome-one-tab.py`]);
+  const parts = [];
+  if (desk.ok) parts.push("install -m 755 /tmp/chrome-desktop.sh /usr/local/bin/chrome-desktop");
+  if (one.ok) parts.push("install -m 755 /tmp/chrome-one-tab.py /usr/local/bin/chrome-one-tab");
+  if (!parts.length) return;
+  parts.push("ln -sfn /usr/local/bin/chrome-desktop /usr/local/bin/chrome");
+  await docker(["exec", "-u", "root", container, "bash", "-lc", parts.join(" && ")]);
 }
 
 export async function writeFileToContainer(container, dest, text) {
@@ -1723,7 +1737,6 @@ export async function claimChromeWindow(bot) {
   const name = bot?.vm?.container;
   if (!name) return null;
   const tag = windowTag(bot);
-  const id8 = String(bot.id).slice(0, 8);
   const r = await docker([
     "exec",
     "-u",
@@ -1735,15 +1748,24 @@ export async function claimChromeWindow(bot) {
 tagwin() { w="$1"; [ -n "$w" ] || return 1; wmctrl -i -r "$w" -N "$TAG" 2>/dev/null || true; xdotool set_window --name "$TAG" "$w" 2>/dev/null || true; echo WINDOW=$w; }
 HIT=$(wmctrl -l 2>/dev/null | awk -v t="$TAG" 'index($0,t){print $1; exit}')
 if [ -n "$HIT" ]; then tagwin "$HIT"; exit 0; fi
-# One computer → one Chrome. Reuse any existing window instead of a new profile.
+# One computer → one Chrome, one tab. Never --new-window / --new-tab.
 EXIST=$(wmctrl -lx 2>/dev/null | awk '/[Cc]hrom/{print $1; exit}')
 if [ -n "$EXIST" ]; then tagwin "$EXIST"; exit 0; fi
+if curl -sf --max-time 1 http://127.0.0.1:9222/json/version >/dev/null; then
+  for i in 1 2 3 4 5 6; do
+    EXIST=$(wmctrl -lx 2>/dev/null | awk '/[Cc]hrom/{print $1; exit}')
+    if [ -n "$EXIST" ]; then tagwin "$EXIST"; exit 0; fi
+    sleep 0.25
+  done
+  echo WINDOW=
+  exit 0
+fi
 BEFORE=$(wmctrl -lx 2>/dev/null | awk '/[Cc]hrom/{print $1}')
 if [ -x /usr/local/bin/chrome-desktop ]; then
-  /usr/local/bin/chrome-desktop about:blank >/tmp/chrome-desk.log 2>&1 &
+  /usr/local/bin/chrome-desktop >/tmp/chrome-desk.log 2>&1 &
 else
   CH=$(command -v google-chrome-stable || command -v google-chrome || command -v chromium || true)
-  $CH --no-sandbox --disable-dev-shm-usage --disable-gpu --renderer-process-limit=4 --no-first-run --new-window about:blank >/tmp/chrome-desk.log 2>&1 &
+  $CH --no-sandbox --disable-dev-shm-usage --disable-gpu --renderer-process-limit=2 --user-data-dir=/config/chrome-desk --remote-debugging-port=9222 --remote-debugging-address=127.0.0.1 --no-first-run --start-maximized --window-position=0,0 --window-size=1024,768 >/tmp/chrome-desk.log 2>&1 &
 fi
 for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
   sleep 0.35
@@ -1811,9 +1833,10 @@ export async function openChrome(bot, url = "") {
     bot.vm.container,
     "bash",
     "-lc",
-    `${displayEnv(bot)}; nohup /usr/local/bin/chrome-desktop ${arg} >/tmp/chrome-desktop.log 2>&1 & echo OPENED:$!; sleep 0.8`,
+    `${displayEnv(bot)}; if curl -sf --max-time 1 http://127.0.0.1:9222/json/version >/dev/null; then /usr/local/bin/chrome-desktop ${arg}; echo NAV=1; else nohup /usr/local/bin/chrome-desktop ${arg} >/tmp/chrome-desktop.log 2>&1 & echo OPENED:$!; sleep 1.2; fi`,
   ]);
   if (!r.ok) throw new Error(`open Chrome failed: ${r.out.slice(-400)}`);
+  if (/NAV=1/.test(r.out || "")) return { text: dest ? `opened ${dest}` : "opened Chrome", out: r.out };
   if (bot.teamId && dest) {
     await key(bot, "ctrl+l");
     await wait(150);

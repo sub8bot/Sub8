@@ -28,7 +28,7 @@ If a control is cut off, scroll until it is fully visible, then click.
 ## Don't act like a robot
 - Do not spam the same post, click, or story. If you already published it, stop.
 - Do not hammer a failing action. Two tries, then a different path.
-- Keep Chrome tidy: one window, few tabs. Close leftovers before composing.
+- Keep Chrome tidy: one window, one tab. Open replaces that tab. Never Ctrl+T.
 - Dismiss overlays (sandbox bar, "Make Chrome faster", password dialogs) before clicking the page.
 - The human can Take control. If you are told they have the mouse, do not click or type.
 
@@ -37,7 +37,7 @@ Never type a password. Never put a password in chat or notes. Click the field, t
 If there is no vault grant: ask them to add one, ask them to Take control, or register a new account if they asked you to. For 2FA or captcha, Take control.
 
 ## Chrome
-Open with the computer action `open` (text = the URL). That starts Chrome and keeps it running. Do not use a long-running shell to launch the browser — it gets killed when the command ends.
+One window, one tab. Open with the computer action `open` (text = the URL). That shows the URL in the existing tab (or starts Chrome if it is not running). Never open a second tab or window. Never Ctrl+T. Never `google-chrome` / `--new-tab` in the shell.
 Wait until painted, then screenshot.
 Local files: computer `open` with `file:///…` — never type `file://` into the omnibox.
 Address bar is for a named URL. Buttons and menus are clicked.
