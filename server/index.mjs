@@ -837,11 +837,25 @@ app.get("/api/bots/:id", async (req, res) => {
   const bot = await store.getBot(req.params.id);
   if (!bot) return res.status(404).json({ error: "not found" });
   const all = bot.messages || [];
-  if (req.query.before) {
-    const i = all.findIndex((m) => m.id === req.query.before);
+  if (req.query.before || req.query.beforeTs) {
+    let i = req.query.before ? all.findIndex((m) => String(m.id) === String(req.query.before)) : -1;
+    if (i < 0 && req.query.beforeTs) {
+      const ts = Number(req.query.beforeTs);
+      if (Number.isFinite(ts)) {
+        i = all.findIndex((m) => (m.ts || 0) >= ts);
+        if (i < 0) i = all.length;
+      }
+    }
     const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 80));
-    const start = i > 0 ? Math.max(0, i - limit) : 0;
-    const slice = i > 0 ? all.slice(start, i) : [];
+    if (i <= 0) {
+      return res.json({
+        id: bot.id,
+        messages: [],
+        hasMore: false,
+      });
+    }
+    const start = Math.max(0, i - limit);
+    const slice = all.slice(start, i);
     return res.json({
       id: bot.id,
       messages: slice.map((m) => ({ ...m, imagePath: undefined, imageB64: undefined })),
