@@ -4,12 +4,15 @@ set -euo pipefail
 export DISPLAY="${DISPLAY:-:1}"
 export HOME="${HOME:-/config}"
 export XAUTHORITY="${XAUTHORITY:-/config/.Xauthority}"
+export LANG="${LANG:-C.UTF-8}"
+export LANGUAGE="${LANGUAGE:-en_US:en}"
+export LC_ALL="${LC_ALL:-C.UTF-8}"
 CHROME="$(command -v google-chrome-stable || command -v google-chrome || command -v chromium || command -v chromium-browser || true)"
 if [ -z "$CHROME" ]; then
   echo "Chrome is not installed" >&2
   exit 1
 fi
-URL="${1:-https://www.google.com/}"
+URL="${1:-https://www.google.com/?hl=en}"
 N="${DISPLAY#:}"
 N="${N%%.*}"
 if [ -z "$N" ] || [ "$N" = "1" ]; then
