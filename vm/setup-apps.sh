@@ -31,8 +31,8 @@ command -v google-chrome >/dev/null 2>&1 || command -v google-chrome-stable >/de
 # RustDesk and Grok Build CLI are not installed by default.
 
 if [ "$need_chrome" = 1 ]; then
-  apt_retry wget ca-certificates curl desktop-file-utils xdg-utils fonts-liberation libnss3 libatk-bridge2.0-0 libgtk-3-0 libxss1 libasound2t64 libasound2 \
-    || apt_retry wget ca-certificates curl desktop-file-utils xdg-utils fonts-liberation
+  apt_retry wget ca-certificates curl desktop-file-utils xdg-utils fonts-liberation fonts-noto-core libnss3 libatk-bridge2.0-0 libgtk-3-0 libxss1 libasound2t64 libasound2 \
+    || apt_retry wget ca-certificates curl desktop-file-utils xdg-utils fonts-liberation fonts-noto-core
 fi
 
 arch=$(dpkg --print-architecture 2>/dev/null || uname -m)

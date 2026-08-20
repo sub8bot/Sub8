@@ -7,6 +7,8 @@ export XAUTHORITY="${XAUTHORITY:-/config/.Xauthority}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-abc}"
 export XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-XFCE}"
 export LANG="${LANG:-C.UTF-8}"
+export LANGUAGE="${LANGUAGE:-en_US:en}"
+export LC_ALL="${LC_ALL:-C.UTF-8}"
 
 mkdir -p "$HOME" "$HOME/Desktop" "$HOME/Downloads" "$HOME/agent-data" "$HOME/workspace" \
   /tmp/.X11-unix "$XDG_RUNTIME_DIR"

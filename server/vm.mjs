@@ -1149,6 +1149,7 @@ async function ensureApps(name, onLog) {
       const auth = await pushHostGrokAuth(name);
       if (auth.ok) onLog("Grok session copied onto the computer.");
       await installOctoClick(name);
+      await installDeskFonts(name);
       await installChromeDesk(name);
       await installDeskDoctor(name);
       await installOctoVault(name);
@@ -1177,6 +1178,22 @@ export async function installOctoVault(container) {
     "-lc",
     "install -m 755 /tmp/octo-vault.sh /usr/local/bin/octo-vault && ln -sfn /usr/local/bin/octo-vault /usr/bin/octo-vault",
   ]);
+}
+
+export async function installDeskFonts(container) {
+  if (!container) return;
+  await docker(
+    [
+      "exec",
+      "-u",
+      "root",
+      container,
+      "bash",
+      "-lc",
+      "if fc-list :lang=th 2>/dev/null | grep -q .; then echo FONTS_OK; exit 0; fi; apt-get update -qq && apt-get install -y --no-install-recommends fonts-noto-core && fc-cache -f && echo FONTS_OK",
+    ],
+    { timeout: 180_000 },
+  );
 }
 
 export async function installOctoClick(container) {
