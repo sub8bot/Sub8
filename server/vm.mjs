@@ -52,8 +52,75 @@ export function dockerPlatform() {
   return process.arch === "arm64" ? "linux/arm64" : "linux/amd64";
 }
 
-const IMAGE = process.env.LOCALBOT_IMAGE || "linuxserver/webtop:ubuntu-xfce";
+export const SLIM_IMAGE = "sub8-desk:trixie";
+export const FALLBACK_IMAGE = "linuxserver/webtop:ubuntu-xfce";
 const START_PORT = 13100;
+
+let resolvedImage = process.env.LOCALBOT_IMAGE || SLIM_IMAGE;
+
+export function deskImage() {
+  return resolvedImage;
+}
+
+export function deskMemory() {
+  return process.env.LOCALBOT_MEMORY || "2g";
+}
+
+export function deskShm() {
+  return process.env.LOCALBOT_SHM || "256m";
+}
+
+export function parseDockerProgress(text) {
+  const s = String(text || "");
+  const pcts = [...s.matchAll(/(\d+)\s*%/g)].map((m) => Number(m[1])).filter((n) => n >= 0 && n <= 100);
+  if (pcts.length) return Math.max(...pcts);
+  return null;
+}
+
+export function deskCreateArgs({ name, volume, port, image } = {}) {
+  const img = image || resolvedImage || SLIM_IMAGE;
+  const mem = deskMemory();
+  const shm = deskShm();
+  return [
+    "run",
+    "-d",
+    "--platform",
+    dockerPlatform(),
+    "--name",
+    name,
+    "--hostname",
+    "computer",
+    "--restart",
+    "unless-stopped",
+    "--dns",
+    "8.8.8.8",
+    "--dns",
+    "1.1.1.1",
+    "--shm-size",
+    shm,
+    "--memory",
+    mem,
+    "--memory-swap",
+    mem,
+    "-e",
+    "PUID=1000",
+    "-e",
+    "PGID=1000",
+    "-e",
+    "TZ=America/New_York",
+    "-e",
+    "TITLE=My Computer",
+    "-e",
+    "SELKIES_MANUAL_WIDTH=1024",
+    "-e",
+    "SELKIES_MANUAL_HEIGHT=768",
+    "-v",
+    `${volume}:/config`,
+    "-p",
+    `${port}:3000`,
+    img,
+  ];
+}
 
 function dockerEnv() {
   const env = { ...process.env };
@@ -97,7 +164,7 @@ const longDocker = makeLimiter(1);
 
 export function isLongDocker(args = [], opts = {}) {
   const joined = (Array.isArray(args) ? args : []).join(" ");
-  if (/setup-apps|apt-get|\bapt\b/i.test(joined)) return true;
+  if (/setup-apps|apt-get|\bapt\b|^build\b|^pull\b/i.test(joined)) return true;
   return (opts.timeout || 0) >= 60_000;
 }
 
@@ -106,7 +173,7 @@ export function dockerQueueStats() {
 }
 
 function run(cmd, args, opts = {}) {
-  const { timeout, track, env, ...spawnOpts } = opts;
+  const { timeout, track, env, onData, ...spawnOpts } = opts;
   return new Promise((resolve) => {
     const child = spawn(cmd, args, {
       env: env || dockerEnv(),
@@ -134,8 +201,17 @@ function run(cmd, args, opts = {}) {
           finish({ ok: false, out: "timeout", code: 124 });
         }, timeout)
       : null;
-    child.stdout?.on("data", (d) => (out += d.toString()));
-    child.stderr?.on("data", (d) => (out += d.toString()));
+    const take = (d) => {
+      const s = d.toString();
+      out += s;
+      try {
+        onData?.(s);
+      } catch {
+        /* ignore */
+      }
+    };
+    child.stdout?.on("data", take);
+    child.stderr?.on("data", take);
     child.on("error", (err) => finish({ ok: false, out: String(err), code: 1 }));
     child.on("close", (code) => finish({ ok: code === 0, out: out.trim(), code }));
   });
@@ -552,12 +628,74 @@ export async function allocatePort() {
   return run;
 }
 
+function progressLogger(onLog, prefix) {
+  let last = 0;
+  let lastPct = -1;
+  return (chunk) => {
+    const pct = parseDockerProgress(chunk);
+    const now = Date.now();
+    if (pct != null && pct !== lastPct && (now - last > 800 || pct === 100)) {
+      last = now;
+      lastPct = pct;
+      onLog(`${prefix} ${pct}% — one-time download of the computer image.`);
+      return;
+    }
+    if (now - last < 2000) return;
+    const line = String(chunk)
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l && !/^#\d+\s+\w+\s+sha256/.test(l))
+      .pop();
+    if (!line) return;
+    last = now;
+    onLog(`${prefix} ${line.slice(0, 140)}`);
+  };
+}
+
 export async function ensureImage(onLog = () => {}) {
-  const inspect = await docker(["image", "inspect", IMAGE], { timeout: 8_000 });
-  if (inspect.ok) return;
-  onLog(`Pulling desktop image ${IMAGE}…`);
-  const pull = await docker(["pull", "--platform", dockerPlatform(), IMAGE], { timeout: 600_000 });
+  const override = String(process.env.LOCALBOT_IMAGE || "").trim();
+  if (override) {
+    const inspect = await docker(["image", "inspect", override], { timeout: 8_000 });
+    if (inspect.ok) {
+      resolvedImage = override;
+      return;
+    }
+    onLog(`Pulling desktop image ${override}… This is a one-time download.`);
+    const pull = await docker(["pull", "--platform", dockerPlatform(), override], {
+      timeout: 600_000,
+      onData: progressLogger(onLog, "Downloading"),
+    });
+    if (!pull.ok) throw new Error(`docker pull failed: ${pull.out.slice(-800)}`);
+    resolvedImage = override;
+    return;
+  }
+
+  const haveSlim = await docker(["image", "inspect", SLIM_IMAGE], { timeout: 8_000 });
+  if (haveSlim.ok) {
+    resolvedImage = SLIM_IMAGE;
+    return;
+  }
+
+  const ctx = path.resolve(fileRoot, "vm");
+  onLog("Building the computer image (Debian 13, one-time). Later computers reuse it.");
+  const built = await docker(["build", "--platform", dockerPlatform(), "-t", SLIM_IMAGE, "-f", "Dockerfile", "."], {
+    timeout: 600_000,
+    cwd: ctx,
+    onData: progressLogger(onLog, "Building"),
+  });
+  if (built.ok) {
+    resolvedImage = SLIM_IMAGE;
+    onLog("Computer image is ready.");
+    return;
+  }
+
+  onLog(`Slim image build failed, falling back to ${FALLBACK_IMAGE}…`);
+  const pull = await docker(["pull", "--platform", dockerPlatform(), FALLBACK_IMAGE], {
+    timeout: 600_000,
+    onData: progressLogger(onLog, "Downloading"),
+  });
   if (!pull.ok) throw new Error(`docker pull failed: ${pull.out.slice(-800)}`);
+  resolvedImage = FALLBACK_IMAGE;
 }
 
 export function configVolume(bot) {
@@ -715,40 +853,7 @@ export async function startVm(bot, onLog = () => {}, shouldAbort = async () => f
   await docker(["volume", "create", volume], { timeout: 20_000 });
   const port = await allocatePort();
   onLog(`Starting computer on port ${port}…`);
-  const runr = await docker([
-    "run",
-    "-d",
-    "--platform",
-    dockerPlatform(),
-    "--name",
-    name,
-    "--hostname",
-    "computer",
-    "--restart",
-    "unless-stopped",
-    "--dns",
-    "8.8.8.8",
-    "--dns",
-    "1.1.1.1",
-    "--shm-size=1g",
-    "-e",
-    "PUID=1000",
-    "-e",
-    "PGID=1000",
-    "-e",
-    "TZ=America/New_York",
-    "-e",
-    "TITLE=My Computer",
-    "-e",
-    "SELKIES_MANUAL_WIDTH=1024",
-    "-e",
-    "SELKIES_MANUAL_HEIGHT=768",
-    "-v",
-    `${volume}:/config`,
-    "-p",
-    `${port}:3000`,
-    IMAGE,
-  ], { timeout: 60_000 });
+  const runr = await docker(deskCreateArgs({ name, volume, port, image: resolvedImage }), { timeout: 60_000 });
   if (!runr.ok) throw new Error(`docker run failed: ${runr.out.slice(-800)}`);
   await abortIfGone();
 
@@ -798,10 +903,16 @@ export async function chromeReady(name) {
   if (hit && now - hit.at < CHROME_TTL_MS) return Boolean(hit.value);
   const inflight = (async () => {
     const r = await docker(
-      ["exec", name, "bash", "-lc", "command -v google-chrome-stable || command -v google-chrome"],
+      [
+        "exec",
+        name,
+        "bash",
+        "-lc",
+        "command -v google-chrome-stable || command -v google-chrome || command -v chromium || command -v chromium-browser",
+      ],
       { timeout: 12_000 },
     );
-    const ok = r.ok && /chrome/i.test(r.out || "");
+    const ok = r.ok && /chrome|chromium/i.test(r.out || "");
     chromeCache.set(name, { at: Date.now(), value: ok, inflight: null });
     if (ok) setSetup(name, SETUP_TOTAL, "Ready", true);
     return ok;
@@ -938,10 +1049,19 @@ function withSetupLock(fn) {
 }
 
 async function ensureTools(name, onLog) {
-  const check = await docker(["exec", "-u", "root", name, "bash", "-lc", "command -v xdotool && command -v scrot"], {
-    timeout: 20_000,
-  });
-  if (check.ok) return;
+  const check = await docker(
+    [
+      "exec",
+      "-u",
+      "root",
+      name,
+      "bash",
+      "-lc",
+      "ok=1; command -v box-input >/dev/null || command -v xdotool >/dev/null || ok=0; command -v ffmpeg >/dev/null || command -v scrot >/dev/null || ok=0; command -v xclip >/dev/null || ok=0; echo TOOLS_$ok",
+    ],
+    { timeout: 20_000 },
+  );
+  if (check.ok && /TOOLS_1/.test(check.out || "")) return;
   onLog("Installing computer-use tools…");
   const inst = await withSetupLock(() =>
     docker(
