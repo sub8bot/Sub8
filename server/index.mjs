@@ -789,6 +789,22 @@ app.post("/api/teams/:id/messages", async (req, res) => {
   const tagged = teams.mentionedMemberIds(posted.content, members);
   const targets = [...new Set([...asked, ...tagged])].filter((id) => members.some((b) => b.id === id));
   const deliver = targets.length ? targets : [team.chiefId || team.memberIds?.[0]].filter(Boolean);
+  if (!team.job) {
+    const workers = members.filter((m) => m.teamRole !== "chief");
+    if (workers.length) {
+      const seeded = await teams.setTeamJob(team.id, {
+        title: teams.jobTitleFromText(text, team.name),
+        steps: [
+          ...workers.map((w) => ({ label: w.name, bot_id: w.id })),
+          { label: "Summary", bot_id: team.chiefId },
+        ],
+      });
+      if (seeded?.job) {
+        broadcast("job", { teamId: team.id, job: seeded.job });
+        broadcast("teams", await publicTeams());
+      }
+    }
+  }
   for (const id of deliver) {
     await store.patchBot(id, (b) => {
       b.messages = b.messages || [];

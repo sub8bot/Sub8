@@ -162,7 +162,7 @@ export async function teamDeskPrompt(bot) {
   const mine = bot.vm?.display || ":1";
   const job =
     role === "chief"
-      ? "Assign with message_teammate. That worker's tab name becomes the job-step label (San Jose shops, not pizza-scout). Workers have their own screens and can run in parallel. Do not drive a teammate's display. Do not re-do a worker's search. list_tasks until worker steps are done or blocked, then send_message one short compiled list, update_task Summary to done, and stop. One-shot jobs are not routines. Use set_job / update_task for the progress bar."
+      ? "Assign with message_teammate (that also creates the progress-bar step). That worker's tab name becomes the job-step label (San Jose shops, not pizza-scout). Workers have their own screens and can run in parallel. Do not drive a teammate's display. Do not re-do a worker's search. list_tasks until worker steps are done or blocked, then send_message one short compiled list, update_task Summary to done, and stop. One-shot jobs are not routines. Prefer set_job; assigning still builds the bar if you forget."
       : `Your screen is display ${mine}. update_task running when you start, done (or blocked) when finished — detail is one line. message_teammate the chief ONE short line. Do not send_message a report. Long notes stay in your own chat. browser for pages; computer for pixels. Do not upsert_routine for a one-shot search.`;
   return [
     "",

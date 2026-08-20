@@ -1609,6 +1609,19 @@ async function execTool(bot, name, args, emit, settings) {
         instructions: args.instructions || job,
       });
       emit("teammate", { bot: { id: mate.id, name: mate.name, teamId: mate.teamId, teamRole: mate.teamRole, color: mate.color, harness: mate.harness, vm: mate.vm } });
+      if (mate.teamRole !== "chief") {
+        const assigned = await teams.onWorkerAssigned(team.id, mate.id, {
+          label: mate.name,
+          content: job,
+          status: "pending",
+        });
+        if (assigned?.team?.job) emit("job", { teamId: team.id, job: assigned.team.job });
+        for (const b of assigned?.renamed || []) {
+          emit("teammate", {
+            bot: { id: b.id, name: b.name, teamId: b.teamId, teamRole: b.teamRole, color: b.color, harness: b.harness, vm: b.vm, description: b.description },
+          });
+        }
+      }
       const note = {
         id: `a${Date.now()}nb`,
         role: "assistant",
