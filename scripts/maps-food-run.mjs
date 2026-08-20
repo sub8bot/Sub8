@@ -54,9 +54,11 @@ function lastAssistant(bot) {
 
 function looksLikeReport(text) {
   const t = String(text || "").toLowerCase();
-  if (t.length < 40) return false;
+  if (t.length < 80) return false;
+  if (/assignments are out|holding off the desk|i'll load the tools/i.test(t) && !/rating|\d\.\d/.test(t)) return false;
   const foods = FOODS.filter((f) => t.includes(f.name.toLowerCase()));
-  return foods.length >= 3;
+  const resultish = /rating|★|stars|\d\.\d|failed|none|→|->/.test(t);
+  return foods.length >= 4 && resultish;
 }
 
 async function dockerUpdateMem(container, mem = "4g") {
@@ -122,15 +124,15 @@ async function main() {
   console.log("desk ready", container, ready.vm?.status);
   if (container) await dockerUpdateMem(container, "4g");
 
-  const assigns = FOODS.map((f) => `- ${f.name}: open Google Maps in THEIR Chrome window (title Sub8:<their id>), search "${f.query}", reply with the top restaurant name and rating (or "none" if unreadable).`).join("\n");
+  const assigns = FOODS.map((f) => `- ${f.name}: search Maps for "${f.query}", reply with the top restaurant name and rating (or "none").`).join("\n");
   const prompt = `You are Scout, chief of Maps Kitchen. Workers: ${FOODS.map((f) => f.name).join(", ")}.
 
-This is ONE shared computer. Each worker must use THEIR own Chrome window (title starts with Sub8: plus their id prefix). Do not search Maps yourself. Do not reuse one tab for everyone.
+This team shares ONE computer and ONE Chrome. Never open a second Chrome or extra windows. Close extra tabs before each search.
 
-Assign via message_teammate:
+Assign via message_teammate ONE worker at a time. Wait for that worker's reply before assigning the next:
 ${assigns}
 
-City is ${CITY}. When all five have replied, send_message a short list: food → place → rating. If someone failed after one reminder, include them as failed and finish with what you have.`;
+City is ${CITY}. Do not search Maps yourself. When all five have replied, send_message a short list: food → place → rating. If someone failed after one reminder, mark them failed and finish with what you have.`;
 
   console.log("dispatching Maps food job to Scout");
   await api(`/api/teams/${created.id}/messages`, {
