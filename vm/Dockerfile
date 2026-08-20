@@ -45,9 +45,10 @@ RUN useradd -u 1000 -m -d /config -s /bin/bash abc \
     && chown -R abc:abc /config \
     && (dbus-uuidgen >/etc/machine-id || true)
 
-COPY desk-init.sh chrome-desktop.sh box-input.py octo-click.sh octo-vault.sh /usr/local/src/sub8/
+COPY desk-init.sh chrome-desktop.sh chrome-one-tab.py box-input.py octo-click.sh octo-vault.sh /usr/local/src/sub8/
 RUN install -m 755 /usr/local/src/sub8/desk-init.sh /usr/local/bin/desk-init \
     && install -m 755 /usr/local/src/sub8/chrome-desktop.sh /usr/local/bin/chrome-desktop \
+    && install -m 755 /usr/local/src/sub8/chrome-one-tab.py /usr/local/bin/chrome-one-tab \
     && ln -sfn /usr/local/bin/chrome-desktop /usr/local/bin/chrome \
     && ln -sfn /usr/local/bin/chrome-desktop /usr/local/bin/box-chrome \
     && install -m 755 /usr/local/src/sub8/box-input.py /usr/local/bin/box-input \

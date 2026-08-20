@@ -18,4 +18,18 @@ assert.match(src, /box-input click/, "octo-click prefers XTEST");
 assert.match(src, /xdotool/, "xdotool remains a fallback");
 
 execFileSync("python3", ["-m", "py_compile", py], { stdio: "pipe" });
+
+const oneTab = path.join(root, "vm", "chrome-one-tab.py");
+execFileSync("python3", ["-m", "py_compile", oneTab], { stdio: "pipe" });
+const oneSrc = fs.readFileSync(oneTab, "utf8");
+assert.match(oneSrc, /Page\.navigate/);
+assert.doesNotMatch(oneSrc, /--new-tab/);
+const desk = fs.readFileSync(path.join(root, "vm", "chrome-desktop.sh"), "utf8");
+assert.doesNotMatch(desk, /--new-tab/);
+assert.match(desk, /chrome-one-tab/);
+assert.match(desk, /remote-debugging-port=9222/);
+assert.match(desk, /user-data-dir=\/config\/chrome-desk/);
+const start = fs.readFileSync(path.join(root, "start.sh"), "utf8");
+assert.match(start, /ram=8/);
+assert.doesNotMatch(start, /memory 24/);
 console.log("ok box-input");
