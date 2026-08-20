@@ -3745,7 +3745,7 @@ function settingsHtml() {
               }</div></div></div>
               <div class="row"><div><div class="lbl">Reload computer</div><div class="sub">Start it if it’s down, or attach the existing one. Does not wipe files.</div></div>
                 <button class="pill primary" data-act="reload-vm">Reload</button></div>
-              <div class="row"><div><div class="lbl">Open in browser</div><div class="sub">Full desktop in a tab (Selkies). You can drive it there.</div></div>
+              <div class="row"><div><div class="lbl">Open in browser</div><div class="sub">Full desktop in a browser tab (the same stream as this window). You can drive it there.</div></div>
                 <button class="pill" data-act="open-vm-browser">Open</button></div>
               <div class="row"><div><div class="lbl">Reset computer</div><div class="sub">Destroys this Bot’s Linux desktop and makes a new empty one.</div></div>
                 <button class="danger" data-act="reset-vm">Reset</button></div>

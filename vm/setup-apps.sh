@@ -112,6 +112,7 @@ exec "$CHROME" "${flags[@]}" "$URL"
 EOF
 chmod +x /usr/local/bin/chrome-desktop
 ln -sfn /usr/local/bin/chrome-desktop /usr/local/bin/chrome
+ln -sfn /usr/local/bin/chrome-desktop /usr/local/bin/box-chrome
 
 cat > /config/Desktop/Google\ Chrome.desktop << 'EOF'
 [Desktop Entry]

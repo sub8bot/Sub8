@@ -519,8 +519,8 @@ To see the screen: computer action=screenshot
 To click: computer action=left_click with x,y from the screenshot.
 To type: computer action=type. To press a key: computer action=key.
 To sign in: vault_fill. Never print a password.
-Talk to teammates with message_teammate (pass their bot id from list_teammates). If you need a yes/no, a pick, or confirmation from the user, call ask_user and wait — do not guess.
-Do not drive Chrome with xdotool, wmctrl, octo-click, or host Bash. Call the sub8 tools. Do not announce they are missing unless a tool call returned an error.
+Talk to teammates with message_teammate (pass their bot id from list_teammates). One Chrome, one tab, one worker at a time. If you need a yes/no, a pick, or confirmation from the user, call ask_user and wait — do not guess.
+Do not drive Chrome with xdotool, wmctrl, octo-click, CDP, or host Bash. Call the sub8 tools. If the desktop is sick, shell desk-doctor. Do not announce tools are missing unless a tool call returned an error.
 `;
   const prompt = `${userText}
 

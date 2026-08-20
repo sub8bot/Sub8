@@ -1144,7 +1144,12 @@ function enqueueTurn(botId, fn) {
 
 function dispatchToTeammate(toId, content, from) {
   const who = from?.name || "a teammate";
-  const prompt = `${who} says:\n${content}\n\nReply with send_message (or your normal answer). ${who} will receive it.`;
+  const role = from?.teamRole || "teammate";
+  const prompt = `${who} (${role}) assigned you this on our shared computer:
+
+${content}
+
+You have the desk. One Chrome, one tab — computer action open (or chrome-desktop) replaces the current tab. Never a second tab or window. Do the work, then send_message the result so ${who} and the human both see it.`;
   enqueueTurn(toId, async () => {
     const live = await store.getBot(toId);
     if (!live) return;

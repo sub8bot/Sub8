@@ -96,6 +96,7 @@ export function clockBlock(settings = {}, { hidden = false } = {}) {
     `${when} (${zone}).`,
     `Today is ${today}. Tomorrow is ${tomorrow} (${tomorrowYmd}).`,
     `Locale: ${region}, ${locale}. Currency: ${currency}. Use this for prices, dates, and sites unless the user says otherwise.`,
+    `The computer itself may be on UTC. Always report times in ${zone} and name the zone.`,
   ];
   if (hidden) {
     lines.push(
@@ -160,19 +161,20 @@ export async function teamDeskPrompt(bot) {
     .join("\n");
   const job =
     role === "chief"
-      ? "Assign work with message_teammate. Do not hog the mouse if a worker is mid-task."
-      : "Take assignments from the chief. Report back with message_teammate. Use computer action open to change the current tab — never a second tab or window.";
+      ? "Assign with message_teammate, ONE worker at a time. Wait for that worker's reply before the next. Do not hog the mouse if a worker is mid-task. Do not search Maps (or drive Chrome) yourself unless every worker failed."
+      : "You just received the desk. Do the assigned work on the shared Chrome (computer action open replaces the tab). Then send_message the result so the chief and the human both see it. Do not open a second tab. Do not keep the mouse after you have the answer.";
   return [
     "",
     "## Team — one shared computer",
     `You are the ${role} on team “${team.name}”. You are NOT on your own machine.`,
-    "The whole team shares ONE Linux computer: same disk, same `/config` home, same desktop, same Chrome. There is one Chrome window and one tab. computer action `open` replaces that tab. Never open another tab, window, or profile. Never Ctrl+T, never --new-tab, never a second google-chrome process.",
-    "Do not reboot, reset, or reinstall as if this computer were yours alone.",
-    "One pair of hands on the GUI at a time. Coordinate with message_teammate before taking the desk.",
+    "All of you share ONE Linux computer: same disk, same `/config`, same display `:1`, same Chrome. This is not a private VM and not a private X display. Files you write are visible to teammates immediately. `/config/workspace/` is shared. Private notes: `/config/agent-data/agents/<id>/`.",
+    "There is one Chrome window and one tab. computer action `open` (or chrome-desktop) replaces that tab. Never another tab, window, or profile. Never Ctrl+T, never --new-tab, never a second google-chrome process.",
+    "Do not reboot, reset, or reinstall as if this computer were yours alone. Do not attach to port 9222.",
+    "One pair of hands on the GUI at a time. If someone else is mid-click, wait. Coordinate with message_teammate before taking the desk.",
     job,
     "Teammates:",
     rows || "- (none)",
-    "User messages in this thread are the team chat. send_message is visible to the human and the team. If you need the user to confirm, pick an option, or grant access, call ask_user and wait.",
+    "User messages in this thread are the team chat. send_message is visible to the human and the team. message_teammate starts the other Bot's turn. If you need the user to confirm, pick an option, or grant access, call ask_user and wait.",
     "",
   ].join("\n");
 }

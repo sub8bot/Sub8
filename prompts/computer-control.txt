@@ -3,9 +3,9 @@
 Routines say *what* to do. This file says *how*. It applies to every Bot, every site.
 
 ## Space
-Display is 1024×768. Screenshots are the FULL desktop (XFCE panel ~27px, then window chrome, then the page). Origin is top-left of that image. x,y are 1:1 pixels on the LAST screenshot. Never invent coordinates. Never click without a current screenshot. The pointer is drawn on the image — if you missed, you will see it.
+Display is 1024×768. Screenshots are the FULL desktop. Origin is top-left of that image. x,y are 1:1 pixels on the LAST screenshot. Never invent coordinates. Never click without a current screenshot. The pointer is drawn on the image — if you missed, you will see it.
 
-Do not mix page `clientX/clientY` with desktop pixels. Desktop y is larger (panel + toolbar, often +110–120px).
+Chrome is usually maximized. Its toolbar is part of the screenshot (often ~80–120px). Do not mix page `clientX/clientY` with desktop pixels. Some computers have a thin panel; many do not. Click what you see, not a remembered offset.
 
 ## Drive it
 1. Screenshot.
@@ -16,6 +16,8 @@ Do not mix page `clientX/clientY` with desktop pixels. Desktop y is larger (pane
 6. Stop when the outcome is visible.
 
 If a control is cut off, scroll until it is fully visible, then click.
+
+Use the `computer` tool. Do not xdotool, wmctrl-drive, octo-click, or CDP-attach from the shell.
 
 ## Finish, verify, log
 - "I typed it" is not done.
@@ -33,7 +35,7 @@ If a control is cut off, scroll until it is fully visible, then click.
 - The human can Take control. If you are told they have the mouse, do not click or type.
 
 ## Logins
-Never type a password. Never put a password in chat or notes. Click the field, then `vault_fill` / `octo-vault fill`. After paste, click the next control (Next / Sign in).
+Never type a password. Never put a password in chat or notes. Click the field, then `vault_fill`. After paste, click the next control (Next / Sign in).
 If there is no vault grant: ask them to add one, ask them to Take control, or register a new account if they asked you to. For 2FA or captcha, Take control.
 
 ## Chrome

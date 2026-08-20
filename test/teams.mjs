@@ -8,10 +8,10 @@ const msg = {
   speakerId: "b1",
   speakerName: "Chief",
   speakerRole: "chief",
-  content: "Open flights in your window.",
+  content: "Search Maps for pizza and send_message the top place.",
 };
 assert.equal(msg.speakerRole, "chief");
-assert.match(msg.content, /window/);
+assert.match(msg.content, /send_message/);
 
 assert.deepEqual(
   mentionedMemberIds("hey @Worker open this", [

@@ -79,7 +79,8 @@ const TOOLS = [
     type: "function",
     function: {
       name: "shell",
-      description: "Run a command on your computer.",
+      description:
+        "Run a command on your computer (home /config). Files, apt, desk-doctor. Not the user's Mac. Do not click, type, or drive Chrome from the shell.",
       parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
     },
   },
@@ -162,7 +163,7 @@ const TOOLS = [
     function: {
       name: "message_teammate",
       description:
-        "Assign work to another Bot on your shared desk. That Bot gets the line in their own chat and starts working. Use this to delegate; do not expect the human to talk to both of you at once.",
+        "Assign work to another Bot on the shared computer. They get the desk (one Chrome, one tab) and start working. Chief: one worker at a time, wait for the reply. Do not expect the human to talk to both of you at once.",
       parameters: {
         type: "object",
         properties: {
@@ -683,7 +684,7 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
     const grokText = savedLogin?.did
       ? `${userText}\n\n${savedLogin.brief}`
       : desktop
-        ? `${userText}\n\nUse the desktop this turn. To open Chrome: nohup /usr/local/bin/chrome-desktop 'https://…' >/tmp/chrome.log 2>&1 &\nThen look at the screen. Do not only send a text plan.`
+        ? `${userText}\n\nUse the desktop this turn. Open a URL with /usr/local/bin/chrome-desktop 'https://…' (replaces the current tab). Then look at the screen. Do not only send a text plan. Never --new-tab.`
         : userText;
     emit("tool", { name: "computer", args: { action: "screenshot" } });
     const work = {
