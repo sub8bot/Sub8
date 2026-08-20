@@ -24,6 +24,12 @@ ok("Tokyo is JPY", tokyo.currency === "JPY");
 
 ok("bad zone falls back", resolveZone({ userTimeZoneOverride: "Not/AZone" }) === "America/New_York");
 
+const { readFileSync } = await import("node:fs");
+const ctxSrc = readFileSync(new URL("../server/context.mjs", import.meta.url), "utf8");
+ok("chief prompt asks for own steps", /piece you keep/.test(ctxSrc));
+ok("chief prompt forbids extra files", /invent extra files/.test(ctxSrc));
+ok("prompt forces USD on Google", /curr=USD/.test(ctxSrc));
+
 const failed = checks.filter((c) => !c.ok);
 if (failed.length) {
   console.error(`${failed.length} failed`);

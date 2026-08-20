@@ -19,6 +19,7 @@ import * as computers from "./computers.mjs";
 import * as hostCli from "./host-cli.mjs";
 import { resolveZone } from "./context.mjs";
 import * as teams from "./teams.mjs";
+import * as teammate from "./teammate.mjs";
 import * as memory from "./memory.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1224,21 +1225,17 @@ function dispatchToTeammate(toId, content, from) {
   }
   const who = from?.name || "a teammate";
   const role = from?.teamRole || "teammate";
-  const prompt = `${who} (${role}) assigned you this. Use YOUR screen (your DISPLAY / Chrome), not theirs.
-
-${text}
-
-Start with update_task status=running. When finished: update_task status=done (or blocked) with a one-line detail, then message_teammate ${who} ONE short line. Do not write a long report to the chief. Long notes stay in your own chat. Web: browser navigate/snapshot/click. Then stop.`;
-  enqueueTurn(toId, async () => {
+  const run = async () => {
     const live = await store.getBot(toId);
     if (!live) return;
+    const followUp = teammate.isFollowUpDispatch(live.messages);
     const incoming = {
       id: `u${Date.now()}tm`,
       role: "user",
       speakerId: from?.id || "teammate",
       speakerName: who,
       speakerRole: from?.teamRole || "",
-      content: prompt,
+      content: teammate.storedChiefToWorker(who, text),
       ts: Date.now(),
     };
     await store.patchBot(toId, (b) => {
@@ -1246,8 +1243,19 @@ Start with update_task status=running. When finished: update_task status=done (o
       b.messages.push(incoming);
     });
     broadcast("message", { botId: toId, ...incoming });
+    const prompt = teammate.wrapWorkerDispatch({ who, role, text, followUp });
+    const inflight = inflightTurns.get(toId);
+    if (inflight && followUp) {
+      inflight.nudges.push(prompt);
+      return;
+    }
     return runUserTurn(toId, prompt, false, [], { persistUser: false, replyTo: from?.id || null });
-  });
+  };
+  if (inflightTurns.get(toId)) {
+    void run();
+    return;
+  }
+  enqueueTurn(toId, run);
 }
 
 async function shortStepPing(bot) {
@@ -1274,11 +1282,10 @@ async function deliverTeammateReply(toId, from, content) {
   if (!toId || !content || toId === from?.id) return;
   const short = String(content || "").trim().slice(0, 240);
   const to = await store.getBot(toId);
-  const text = to?.teamRole === "chief"
-    ? `${from?.name || "Teammate"} replies: ${short}
-
-This is a teammate report, not a new job and not a routine. Do not upsert_routine. Do not open Chrome or re-search unless they said failed/blocked. list_tasks. When every worker step is done or blocked, send_message one short compiled list, update_task Summary done, and stop.`
+  const stored = to?.teamRole === "chief"
+    ? teammate.chiefReportStored(from?.name, short)
     : `${from?.name || "Teammate"}: ${short}`;
+  const llm = to?.teamRole === "chief" ? teammate.chiefReportLlm(from?.name, short) : stored;
   const incoming = {
     id: `a${Date.now()}rp`,
     role: "assistant",
@@ -1286,7 +1293,7 @@ This is a teammate report, not a new job and not a routine. Do not upsert_routin
     speakerName: from?.name,
     speakerRole: from?.teamRole || "",
     toId,
-    content: text,
+    content: stored,
     ts: Date.now(),
   };
   const liveBot = await store.patchBot(toId, (b) => {
@@ -1298,8 +1305,8 @@ This is a teammate report, not a new job and not a routine. Do not upsert_routin
   const team = from?.teamId ? await teams.getTeam(from.teamId) : (to?.teamId ? await teams.getTeam(to.teamId) : null);
   if (to?.teamRole === "chief" && team?.job && teams.jobProgress(team.job).complete) return;
   const live = inflightTurns.get(toId);
-  if (live) live.nudges.push(text);
-  else enqueueTurn(toId, () => runUserTurn(toId, text, false, [], { persistUser: false }));
+  if (live) live.nudges.push(llm);
+  else enqueueTurn(toId, () => runUserTurn(toId, llm, false, [], { persistUser: false }));
 }
 
 setTeamDispatch(dispatchToTeammate);

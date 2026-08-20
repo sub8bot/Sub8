@@ -51,6 +51,10 @@ xfwm4 --display :1 --replace --compositor=on --sm-client-disable >/tmp/xfwm4.log
 XFWM_PID=$!
 sleep 0.3
 # Chrome is the computer. Keep a browser window on the desk.
+mkdir -p /config/chrome-desk /config/workspace
+if [ "$(id -u)" = 0 ]; then
+  chown -R abc:abc /config/chrome-desk /config/workspace 2>/dev/null || true
+fi
 (
   while true; do
     /usr/local/bin/chrome-desktop
