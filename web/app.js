@@ -718,25 +718,63 @@ async function loadBotHistory(id) {
   }
 }
 
+const CHAT_PAGE = 50;
+
+function chatWindowSize(extra) {
+  return CHAT_PAGE + (Number(extra) || 0) * CHAT_PAGE;
+}
+
+function restoreChatScroll(thread, prevHeight, prevTop) {
+  if (!thread) return;
+  thread.scrollTop = Math.max(0, thread.scrollHeight - prevHeight + prevTop);
+}
+
 async function loadOlderChat() {
   const bot = state.bots.find((b) => b.id === state.selected);
-  if (!bot) return;
-  const rows = (bot.messages || []).filter((m) => !m.hidden && m.role !== "tool");
-  const oldest = rows[0]?.id;
-  if (!oldest) return;
+  if (!bot || bot._loadingOlder) return;
+  const thread = $("#thread");
+  const allRows = (bot.messages || []).filter((m) => !m.hidden && m.role !== "tool");
+  const hiddenLocal = Math.max(0, allRows.length - chatWindowSize(state.chatExtra));
+  const prevHeight = thread?.scrollHeight || 0;
+  const prevTop = thread?.scrollTop || 0;
+  state.chatFollow = false;
+
+  if (hiddenLocal > 0) {
+    state.chatExtra += 1;
+    paintChat(bot);
+    refreshAvatars();
+    restoreChatScroll(thread, prevHeight, prevTop);
+    return;
+  }
+
+  const oldest = allRows[0];
+  bot._loadingOlder = true;
+  const btn = thread?.querySelector("[data-act=chat-more]");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Loading…";
+  }
   try {
-    const pack = await api(`/api/bots/${bot.id}?before=${encodeURIComponent(oldest)}&limit=80`);
-    if (Array.isArray(pack.messages) && pack.messages.length) {
-      bot.messages = unionClientMessages(pack.messages, bot.messages);
-      bot.messagesTruncated = Boolean(pack.hasMore);
+    const q = oldest?.id
+      ? `before=${encodeURIComponent(oldest.id)}&limit=80${oldest.ts ? `&beforeTs=${encodeURIComponent(String(oldest.ts))}` : ""}`
+      : "tail=200";
+    const pack = await api(`/api/bots/${bot.id}?${q}`);
+    const incoming = Array.isArray(pack.messages) ? pack.messages : [];
+    if (incoming.length) {
+      const before = (bot.messages || []).length;
+      bot.messages = unionClientMessages(incoming, bot.messages);
+      bot.messagesTruncated = pack.hasMore === true || (pack.hasMore !== false && bot.messages.length > before);
       state.chatExtra += 1;
     } else {
       bot.messagesTruncated = false;
     }
     paintChat(bot);
     refreshAvatars();
+    if (incoming.length) restoreChatScroll(thread, prevHeight, prevTop);
   } catch {
-    /* keep */
+    paintChat(bot);
+  } finally {
+    bot._loadingOlder = false;
   }
 }
 
@@ -769,7 +807,7 @@ function paintChat(bot) {
     state.chatExtra = 0;
   }
   const allRows = bot.messages.filter((m) => !m.hidden && m.role !== "tool");
-  const windowSize = 50 + (Number(state.chatExtra) || 0) * 50;
+  const windowSize = chatWindowSize(state.chatExtra);
   const hidden = Math.max(0, allRows.length - windowSize);
   const rows = hidden ? allRows.slice(-windowSize) : allRows;
   if (!allRows.length && !bot.busy) {
