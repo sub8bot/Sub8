@@ -3,6 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { dataDir } from "./paths.mjs";
 import * as store from "./store.mjs";
+import * as vm from "./vm.mjs";
 
 export const teamsPath = path.join(dataDir, "teams.json");
 
@@ -138,7 +139,16 @@ export async function addMember(team, spec = {}) {
   await store.upsertBot(bot);
   const memberIds = [...new Set([...(team.memberIds || []), bot.id])];
   const saved = await saveTeam({ ...team, memberIds, computerId: bot.vm.computerId || team.computerId });
-  return { bot, team: saved };
+  const all = await store.loadBots();
+  const mates = membersOf(saved, all);
+  vm.applyTeamDisplays(saved, mates, src.novncPort || null);
+  for (const m of mates) await store.upsertBot(m);
+  if (src.container) {
+    vm.bindDisplayStreams(src.container, mates).catch(() => {});
+    vm.ensureBotDisplay(mates.find((m) => m.id === bot.id) || bot).catch(() => {});
+    vm.scaleDeskMemory(src.container, mates.length).catch(() => {});
+  }
+  return { bot: mates.find((m) => m.id === bot.id) || bot, team: saved };
 }
 
 export async function applyBotPatch(target, args = {}) {

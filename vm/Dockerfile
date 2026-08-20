@@ -45,7 +45,7 @@ RUN useradd -u 1000 -m -d /config -s /bin/bash abc \
     && chown -R abc:abc /config \
     && (dbus-uuidgen >/etc/machine-id || true)
 
-COPY desk-init.sh chrome-desktop.sh chrome-one-tab.py box-input.py octo-click.sh octo-vault.sh desk-doctor.sh /usr/local/src/sub8/
+COPY desk-init.sh chrome-desktop.sh chrome-one-tab.py box-input.py octo-click.sh octo-vault.sh desk-doctor.sh desk-display.sh page-agent.py /usr/local/src/sub8/
 COPY reference/debugging.md reference/app-ui.md /usr/local/src/sub8/reference/
 RUN install -m 755 /usr/local/src/sub8/desk-init.sh /usr/local/bin/desk-init \
     && install -m 755 /usr/local/src/sub8/chrome-desktop.sh /usr/local/bin/chrome-desktop \
@@ -58,6 +58,8 @@ RUN install -m 755 /usr/local/src/sub8/desk-init.sh /usr/local/bin/desk-init \
     && ln -sfn /usr/local/bin/octo-vault /usr/bin/octo-vault \
     && install -m 755 /usr/local/src/sub8/desk-doctor.sh /usr/local/bin/desk-doctor \
     && ln -sfn /usr/local/bin/desk-doctor /usr/local/bin/box-doctor \
+    && install -m 755 /usr/local/src/sub8/desk-display.sh /usr/local/bin/desk-display \
+    && install -m 755 /usr/local/src/sub8/page-agent.py /usr/local/bin/page-agent \
     && mkdir -p /config/reference \
     && install -m 644 /usr/local/src/sub8/reference/debugging.md /config/reference/debugging.md \
     && install -m 644 /usr/local/src/sub8/reference/app-ui.md /config/reference/app-ui.md \

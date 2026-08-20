@@ -35,7 +35,7 @@ const TOOLS = [
   {
     name: "computer",
     description:
-      "Drive the bot Linux desktop. Screenshot first. x,y are pixels on the last 1024x768 screenshot.",
+      "Pixel desktop. Prefer browser for web pages. Screenshot/click x,y on the last 1024x768 image, native dialogs, drag.",
     inputSchema: {
       type: "object",
       properties: {
@@ -60,6 +60,23 @@ const TOOLS = [
         keys: { type: "string" },
         dy: { type: "number" },
         dx: { type: "number" },
+        ms: { type: "number" },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    name: "browser",
+    description:
+      "Drive this Bot's Chrome tab by page structure. snapshot, click ref, fill ref, navigate URL. Prefer over computer clicks on websites.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["snapshot", "click", "fill", "navigate", "press", "wait"] },
+        ref: { type: "number" },
+        text: { type: "string" },
+        url: { type: "string" },
+        keys: { type: "string" },
         ms: { type: "number" },
       },
       required: ["action"],
@@ -304,8 +321,25 @@ async function runComputer(args) {
   return { content: [{ type: "text", text: `${action} ok` }] };
 }
 
+async function runBrowser(args) {
+  const bot = await botOrThrow();
+  await emit("tool", { name: "browser", args });
+  const r = await vm.pageAgent(bot, args);
+  await emit("message", {
+    id: `tl${Date.now()}br`,
+    role: "activity",
+    kind: "tool",
+    name: "browser",
+    action: args.action,
+    summary: args.action === "snapshot" ? "Read the page" : `Browser ${args.action}`,
+    ts: Date.now(),
+  });
+  return { content: [{ type: "text", text: r.text }] };
+}
+
 async function callTool(name, args = {}) {
   if (name === "computer") return runComputer(args);
+  if (name === "browser") return runBrowser(args);
   if (name === "shell") {
     const bot = await botOrThrow();
     const secrets = await vault.listSecrets();

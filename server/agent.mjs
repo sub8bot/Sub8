@@ -42,6 +42,8 @@ const COMPUTER_ACTIONS = [
   "open",
 ];
 
+const BROWSER_ACTIONS = ["snapshot", "click", "fill", "navigate", "press", "wait"];
+
 const TOOLS = [
   {
     type: "function",
@@ -56,7 +58,7 @@ const TOOLS = [
     function: {
       name: "computer",
       description:
-        "Drive the desktop. x,y are pixels on the LAST screenshot (origin top-left, 1:1 with the full 1024x768 image). Click the visual CENTER of a control you can see. After type, click the primary button (Send/Save/Search/OK/Post), then screenshot to verify. Scroll if the control is off-screen. The pointer is drawn on the image.",
+        "Pixel desktop. Use browser (snapshot/click ref/fill/navigate) for web pages first. This tool is for screenshots, native dialogs, drag, and clicks the page agent cannot do. x,y are pixels on the LAST screenshot (origin top-left, 1:1 with the full 1024x768 image).",
       parameters: {
         type: "object",
         properties: {
@@ -69,6 +71,26 @@ const TOOLS = [
           keys: { type: "string" },
           dy: { type: "number" },
           dx: { type: "number" },
+          ms: { type: "number" },
+        },
+        required: ["action"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "browser",
+      description:
+        "Drive YOUR Chrome tab by page structure (not pixels). snapshot returns [n] refs. click/fill those refs. navigate replaces the tab. Prefer this over computer clicks on websites. File dialogs, drag, and native apps still use computer.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: BROWSER_ACTIONS },
+          ref: { type: "number", description: "Node number from the last snapshot" },
+          text: { type: "string", description: "Fill text, or a URL for navigate" },
+          url: { type: "string" },
+          keys: { type: "string", description: "For press: Enter, Tab, Escape" },
           ms: { type: "number" },
         },
         required: ["action"],
@@ -520,7 +542,7 @@ ${await teamPrompt(bot)}
 ${voice}
 
 ## Sub8
-After send_message, if the user asked for something on the desktop (research, Chrome, files they can see, clicks): call \`computer\` screenshot next, then click like a human.
+After send_message, if the user asked for something on the desktop (research, Chrome, files they can see, clicks): web pages go through \`browser\` (navigate/snapshot/click ref); pixels and dialogs through \`computer\`.
 web_search is available for facts. Prefer it over opening Google unless the user asked to use the browser.
 Routines: ONE standing job, and only when the user asked to keep doing something on a clock (every N minutes, hourly, daily, or every morning). "Check again", "try again", "resume", and one-shot desktop work are NOT routines — do the work now, do not upsert. "Run" / "resume" means execute, not rewrite. Never replace a long brief with the chat line. Never delete the only routine unless they said delete.
 If a submit already landed or the UI is still loading, do not submit the same thing again. If a click fails twice, stop repeating it.
@@ -1281,6 +1303,22 @@ async function execTool(bot, name, args, emit, settings) {
     if (bot.vm?.status !== "running" && !hostTools.has(name)) {
       return { text: "Computer is not running yet." };
     }
+    if (name === "browser") {
+      const r = await vm.pageAgent(bot, args);
+      emit("tool", { name: "browser", args });
+      const activity = {
+        id: `tl${Date.now()}br`,
+        role: "activity",
+        kind: "tool",
+        name: "browser",
+        action: args.action,
+        summary: args.action === "snapshot" ? "Read the page" : `Browser ${args.action}`,
+        ts: Date.now(),
+      };
+      bot.messages.push(activity);
+      emit("message", activity);
+      return { text: r.text };
+    }
     if (name === "memory") {
       const r = await memory.handleMemory(bot, args);
       return { text: r.text };
@@ -1847,7 +1885,7 @@ function runGrokBuild(harness, userText, signal, bot, emit, { settings, hidden =
         "-e",
         "HOME=/config",
         "-e",
-        "DISPLAY=:1",
+        `DISPLAY=${bot.vm?.display || ":1"}`,
         "-e",
         "PATH=/usr/local/bin:/usr/bin:/bin",
         "-w",

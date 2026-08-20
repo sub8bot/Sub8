@@ -62,8 +62,23 @@ export function deskImage() {
   return resolvedImage;
 }
 
-export function deskMemory() {
-  return process.env.LOCALBOT_MEMORY || "2g";
+export const DISPLAY_SLOTS = 8;
+
+export function displayNum(bot) {
+  const n = Number(String(bot?.vm?.display || ":1").replace(":", "").split(".")[0]);
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return Math.min(DISPLAY_SLOTS, Math.max(1, n));
+}
+
+export function debugPortFor(n = 1) {
+  return 9221 + Number(n || 1);
+}
+
+export function deskMemory(memberCount) {
+  if (process.env.LOCALBOT_MEMORY) return process.env.LOCALBOT_MEMORY;
+  const n = Number(memberCount);
+  if (!Number.isFinite(n) || n <= 1) return "2g";
+  return `${Math.min(6, 2 + (n - 1))}g`;
 }
 
 export function deskShm() {
@@ -117,7 +132,7 @@ export function deskCreateArgs({ name, volume, port, image } = {}) {
     "-v",
     `${volume}:/config`,
     "-p",
-    `${port}:3000`,
+    `${port}-${port + DISPLAY_SLOTS - 1}:3000-${3000 + DISPLAY_SLOTS - 1}`,
     img,
   ];
 }
@@ -617,7 +632,14 @@ let portLock = Promise.resolve();
 export async function allocatePort() {
   const run = portLock.then(async () => {
     for (let p = START_PORT; p < START_PORT + 80; p++) {
-      if (await portFree(p)) return p;
+      let ok = true;
+      for (let i = 0; i < DISPLAY_SLOTS; i++) {
+        if (!(await portFree(p + i))) {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) return p;
     }
     throw new Error("No free noVNC port");
   });
@@ -841,7 +863,7 @@ export async function startVm(bot, onLog = () => {}, shouldAbort = async () => f
       container: name,
       novncPort: port,
       status: chrome ? "running" : "starting",
-      display: ":1",
+      display: bot.vm?.display || ":1",
       volume,
       setup: setupProgress(name),
     };
@@ -867,7 +889,7 @@ export async function startVm(bot, onLog = () => {}, shouldAbort = async () => f
     container: name,
     novncPort: port,
     status: chrome ? "running" : "starting",
-    display: ":1",
+    display: bot.vm?.display || ":1",
     volume,
     setup: setupProgress(name),
   };
@@ -1005,8 +1027,8 @@ async function finishDesktopSetup(name, onLog) {
   return job.running;
 }
 
-export async function detectMappedPort(name) {
-  const r = await docker(["port", name, "3000/tcp"], { timeout: 8_000 });
+export async function detectMappedPort(name, containerPort = 3000) {
+  const r = await docker(["port", name, `${containerPort}/tcp`], { timeout: 8_000 });
   const m = r.out.match(/:(\d+)/);
   return m ? Number(m[1]) : null;
 }
@@ -1157,6 +1179,10 @@ export async function installChromeDesk(container) {
   const parts = [];
   if (desk.ok) parts.push("install -m 755 /tmp/chrome-desktop.sh /usr/local/bin/chrome-desktop");
   if (one.ok) parts.push("install -m 755 /tmp/chrome-one-tab.py /usr/local/bin/chrome-one-tab");
+  const disp = await docker(["cp", path.resolve(fileRoot, "vm", "desk-display.sh"), `${container}:/tmp/desk-display.sh`]);
+  const page = await docker(["cp", path.resolve(fileRoot, "vm", "page-agent.py"), `${container}:/tmp/page-agent.py`]);
+  if (disp.ok) parts.push("install -m 755 /tmp/desk-display.sh /usr/local/bin/desk-display");
+  if (page.ok) parts.push("install -m 755 /tmp/page-agent.py /usr/local/bin/page-agent");
   if (!parts.length) return;
   parts.push("ln -sfn /usr/local/bin/chrome-desktop /usr/local/bin/chrome");
   parts.push("ln -sfn /usr/local/bin/chrome-desktop /usr/local/bin/box-chrome");
@@ -1540,6 +1566,7 @@ export async function screenshotContainer(name, hostPath) {
 
 export async function screenshot(bot) {
   const name = requireVm(bot, "screenshot");
+  await ensureBotDisplay(bot).catch(() => {});
   return withDeskLock(name, () => trace.span(bot, "outside", "screenshot", {}, async () => {
     await focusOwnedWindow(bot);
     const dest = `/tmp/shot-${Date.now()}.png`;
@@ -1558,7 +1585,7 @@ export async function screenshot(bot) {
     const annotated = await annotateShot(hostPath, loc.x, loc.y);
     const buf = annotated || raw;
     return { path: hostPath, ...pngSize(buf), bytes: buf.length, buf, pointer: loc };
-  }));
+  }), bot.vm?.display);
 }
 
 export async function mouseMove(bot, x, y) {
@@ -1617,6 +1644,7 @@ unset WINDOW
 export async function click(bot, x, y, button = 1, count = 1) {
   requireVm(bot, "click");
   const p = clampPoint(x, y);
+  await ensureBotDisplay(bot).catch(() => {});
   return withDeskLock(bot.vm.container, () => trace.span(bot, "outside", "click", { x: p.x, y: p.y, button, count }, async () => {
     await focusOwnedWindow(bot);
     const n = Math.max(1, Math.min(5, Math.round(count)));
@@ -1631,7 +1659,7 @@ export async function click(bot, x, y, button = 1, count = 1) {
     ]);
     if (!r.ok) throw new Error(`click failed: ${r.out.slice(-400)}`);
     await wait(160);
-  }));
+  }), bot.vm?.display);
 }
 
 export async function drag(bot, x1, y1, x2, y2) {
@@ -1753,12 +1781,127 @@ export async function wait(ms) {
 }
 
 const deskChain = new Map();
-export function withDeskLock(container, fn) {
-  const key = container || "_";
+export function withDeskLock(container, fn, display = "") {
+  const key = `${container || "_"}:${display || ""}`;
   const prev = deskChain.get(key) || Promise.resolve();
   const next = prev.then(fn, fn);
   deskChain.set(key, next.catch(() => {}));
   return next;
+}
+
+export async function ensureBotDisplay(bot) {
+  const name = bot?.vm?.container;
+  const n = displayNum(bot);
+  if (!name || n <= 1) return { display: ":1" };
+  const r = await docker(
+    ["exec", "-u", "abc", "-e", "HOME=/config", name, "/usr/local/bin/desk-display", String(n)],
+    { timeout: 20_000 },
+  );
+  if (!r.ok) throw new Error(`display :${n} failed: ${(r.out || "").slice(-400)}`);
+  return { display: `:${n}`, out: r.out };
+}
+
+export function applyTeamDisplays(team, bots, basePort) {
+  const ids = team?.memberIds || [];
+  const byId = new Map((bots || []).map((b) => [b.id, b]));
+  const chief = team?.chiefId ? byId.get(team.chiefId) : null;
+  const rest = ids.map((id) => byId.get(id)).filter((b) => b && b.id !== team?.chiefId);
+  const ordered = [chief, ...rest].filter(Boolean);
+  let n = 1;
+  for (const b of ordered) {
+    if (n > DISPLAY_SLOTS) break;
+    b.vm = {
+      ...(b.vm || {}),
+      display: `:${n}`,
+      debugPort: debugPortFor(n),
+    };
+    if (n === 1 && basePort) b.vm.novncPort = basePort;
+    n += 1;
+  }
+  return ordered;
+}
+
+export async function bindDisplayStreams(container, bots) {
+  for (const b of bots || []) {
+    const n = displayNum(b);
+    const mapped = await detectMappedPort(container, 2999 + n);
+    if (mapped) b.vm = { ...(b.vm || {}), novncPort: mapped };
+    else if (n > 1) b.vm = { ...(b.vm || {}), novncPort: null };
+  }
+  return bots;
+}
+
+export async function scaleDeskMemory(container, memberCount) {
+  if (!container) return;
+  const mem = deskMemory(memberCount);
+  await docker(["update", "--memory", mem, "--memory-swap", mem, container], { timeout: 15_000 });
+}
+
+export async function pageAgent(bot, { action = "snapshot", ref, text, url, keys, ms } = {}) {
+  requireVm(bot, "browser");
+  const n = displayNum(bot);
+  const display = `:${n}`;
+  const port = debugPortFor(n);
+  await ensureBotDisplay(bot);
+  if (action === "wait") {
+    await wait(ms || 800);
+    action = "snapshot";
+  }
+  if (action === "navigate" || action === "open") {
+    await openChrome(bot, url || text || "");
+    await wait(400);
+    action = "snapshot";
+  }
+  const debug = `http://127.0.0.1:${port}`;
+  const up = await docker(
+    [
+      "exec",
+      "-u",
+      "abc",
+      bot.vm.container,
+      "bash",
+      "-lc",
+      `curl -sf --max-time 1 ${debug}/json/version >/dev/null`,
+    ],
+    { timeout: 8_000 },
+  );
+  if (!up.ok) {
+    await openChrome(bot, url || text || "https://www.google.com/");
+    await wait(800);
+  }
+  return withDeskLock(bot.vm.container, async () => {
+    const args = [action];
+    if (action === "click" && ref != null) args.push(String(ref));
+    if (action === "fill") {
+      args.push(String(ref || ""), String(text || ""));
+    }
+    if (action === "press") args.push(String(keys || text || "Enter"));
+    if (action === "navigate" || action === "open") {
+      // already navigated; snapshot
+      args.splice(0, args.length, "snapshot");
+    }
+    const r = await docker(
+      [
+        "exec",
+        "-u",
+        "abc",
+        "-e",
+        `DISPLAY=${display}`,
+        "-e",
+        "HOME=/config",
+        "-e",
+        `CHROME_DEBUG=${debug}`,
+        bot.vm.container,
+        "python3",
+        "/usr/local/bin/page-agent",
+        ...args,
+      ],
+      { timeout: 20_000 },
+    );
+    const out = String(r.out || "").trim();
+    if (!r.ok) throw new Error(out.slice(-400) || "page-agent failed");
+    return { text: out || "ok", display, port };
+  }, display);
 }
 
 export function windowTag(bot) {
@@ -1854,6 +1997,8 @@ export function urlLooksOpen(windowText, dest) {
 
 export async function openChrome(bot, url = "") {
   requireVm(bot, "open");
+  await ensureBotDisplay(bot).catch(() => {});
+  const port = debugPortFor(displayNum(bot));
   return withDeskLock(bot.vm.container, async () => {
   await focusOwnedWindow(bot);
   const dest = String(url || "").trim();
@@ -1865,7 +2010,7 @@ export async function openChrome(bot, url = "") {
     bot.vm.container,
     "bash",
     "-lc",
-    `${displayEnv(bot)}; if curl -sf --max-time 1 http://127.0.0.1:9222/json/version >/dev/null; then /usr/local/bin/chrome-desktop ${arg}; echo NAV=1; else nohup /usr/local/bin/chrome-desktop ${arg} >/tmp/chrome-desktop.log 2>&1 & echo OPENED:$!; sleep 1.2; fi`,
+    `${displayEnv(bot)}; export CHROME_DEBUG=http://127.0.0.1:${port}; if curl -sf --max-time 1 "$CHROME_DEBUG/json/version" >/dev/null; then /usr/local/bin/chrome-desktop ${arg}; echo NAV=1; else nohup /usr/local/bin/chrome-desktop ${arg} >/tmp/chrome-desktop-${port}.log 2>&1 & echo OPENED:$!; sleep 1.2; fi`,
   ]);
   if (!r.ok) throw new Error(`open Chrome failed: ${r.out.slice(-400)}`);
   if (/NAV=1/.test(r.out || "")) return { text: dest ? `opened ${dest}` : "opened Chrome", out: r.out };
@@ -1906,7 +2051,7 @@ export async function openChrome(bot, url = "") {
     }
   }
   return { text: dest ? `opened ${dest}` : "opened Chrome", out: r.out };
-  });
+  }, bot.vm?.display);
 }
 
 export async function shell(bot, command) {

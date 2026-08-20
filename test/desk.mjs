@@ -13,7 +13,12 @@ assert.ok(args.includes("--shm-size"));
 assert.equal(args[args.indexOf("--shm-size") + 1], deskShm());
 assert.ok(args.includes("--memory-swap"));
 assert.equal(args.at(-1), SLIM_IMAGE);
-assert.ok(args.includes("13109:3000"));
+assert.ok(args.some((a) => /13109-13116:3000-3007/.test(String(a))));
+assert.equal(deskMemory(1), process.env.LOCALBOT_MEMORY || "2g");
+if (!process.env.LOCALBOT_MEMORY) {
+  assert.equal(deskMemory(3), "4g");
+  assert.equal(deskMemory(8), "6g");
+}
 assert.ok(!args.some((a) => a === "--shm-size=1g" || a === "1g"));
 
 assert.equal(parseDockerProgress("Downloading [====>] 40%"), 40);

@@ -1,5 +1,5 @@
 #!/bin/bash
-# One Chrome, one tab. Extra invocations replace the current page.
+# One Chrome, one tab, on THIS $DISPLAY. Extra invocations replace the current page.
 set -euo pipefail
 export DISPLAY="${DISPLAY:-:1}"
 export HOME="${HOME:-/config}"
@@ -10,13 +10,24 @@ if [ -z "$CHROME" ]; then
   exit 1
 fi
 URL="${1:-https://www.google.com/}"
+N="${DISPLAY#:}"
+N="${N%%.*}"
+if [ -z "$N" ] || [ "$N" = "1" ]; then
+  PROFILE=/config/chrome-desk
+  DEBUG_PORT=9222
+else
+  PROFILE="/config/chrome-desk-${N}"
+  DEBUG_PORT=$((9221 + N))
+fi
+mkdir -p "$PROFILE"
+export CHROME_DEBUG="http://127.0.0.1:${DEBUG_PORT}"
 flags=(
   --no-sandbox
   --disable-dev-shm-usage
   --disable-gpu
   --renderer-process-limit=2
-  --user-data-dir=/config/chrome-desk
-  --remote-debugging-port=9222
+  --user-data-dir="$PROFILE"
+  --remote-debugging-port="$DEBUG_PORT"
   --remote-debugging-address=127.0.0.1
   --remote-allow-origins=*
   --no-first-run
@@ -30,7 +41,7 @@ flags=(
   --window-position=0,0
   --window-size=1024,768
 )
-if curl -sf --max-time 1 http://127.0.0.1:9222/json/version >/dev/null; then
+if curl -sf --max-time 1 "$CHROME_DEBUG/json/version" >/dev/null; then
   exec python3 /usr/local/bin/chrome-one-tab "$URL"
 fi
 exec "$CHROME" "${flags[@]}" "$URL"
