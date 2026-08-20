@@ -2,6 +2,7 @@ import { animList, bodyList, defaultAvatar, faceList, inferMood, isSleepingMood,
 import { AVATAR_COLORS } from "./palette.js";
 import { applyHealthPort, CONNECTING_AFTER_MS, frameKey, healthIframeIsCurrent, shouldShowConnecting } from "./stream-bind.mjs";
 import { listModelsForProvider, modelFieldKind, pickListedModel } from "./harness-models.mjs";
+import { formatChatText } from "./markdown.js";
 
 const $ = (sel, el = document) => el.querySelector(sel);
 
@@ -910,16 +911,6 @@ function renderActivity(batch, openLast) {
   }
   const mids = batch.map((m) => m.id).filter(Boolean).join(",");
   return `<div class="tool-list" data-mids="${escapeHtml(mids)}">${parts.join("")}</div>`;
-}
-
-function formatChatText(raw) {
-  let s = escapeHtml(raw ?? "");
-  s = s.replace(/```([\s\S]*?)```/g, (_, code) => `<pre class="chat-code">${code.trim()}</pre>`);
-  s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
-  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, `<a href="$2" target="_blank" rel="noreferrer">$1</a>`);
-  s = s.replace(/(^|\s)(https?:\/\/[^\s<]+)/g, `$1<a href="$2" target="_blank" rel="noreferrer">$2</a>`);
-  return s;
 }
 
 function toolIcon(action) {
