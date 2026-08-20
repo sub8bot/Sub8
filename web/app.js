@@ -1,4 +1,4 @@
-import { animList, bodyList, defaultAvatar, faceList, inferMood, isSleepingMood, randomWakeMood, syncAvatars } from "./avatar.js";
+import { animList, bodyList, defaultAvatar, faceList, inferMood, isSleepingMood, randomCreateFace, randomWakeMood, syncAvatars } from "./avatar.js";
 import { AVATAR_COLORS } from "./palette.js";
 import { applyHealthPort, CONNECTING_AFTER_MS, frameKey, healthIframeIsCurrent, shouldShowConnecting } from "./stream-bind.mjs";
 import { listModelsForProvider, modelFieldKind, pickListedModel } from "./harness-models.mjs";
@@ -23,7 +23,7 @@ const state = {
   schedPop: null,
   confirmDeleteId: null,
   deskSize: "side",
-  createFace: "neutral",
+  createFace: "think",
   createHarness: "default",
   createModel: "",
   createName: "",
@@ -2872,9 +2872,34 @@ function botSettingsHtml(bot) {
   </aside>`;
 }
 
+function appDefaultHarness() {
+  const h = state.settings?.harness || {};
+  const provider = h.provider || "grok-build";
+  const model = String(h.model || "").trim();
+  return { provider, model };
+}
+
+function harnessDisplayName(id) {
+  return (
+    {
+      "grok-build": "Grok Build",
+      hermes: "Hermes",
+      claude: "Claude",
+      codex: "Codex",
+      ollama: "Ollama",
+      lmstudio: "LM Studio",
+      spacexai: "SpaceXAI",
+      default: "App default",
+    }[id] || id || "Harness"
+  );
+}
+
 function harnessProviderOptions(selected) {
+  const def = appDefaultHarness();
+  const defModel = def.model || (def.provider === "claude" || def.provider === "codex" || def.provider === "hermes" ? "default" : "grok-4.6");
+  const defLabel = `${harnessDisplayName(def.provider)} · ${defModel}`;
   return [
-    ["default", "App default"],
+    ["default", defLabel],
     ["grok-build", "Grok Build"],
     ["hermes", "Hermes"],
     ["claude", "Claude"],
@@ -2923,9 +2948,14 @@ function modelPickerHtml(provider, selected, { id = "cm" } = {}) {
     return `<input class="field" id="${id}" value="${escapeHtml(selected || "")}" placeholder="default" />`;
   }
   if (kind === "app-default") {
-    const def = state.settings?.harness?.model || "app default";
-    return `<input class="field" id="${id}" value="${escapeHtml(selected || "")}" placeholder="${escapeHtml(def)}" />
-      <div class="muted">Uses the harness in Settings unless you set one here.</div>`;
+    const def = appDefaultHarness();
+    const model =
+      selected ||
+      def.model ||
+      (def.provider === "claude" || def.provider === "codex" || def.provider === "hermes" ? "default" : "grok-4.6");
+    return `<div class="field field-static">${escapeHtml(model)}</div>
+      <input type="hidden" id="${id}" value="" />
+      <div class="muted">${escapeHtml(harnessDisplayName(def.provider))} from Settings. Pick a harness above to change it.</div>`;
   }
   return `<input class="field" id="${id}" value="${escapeHtml(selected || "")}" placeholder="grok-4.6" />`;
 }
@@ -2942,7 +2972,7 @@ function snapshotCreateForm() {
 }
 
 function resetCreateForm() {
-  state.createFace = "neutral";
+  state.createFace = "think";
   state.createHarness = "default";
   state.createModel = "";
   state.createName = "";
@@ -3206,15 +3236,6 @@ function createBotHtml() {
               <label class="muted">Model</label>
               ${modelPickerHtml(provider, state.createModel || "")}
             </div>
-          </div>
-          <label class="muted">Face</label>
-          <div class="chips chips-scroll">
-            ${faceList()
-              .map(
-                (f) =>
-                  `<button type="button" class="chip ${f.id === state.createFace ? "on" : ""}" data-act="create-face" data-id="${f.id}">${escapeHtml(f.label)}</button>`
-              )
-              .join("")}
           </div>
         </div>
         <button type="button" class="pill primary" data-act="confirm-create" id="confirm-create">Create Bot</button>
@@ -5748,7 +5769,7 @@ async function confirmCreateBot() {
   snapshotCreateForm();
   const name = (state.createName || "").trim() || "New Bot";
   const description = (state.createDesc || "").trim();
-  const face = state.createFace;
+  const face = randomCreateFace();
   const provider = state.createHarness || "default";
   const model = (state.createModel || "").trim();
   const harness = { provider };
