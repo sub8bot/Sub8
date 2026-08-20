@@ -52,6 +52,14 @@ function lastAssistant(bot) {
   return msgs.length ? msgs[msgs.length - 1].content : "";
 }
 
+function anyReport(bot) {
+  const msgs = (bot.messages || []).filter((m) => m.role === "assistant" && m.content);
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (looksLikeReport(msgs[i].content)) return msgs[i].content;
+  }
+  return "";
+}
+
 function looksLikeReport(text) {
   const t = String(text || "").toLowerCase();
   if (t.length < 80) return false;
@@ -180,9 +188,9 @@ This team shares ONE Linux computer (same /config disk) but EACH worker has thei
 Assign ALL five workers now via message_teammate (they can run in parallel):
 ${assigns}
 
-Tell each worker: use the browser tool (navigate + snapshot + click/fill by ref). computer is only for dialogs. One tab. City is ${CITY}.
+Tell each worker: use the browser tool (navigate + snapshot + click/fill by ref). computer is only for dialogs. One tab. City is ${CITY}. This is a one-shot. Do not upsert_routine.
 
-When all five have replied, send_message a short list: food → place → rating. If someone failed after one reminder, mark them failed and finish with what you have.`;
+When all five have replied, send_message a short list: food → place → rating. Then STOP. Do not re-search Maps. Do not verify a worker's listing unless they reported none. If someone failed after one reminder, mark them failed and finish with what you have.`;
 
   console.log("dispatching Maps food job to Scout");
   await api(`/api/teams/${created.id}/messages`, {
@@ -196,9 +204,10 @@ When all five have replied, send_message a short list: food → place → rating
       const bots = await api("/api/bots");
       const chief = bots.find((b) => b.id === chiefId);
       if (!chief) return null;
+      const compiled = anyReport(chief);
+      if (compiled) return { chief, text: compiled, bots };
       if (chief.busy) return null;
       const text = lastAssistant(chief);
-      if (looksLikeReport(text)) return { chief, text, bots };
       const ids = new Set(created.memberIds);
       if (bots.some((b) => ids.has(b.id) && b.busy)) return null;
       const spoken = workers.filter((w) => lastAssistant(bots.find((x) => x.id === w.id)).length > 60).length;
