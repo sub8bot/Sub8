@@ -162,8 +162,8 @@ export async function teamDeskPrompt(bot) {
   const mine = bot.vm?.display || ":1";
   const job =
     role === "chief"
-      ? "Assign with message_teammate. Workers have their own screens — they can run in parallel. Do not drive a teammate's display. Do not re-do a worker's search. When reports are in, send_message one short compiled list and stop. One-shot jobs are not routines."
-      : `Your screen is display ${mine}. Do the assigned work there. browser snapshot/click/fill/navigate for web pages; computer for pixels and dialogs. One Chrome tab on YOUR display. Then send_message the result and stop. Do not upsert_routine for a one-shot search.`;
+      ? "Assign with message_teammate. Workers have their own screens and can run in parallel. Do not drive a teammate's display. Do not re-do a worker's search. list_tasks until worker steps are done or blocked, then send_message one short compiled list, update_task Summary to done, and stop. One-shot jobs are not routines. Use set_job / update_task for the progress bar."
+      : `Your screen is display ${mine}. update_task running when you start, done (or blocked) when finished — detail is one line. message_teammate the chief ONE short line. Do not send_message a report. Long notes stay in your own chat. browser for pages; computer for pixels. Do not upsert_routine for a one-shot search.`;
   return [
     "",
     "## Team — one computer, many screens",

@@ -49,7 +49,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "send_message",
-      description: "User-visible chat in this thread (and the team chat if you are on a team). Ack first, then result last.",
+      description: "User-visible chat in this thread (and the team chat if you are on a team). Chief: compiled result for the human. Workers: do not send reports here — message_teammate the chief one line.",
       parameters: { type: "object", properties: { content: { type: "string" } }, required: ["content"] },
     },
   },
@@ -185,14 +185,67 @@ const TOOLS = [
     function: {
       name: "message_teammate",
       description:
-        "Assign work to another Bot on the shared computer. They get the desk (one Chrome, one tab) and start working. Chief: one worker at a time, wait for the reply. Do not expect the human to talk to both of you at once.",
+        "Talk to a teammate. Keep it to ONE short line (place and rating, or a blocker). Long writeups stay in your own chat. Optional status/detail also updates the team job bar.",
       parameters: {
         type: "object",
         properties: {
           bot_id: { type: "string", description: "Teammate id from list_teammates" },
-          content: { type: "string" },
+          content: { type: "string", description: "One short line. Long notes stay in your own chat." },
+          status: { type: "string", enum: ["pending", "running", "done", "blocked", "looping"] },
+          detail: { type: "string", description: "Short progress line for the job bar (max ~160 chars)" },
         },
         required: ["bot_id", "content"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_tasks",
+      description: "Show the current team job and each step (pending/running/done/blocked/looping).",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_job",
+      description: "Chief: replace the team job on the progress bar. steps: [{label, bot_id}]. One-shot work uses this, not upsert_routine.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          steps: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                label: { type: "string" },
+                bot_id: { type: "string" },
+                status: { type: "string" },
+                detail: { type: "string" },
+              },
+            },
+          },
+        },
+        required: ["title", "steps"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "update_task",
+      description: "Set your step on the team progress bar: pending, running, done, blocked, or looping. detail is a short result (e.g. place and rating). Call running when you start, done when finished. If you are stuck repeating, status=looping.",
+      parameters: {
+        type: "object",
+        properties: {
+          step_id: { type: "string" },
+          label: { type: "string" },
+          status: { type: "string", enum: ["pending", "running", "done", "blocked", "looping"] },
+          detail: { type: "string" },
+        },
+        required: ["status"],
       },
     },
   },
@@ -1296,6 +1349,9 @@ async function execTool(bot, name, args, emit, settings) {
       "disable_routine",
       "list_teammates",
       "message_teammate",
+      "list_tasks",
+      "set_job",
+      "update_task",
       "ask_user",
       "create_teammate",
       "rename_bot",
@@ -1352,10 +1408,14 @@ async function execTool(bot, name, args, emit, settings) {
       if (bot.teamId) {
         const posted = await teams.appendMessage(bot.teamId, { ...out, teamId: bot.teamId });
         emit("team-message", { teamId: bot.teamId, ...posted });
-      }
-      if (settings?.__replyTo && typeof deliverReply === "function") {
-        settings.__didReply = true;
-        await deliverReply(settings.__replyTo, bot, out.content);
+        if (bot.teamRole === "chief") {
+          const team = await teams.getTeam(bot.teamId);
+          const { job, finalized } = teams.maybeFinalizeSummary(team?.job);
+          if (finalized) {
+            await teams.saveTeam({ ...team, job });
+            emit("job", { teamId: bot.teamId, job });
+          }
+        }
       }
       return { text: "sent" };
     }
@@ -1377,7 +1437,7 @@ async function execTool(bot, name, args, emit, settings) {
     if (name === "message_teammate") {
       if (!bot.teamId) return { text: "You are not on a team." };
       const toId = String(args.bot_id || args.id || "");
-      const content = String(args.content || "").trim();
+      const content = String(args.content || "").trim().slice(0, 240);
       if (!content) return { text: "empty message" };
       const team = await teams.getTeam(bot.teamId);
       const bots = await store.loadBots();
@@ -1398,15 +1458,54 @@ async function execTool(bot, name, args, emit, settings) {
         role: "assistant",
         speakerId: bot.id,
         speakerName: bot.name,
+        speakerRole: bot.teamRole || "",
+        toId: mate.id,
+        toName: mate.name,
         content: `To ${mate.name}: ${content}`,
         ts: Date.now(),
       };
       bot.messages.push(note);
       emit("message", note);
+      const status = teams.TASK_STATUSES.includes(args.status) ? args.status : null;
+      if (status) {
+        const patch = {
+          botId: bot.teamRole === "chief" ? mate.id : bot.id,
+          status,
+          detail: args.detail || content,
+        };
+        const bumped = await teams.patchTeamStep(bot.teamId, patch);
+        if (bumped?.job) emit("job", { teamId: bot.teamId, job: bumped.job });
+      }
       if (typeof dispatchTeammate === "function") {
         dispatchTeammate(mate.id, content, bot);
       }
       return { text: `sent to ${mate.name}` };
+    }
+    if (name === "list_tasks") {
+      if (!bot.teamId) return { text: "You are not on a team." };
+      const team = await teams.getTeam(bot.teamId);
+      if (!team?.job) return { text: "No team job yet. Chief: set_job with title and steps." };
+      return { text: JSON.stringify({ title: team.job.title, ...teams.jobProgress(team.job), steps: team.job.steps }, null, 2) };
+    }
+    if (name === "set_job") {
+      if (!bot.teamId) return { text: "You are not on a team." };
+      const saved = await teams.setTeamJob(bot.teamId, { title: args.title, steps: args.steps });
+      if (!saved?.job) return { text: "could not set job" };
+      emit("job", { teamId: bot.teamId, job: saved.job });
+      return { text: `Job “${saved.job.title}” · ${saved.job.steps.length} steps` };
+    }
+    if (name === "update_task") {
+      if (!bot.teamId) return { text: "You are not on a team." };
+      const bumped = await teams.patchTeamStep(bot.teamId, {
+        stepId: args.step_id,
+        label: args.label,
+        botId: bot.id,
+        status: args.status,
+        detail: args.detail,
+      });
+      if (!bumped?.step) return { text: "no matching step — list_tasks and use label or step_id" };
+      emit("job", { teamId: bot.teamId, job: bumped.job });
+      return { text: `${bumped.step.label}: ${bumped.step.status}${bumped.step.detail ? ` · ${bumped.step.detail}` : ""}` };
     }
     if (name === "ask_user") {
       const choices = Array.isArray(args.choices) && args.choices.length

@@ -166,15 +166,57 @@ const TOOLS = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "send_message",
+    description: "User-visible chat (and team chat). Chief: compiled result. Workers: do not report here — message_teammate the chief one line.",
+    inputSchema: {
+      type: "object",
+      properties: { content: { type: "string" } },
+      required: ["content"],
+    },
+  },
+  {
     name: "message_teammate",
-    description: "Assign work to another Bot on your shared desk. They get it in their own chat.",
+    description: "Talk to a teammate in one short line. Optional status/detail updates the team job bar.",
     inputSchema: {
       type: "object",
       properties: {
         bot_id: { type: "string" },
         content: { type: "string" },
+        status: { type: "string", enum: ["pending", "running", "done", "blocked", "looping"] },
+        detail: { type: "string" },
       },
       required: ["bot_id", "content"],
+    },
+  },
+  {
+    name: "list_tasks",
+    description: "Show the team job and step statuses.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "set_job",
+    description: "Chief: set the team progress-bar job.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        steps: { type: "array", items: { type: "object" } },
+      },
+      required: ["title", "steps"],
+    },
+  },
+  {
+    name: "update_task",
+    description: "Update your job step: pending, running, done, blocked, looping.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        step_id: { type: "string" },
+        label: { type: "string" },
+        status: { type: "string", enum: ["pending", "running", "done", "blocked", "looping"] },
+        detail: { type: "string" },
+      },
+      required: ["status"],
     },
   },
   {
@@ -502,11 +544,40 @@ async function callTool(name, args = {}) {
       ],
     };
   }
+  if (name === "send_message") {
+    const bot = await store.getBot(botId);
+    if (!bot) throw new Error("Bot not found");
+    const content = String(args.content || "").trim();
+    if (!content) return { content: [{ type: "text", text: "empty" }], isError: true };
+    const out = {
+      id: `a${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
+      role: "assistant",
+      speakerId: bot.id,
+      speakerName: bot.name,
+      speakerRole: bot.teamRole || "",
+      content,
+      ts: Date.now(),
+    };
+    await emit("message", out);
+    if (bot.teamId) {
+      const posted = await teams.appendMessage(bot.teamId, { ...out, teamId: bot.teamId });
+      await emit("team-message", { teamId: bot.teamId, ...posted });
+      if (bot.teamRole === "chief") {
+        const team = await teams.getTeam(bot.teamId);
+        const { job, finalized } = teams.maybeFinalizeSummary(team?.job);
+        if (finalized) {
+          await teams.saveTeam({ ...team, job });
+          await emit("job", { teamId: bot.teamId, job });
+        }
+      }
+    }
+    return { content: [{ type: "text", text: "sent" }] };
+  }
   if (name === "message_teammate") {
     const bot = await store.getBot(botId);
     if (!bot?.teamId) return { content: [{ type: "text", text: "You are not on a team." }], isError: true };
     const toId = String(args.bot_id || "");
-    const content = String(args.content || "").trim();
+    const content = String(args.content || "").trim().slice(0, 240);
     if (!content) return { content: [{ type: "text", text: "empty message" }], isError: true };
     const team = await teams.getTeam(bot.teamId);
     const mate = teams.membersOf(team, await store.loadBots()).find((b) => b.id === toId);
@@ -526,6 +597,9 @@ async function callTool(name, args = {}) {
       role: "assistant",
       speakerId: bot.id,
       speakerName: bot.name,
+      speakerRole: bot.teamRole || "",
+      toId: mate.id,
+      toName: mate.name,
       content: `To ${mate.name}: ${content}`,
       ts: posted.ts,
     });
@@ -540,7 +614,46 @@ async function callTool(name, args = {}) {
         /* dispatch is best-effort */
       }
     }
+    const status = teams.TASK_STATUSES.includes(args.status) ? args.status : null;
+    if (status) {
+      const bumped = await teams.patchTeamStep(bot.teamId, {
+        botId: bot.teamRole === "chief" ? mate.id : bot.id,
+        status,
+        detail: args.detail || content.slice(0, 160),
+      });
+      if (bumped?.job) await emit("job", { teamId: bot.teamId, job: bumped.job });
+    }
     return { content: [{ type: "text", text: `sent to ${mate.name}` }] };
+  }
+  if (name === "list_tasks") {
+    const bot = await store.getBot(botId);
+    if (!bot?.teamId) return { content: [{ type: "text", text: "You are not on a team." }], isError: true };
+    const team = await teams.getTeam(bot.teamId);
+    if (!team?.job) return { content: [{ type: "text", text: "No team job yet." }] };
+    return {
+      content: [{ type: "text", text: JSON.stringify({ title: team.job.title, ...teams.jobProgress(team.job), steps: team.job.steps }, null, 2) }],
+    };
+  }
+  if (name === "set_job") {
+    const bot = await store.getBot(botId);
+    if (!bot?.teamId) return { content: [{ type: "text", text: "You are not on a team." }], isError: true };
+    const saved = await teams.setTeamJob(bot.teamId, { title: args.title, steps: args.steps });
+    if (saved?.job) await emit("job", { teamId: bot.teamId, job: saved.job });
+    return { content: [{ type: "text", text: saved?.job ? `Job “${saved.job.title}”` : "could not set job" }] };
+  }
+  if (name === "update_task") {
+    const bot = await store.getBot(botId);
+    if (!bot?.teamId) return { content: [{ type: "text", text: "You are not on a team." }], isError: true };
+    const bumped = await teams.patchTeamStep(bot.teamId, {
+      stepId: args.step_id,
+      label: args.label,
+      botId: bot.id,
+      status: args.status,
+      detail: args.detail,
+    });
+    if (!bumped?.step) return { content: [{ type: "text", text: "no matching step" }], isError: true };
+    await emit("job", { teamId: bot.teamId, job: bumped.job });
+    return { content: [{ type: "text", text: `${bumped.step.label}: ${bumped.step.status}` }] };
   }
   if (name === "ask_user") {
     const bot = await store.getBot(botId);
