@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * One chief + five scouts on a shared slim desk.
- * Each scout opens Google Maps, searches a different food in San Francisco,
- * and reports the top place back. Chief compiles.
+ * One chief + five scouts on one Linux computer, each on their own X display.
+ * Each scout opens Google Maps on THEIR screen, searches a different food in
+ * San Francisco, and reports the top place back. Chief compiles.
  * Does not touch AikaBotto or other non-test teams.
  */
 const BASE = process.env.SUB8_URL || "http://127.0.0.1:8787";
@@ -55,27 +55,65 @@ function lastAssistant(bot) {
 function looksLikeReport(text) {
   const t = String(text || "").toLowerCase();
   if (t.length < 80) return false;
-  if (/assignments are out|holding off the desk|i'll load the tools/i.test(t) && !/rating|\d\.\d/.test(t)) return false;
+  if (/assign(ed|ing)? all|running in parallel|i'll compile|i will compile|once all five|holding off the desk|i'll load the tools/i.test(t)) {
+    if (!/\d\.\d/.test(t) && !/★/.test(t)) return false;
+  }
   const foods = FOODS.filter((f) => t.includes(f.name.toLowerCase()));
-  const resultish = /rating|★|stars|\d\.\d|failed|none|→|->/.test(t);
-  return foods.length >= 4 && resultish;
+  const rated = (t.match(/\d\.\d/g) || []).length;
+  const failed = /failed|none|couldn't|could not|no result/i.test(t);
+  return foods.length >= 4 && (rated >= 3 || (rated >= 1 && failed));
 }
 
-async function dockerUpdateMem(container, mem = "2g") {
-  const { spawn } = await import("node:child_process");
+function dockerEnv() {
   const env = { ...process.env };
   if (!env.DOCKER_HOST) {
     const home = env.HOME || "";
     env.DOCKER_HOST = `unix://${home}/.colima/default/docker.sock`;
   }
-  await new Promise((resolve) => {
-    const child = spawn("docker", ["update", "--memory", mem, "--memory-swap", mem, container], {
-      env,
-      stdio: "inherit",
-    });
-    child.on("close", () => resolve());
-    child.on("error", () => resolve());
+  return env;
+}
+
+async function dockerRun(args, { stdio = "inherit" } = {}) {
+  const { spawn } = await import("node:child_process");
+  await new Promise((resolve, reject) => {
+    const child = spawn("docker", args, { env: dockerEnv(), stdio });
+    child.on("close", (code) => (code === 0 ? resolve() : resolve()));
+    child.on("error", reject);
   });
+}
+
+async function dockerUpdateMem(container, mem = "6g") {
+  await dockerRun(["update", "--memory", mem, "--memory-swap", mem, container]);
+}
+
+async function installDeskScripts(container) {
+  const { fileURLToPath } = await import("node:url");
+  const path = await import("node:path");
+  const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..") + "/";
+  const files = [
+    ["vm/desk-display.sh", "desk-display"],
+    ["vm/page-agent.py", "page-agent"],
+    ["vm/chrome-desktop.sh", "chrome-desktop"],
+    ["vm/chrome-one-tab.py", "chrome-one-tab"],
+  ];
+  for (const [rel, dest] of files) {
+    await dockerRun(["cp", `${root}${rel}`, `${container}:/tmp/${dest}`], { stdio: "ignore" });
+  }
+  await dockerRun([
+    "exec",
+    "-u",
+    "root",
+    container,
+    "bash",
+    "-lc",
+    "install -m 755 /tmp/desk-display /usr/local/bin/desk-display && install -m 755 /tmp/page-agent /usr/local/bin/page-agent && install -m 755 /tmp/chrome-desktop /usr/local/bin/chrome-desktop && install -m 755 /tmp/chrome-one-tab /usr/local/bin/chrome-one-tab",
+  ]);
+}
+
+async function startWorkerDisplays(container, n = 6) {
+  for (let i = 2; i <= n; i++) {
+    await dockerRun(["exec", "-u", "abc", "-e", "HOME=/config", container, "/usr/local/bin/desk-display", String(i)]);
+  }
 }
 
 async function main() {
@@ -121,18 +159,30 @@ async function main() {
   );
   if (!ready) throw new Error("desk did not become ready");
   const container = ready.vm?.container;
-  console.log("desk ready", container, ready.vm?.status);
-  if (container) await dockerUpdateMem(container, process.env.LOCALBOT_MEMORY || "2g");
+  console.log("desk ready", container, ready.vm?.status, "display", ready.vm?.display);
+  if (container) {
+    await dockerUpdateMem(container, process.env.LOCALBOT_MEMORY || "6g");
+    await installDeskScripts(container);
+    await startWorkerDisplays(container, 6);
+    console.log("worker displays :2-:6 up");
+  }
 
-  const assigns = FOODS.map((f) => `- ${f.name}: search Maps for "${f.query}", reply with the top restaurant name and rating (or "none").`).join("\n");
+  const roster = (await api("/api/bots")).filter((b) => (created.memberIds || []).includes(b.id));
+  for (const b of roster) {
+    console.log(" ", b.name, b.teamRole || "", b.vm?.display || "?", b.vm?.debugPort || "");
+  }
+
+  const assigns = FOODS.map((f) => `- ${f.name}: on YOUR screen, open Maps for "${f.query}", reply with the top restaurant name and rating (or "none").`).join("\n");
   const prompt = `You are Scout, chief of Maps Kitchen. Workers: ${FOODS.map((f) => f.name).join(", ")}.
 
-This team shares ONE computer and ONE Chrome. Never open a second Chrome or extra windows. Close extra tabs before each search.
+This team shares ONE Linux computer (same /config disk) but EACH worker has their own X display and Chrome (one tab). Do not drive a teammate's screen. Do not search Maps yourself.
 
-Assign via message_teammate ONE worker at a time. Wait for that worker's reply before assigning the next:
+Assign ALL five workers now via message_teammate (they can run in parallel):
 ${assigns}
 
-City is ${CITY}. Do not search Maps yourself. When all five have replied, send_message a short list: food → place → rating. If someone failed after one reminder, mark them failed and finish with what you have.`;
+Tell each worker: use the browser tool (navigate + snapshot + click/fill by ref). computer is only for dialogs. One tab. City is ${CITY}.
+
+When all five have replied, send_message a short list: food → place → rating. If someone failed after one reminder, mark them failed and finish with what you have.`;
 
   console.log("dispatching Maps food job to Scout");
   await api(`/api/teams/${created.id}/messages`, {
@@ -149,10 +199,13 @@ City is ${CITY}. Do not search Maps yourself. When all five have replied, send_m
       if (chief.busy) return null;
       const text = lastAssistant(chief);
       if (looksLikeReport(text)) return { chief, text, bots };
-      // still working if any member is busy
       const ids = new Set(created.memberIds);
       if (bots.some((b) => ids.has(b.id) && b.busy)) return null;
-      if (Date.now() - t0 > 90_000 && text && text.length > 80) return { chief, text, bots, weak: true };
+      const spoken = workers.filter((w) => lastAssistant(bots.find((x) => x.id === w.id)).length > 60).length;
+      if (spoken >= 4 && looksLikeReport(text)) return { chief, text, bots };
+      if (spoken >= 4 && Date.now() - t0 > 3 * 60_000 && text && text.length > 80 && /pizza|tacos|sushi|ramen|burger/i.test(text)) {
+        return { chief, text, bots, weak: true };
+      }
       return null;
     },
     { timeoutMs: DEADLINE_MS, every: 5000 },
