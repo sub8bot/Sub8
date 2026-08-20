@@ -239,6 +239,7 @@ function vmStatusDetail(bot) {
   if (isTransientVmError(bot?.vm?.error)) return "Installing Chrome and tools. This can take a minute on a new computer.";
   if (bot?.vm?.error) return bot.vm.error;
   if (bot?.vm?.status === "starting") return "Waiting for the desktop…";
+  if (bot?.vm?.container && !bot?.vm?.novncPort) return "Waiting for this Bot's screen…";
   return "Computer not assigned yet";
 }
 
@@ -5980,9 +5981,23 @@ async function resetVm() {
 function reconnectStream() {
   const bot = state.bots.find((b) => b.id === state.selected);
   if (!bot) return;
-  scheduleStreamRetry(bot, 0);
   const label = $("#screen-label");
   if (label) label.textContent = `${bot.name}'s screen`;
+  api(`/api/bots/${bot.id}/stream-health`)
+    .then((h) => {
+      if (state.selected !== bot.id) return;
+      const applied = applyHealthPort(bot, h);
+      const live = applied.changed ? applied.bot : bot;
+      if (applied.changed) {
+        const i = state.bots.findIndex((b) => b.id === bot.id);
+        if (i >= 0) state.bots[i] = { ...state.bots[i], vm: live.vm };
+      }
+      liveFrameKey = null;
+      attachLiveFrame(live);
+    })
+    .catch(() => {
+      scheduleStreamRetry(bot, 0);
+    });
 }
 
 async function rebootVm() {
