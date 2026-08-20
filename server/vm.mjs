@@ -1541,7 +1541,7 @@ async function annotateShot(hostPath, x, y) {
   if (!r.ok) return null;
   try {
     const buf = await fs.readFile(tmp);
-    await fs.rename(tmp, hostPath);
+    await fs.unlink(tmp).catch(() => {});
     return buf;
   } catch {
     return null;
