@@ -176,12 +176,13 @@ const TOOLS = [
   },
   {
     name: "message_teammate",
-    description: "Talk to a teammate in one short line. Optional status/detail updates the team job bar.",
+    description: "Talk to a teammate in one short line. Chief: a new task renames that Bot's tab to the step label. Optional status/detail updates the team job bar.",
     inputSchema: {
       type: "object",
       properties: {
         bot_id: { type: "string" },
         content: { type: "string" },
+        label: { type: "string" },
         status: { type: "string", enum: ["pending", "running", "done", "blocked", "looping"] },
         detail: { type: "string" },
       },
@@ -615,13 +616,33 @@ async function callTool(name, args = {}) {
       }
     }
     const status = teams.TASK_STATUSES.includes(args.status) ? args.status : null;
-    if (status) {
+    if (bot.teamRole === "chief") {
+      const assigned = await teams.onWorkerAssigned(bot.teamId, mate.id, {
+        label: args.label,
+        content,
+        status,
+        detail: args.detail,
+        stepId: args.step_id,
+      });
+      if (assigned?.team?.job) await emit("job", { teamId: bot.teamId, job: assigned.team.job });
+      for (const b of assigned?.renamed || []) {
+        await emit("teammate", {
+          bot: { id: b.id, name: b.name, teamId: b.teamId, teamRole: b.teamRole, color: b.color, harness: b.harness, vm: b.vm, description: b.description },
+        });
+      }
+      if (assigned?.bot?.name) mate.name = assigned.bot.name;
+    } else if (status) {
       const bumped = await teams.patchTeamStep(bot.teamId, {
-        botId: bot.teamRole === "chief" ? mate.id : bot.id,
+        botId: bot.id,
         status,
         detail: args.detail || content.slice(0, 160),
       });
       if (bumped?.job) await emit("job", { teamId: bot.teamId, job: bumped.job });
+      for (const b of bumped?.renamed || []) {
+        await emit("teammate", {
+          bot: { id: b.id, name: b.name, teamId: b.teamId, teamRole: b.teamRole, color: b.color, harness: b.harness, vm: b.vm, description: b.description },
+        });
+      }
     }
     return { content: [{ type: "text", text: `sent to ${mate.name}` }] };
   }
@@ -639,6 +660,11 @@ async function callTool(name, args = {}) {
     if (!bot?.teamId) return { content: [{ type: "text", text: "You are not on a team." }], isError: true };
     const saved = await teams.setTeamJob(bot.teamId, { title: args.title, steps: args.steps });
     if (saved?.job) await emit("job", { teamId: bot.teamId, job: saved.job });
+    for (const b of saved?.renamed || []) {
+      await emit("teammate", {
+        bot: { id: b.id, name: b.name, teamId: b.teamId, teamRole: b.teamRole, color: b.color, harness: b.harness, vm: b.vm, description: b.description },
+      });
+    }
     return { content: [{ type: "text", text: saved?.job ? `Job “${saved.job.title}”` : "could not set job" }] };
   }
   if (name === "update_task") {
@@ -653,6 +679,11 @@ async function callTool(name, args = {}) {
     });
     if (!bumped?.step) return { content: [{ type: "text", text: "no matching step" }], isError: true };
     await emit("job", { teamId: bot.teamId, job: bumped.job });
+    for (const b of bumped.renamed || []) {
+      await emit("teammate", {
+        bot: { id: b.id, name: b.name, teamId: b.teamId, teamRole: b.teamRole, color: b.color, harness: b.harness, vm: b.vm, description: b.description },
+      });
+    }
     return { content: [{ type: "text", text: `${bumped.step.label}: ${bumped.step.status}` }] };
   }
   if (name === "ask_user") {

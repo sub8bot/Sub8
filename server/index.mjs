@@ -808,6 +808,7 @@ app.put("/api/teams/:id/job", async (req, res) => {
     steps: req.body?.steps,
   });
   broadcast("job", { teamId: team.id, job: saved.job });
+  if (saved.renamed?.length) broadcast("bots", (await store.loadBots()).map(toClient));
   broadcast("teams", await publicTeams());
   res.json(saved.job);
 });
@@ -818,6 +819,7 @@ app.patch("/api/teams/:id/job", async (req, res) => {
   const bumped = await teams.patchTeamStep(team.id, req.body || {});
   if (!bumped?.step) return res.status(404).json({ error: "step not found" });
   broadcast("job", { teamId: team.id, job: bumped.job });
+  if (bumped.renamed?.length) broadcast("bots", (await store.loadBots()).map(toClient));
   broadcast("teams", await publicTeams());
   res.json(bumped.job);
 });

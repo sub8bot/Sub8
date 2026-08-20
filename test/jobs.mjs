@@ -1,5 +1,14 @@
 import assert from "node:assert/strict";
-import { applyStepUpdate, jobProgress, maybeFinalizeSummary, newJob } from "../server/teams.mjs";
+import {
+  applyStepUpdate,
+  isMetaStepLabel,
+  jobProgress,
+  matchStepForAssignment,
+  maybeFinalizeSummary,
+  newJob,
+  taskTabName,
+  uniqueMemberName,
+} from "../server/teams.mjs";
 
 const job = newJob({
   title: "SF food",
@@ -32,5 +41,30 @@ const early = newJob({ title: "wait", steps: [{ label: "Pizza", bot_id: "p" }, {
 assert.equal(maybeFinalizeSummary(early).finalized, false);
 applyStepUpdate(early, { label: "Pizza", status: "done" });
 assert.equal(maybeFinalizeSummary(early).finalized, true);
+
+assert.equal(isMetaStepLabel("Summary"), true);
+assert.equal(isMetaStepLabel("San Jose shops"), false);
+assert.equal(taskTabName("San Jose shops"), "San Jose shops");
+assert.ok(taskTabName("Find 5 well-rated flower shops in San Jose, CA (Google Maps). For each: name").toLowerCase().includes("flower"));
+assert.equal(
+  uniqueMemberName("San Jose shops", [{ id: "x", name: "San Jose shops" }, { id: "p", name: "pizza-scout" }], "p"),
+  "San Jose shops 2",
+);
+
+const flowers = newJob({
+  title: "Flower shops",
+  steps: [
+    { label: "San Francisco shops" },
+    { label: "San Jose shops" },
+    { label: "Milpitas shops" },
+    { label: "Compile list" },
+  ],
+});
+assert.equal(matchStepForAssignment(flowers, "Find 5 well-rated flower shops in San Jose, CA (Google Maps)")?.label, "San Jose shops");
+assert.equal(matchStepForAssignment(flowers, "Find 5 well-rated flower shops in Milpitas, CA")?.label, "Milpitas shops");
+assert.equal(matchStepForAssignment(flowers, "please compile the list")?.label, undefined);
+
+r = applyStepUpdate(flowers, { label: "San Jose shops", botId: "pizza-scout", status: "running" });
+assert.equal(r.step.botId, "pizza-scout");
 
 console.log("ok jobs");

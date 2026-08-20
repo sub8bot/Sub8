@@ -65,6 +65,7 @@ export async function saveTeam(partial) {
       return row;
     }
     rows[i] = { ...rows[i], ...partial, id: rows[i].id, updatedAt: Date.now() };
+    delete rows[i].renamed;
     await writeAll(rows);
     return rows[i];
   });
@@ -238,8 +239,13 @@ export function findStep(job, { stepId, label, botId } = {}) {
   if (stepId) return steps.find((s) => s.id === stepId) || null;
   if (botId) {
     const hits = steps.filter((s) => s.botId === botId);
+    if (label) {
+      const want = String(label).toLowerCase();
+      const named = hits.find((s) => s.label.toLowerCase() === want) || hits.find((s) => s.label.toLowerCase().includes(want));
+      if (named) return named;
+    }
     if (hits.length === 1) return hits[0];
-    if (label) return hits.find((s) => s.label.toLowerCase() === String(label).toLowerCase()) || hits[0] || null;
+    if (hits[0] && !label) return hits[0];
   }
   if (label) {
     const want = String(label).toLowerCase();
@@ -261,9 +267,126 @@ export function applyStepUpdate(job, patch = {}) {
     if (next === "done" || next === "pending") step.loopCount = 0;
   }
   if (patch.detail != null) step.detail = String(patch.detail).slice(0, 160);
+  if (patch.botId) {
+    for (const s of job.steps) {
+      if (s.botId === patch.botId && s.id !== step.id) s.botId = null;
+    }
+    step.botId = patch.botId;
+  }
   step.updatedAt = Date.now();
   job.updatedAt = Date.now();
   return { job, step };
+}
+
+export function isMetaStepLabel(label) {
+  return /^(summary|compile(?:d)?(?: list)?|report)$/i.test(String(label || "").trim());
+}
+
+export function taskTabName(raw) {
+  let s = String(raw || "").split(/[\n.]/)[0].replace(/\s+/g, " ").trim();
+  s = s.replace(/^(go:\s*|please\s+|find\s+\d*\s*|search(?:\s+the\s+web)?\s+(?:for\s+)?)/i, "");
+  s = s.replace(/\s*\([^)]*\)\s*$/, "");
+  if (s.length > 36) {
+    const cut = s.slice(0, 36);
+    const sp = cut.lastIndexOf(" ");
+    s = (sp > 16 ? cut.slice(0, sp) : cut).trim();
+  }
+  return s || "";
+}
+
+export function uniqueMemberName(want, members, selfId) {
+  const base = taskTabName(want) || String(want || "").trim().slice(0, 32);
+  if (!base) return "";
+  const taken = new Set(
+    (members || []).filter((m) => m.id !== selfId).map((m) => String(m.name || "").toLowerCase()),
+  );
+  if (!taken.has(base.toLowerCase())) return base;
+  for (let n = 2; n < 20; n++) {
+    const cand = `${base.slice(0, 28)} ${n}`;
+    if (!taken.has(cand.toLowerCase())) return cand;
+  }
+  return base;
+}
+
+export function matchStepForAssignment(job, content) {
+  const t = String(content || "").toLowerCase();
+  if (!t || !job?.steps?.length) return null;
+  let best = null;
+  let bestScore = 0;
+  for (const s of job.steps) {
+    if (isMetaStepLabel(s.label)) continue;
+    const tokens = String(s.label || "")
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length > 2);
+    if (!tokens.length) continue;
+    const hits = tokens.filter((w) => t.includes(w)).length;
+    if (!hits) continue;
+    const score = hits / tokens.length + (s.botId ? 0 : 0.05);
+    if (score > bestScore) {
+      best = s;
+      bestScore = score;
+    }
+  }
+  return bestScore >= 0.5 ? best : null;
+}
+
+export async function nameWorkerForTask(bot, label, { teamId, assignment, setBrief = false } = {}) {
+  if (!bot || bot.teamRole === "chief") return bot;
+  if (isMetaStepLabel(label)) return bot;
+  const members = teamId ? membersOf(await getTeam(teamId), await store.loadBots()) : [];
+  const want = uniqueMemberName(label, members, bot.id);
+  if (!want) return bot;
+  const brief = setBrief ? String(assignment || label || "").replace(/\s+/g, " ").trim().slice(0, 200) : "";
+  if (bot.name === want && (!brief || bot.description === brief)) return bot;
+  bot.name = want;
+  if (brief) {
+    bot.description = brief;
+    bot.instructions = brief;
+  }
+  await store.upsertBot(bot);
+  return bot;
+}
+
+export async function syncJobWorkerNames(team) {
+  const renamed = [];
+  if (!team?.job) return renamed;
+  for (const step of team.job.steps || []) {
+    if (!step.botId || isMetaStepLabel(step.label)) continue;
+    const bot = await store.getBot(step.botId);
+    if (!bot) continue;
+    const before = bot.name;
+    const next = await nameWorkerForTask(bot, step.label, { teamId: team.id });
+    if (next && next.name !== before) renamed.push(next);
+  }
+  return renamed;
+}
+
+export async function onWorkerAssigned(teamId, workerId, { label, content, status, detail, stepId } = {}) {
+  const team = await getTeam(teamId);
+  const bot = await store.getBot(workerId);
+  if (!team || !bot || bot.teamRole === "chief") return { team, bot, step: null, renamed: [] };
+  const hint = [label, content].filter(Boolean).join(" ");
+  let step = null;
+  if (team.job) {
+    if (stepId || label) step = findStep(team.job, { stepId, label });
+    if (!step) step = matchStepForAssignment(team.job, hint);
+  }
+  if (step && team.job) {
+    for (const s of team.job.steps) {
+      if (s.botId === workerId && s.id !== step.id) s.botId = null;
+    }
+    const patch = { stepId: step.id, botId: workerId };
+    if (TASK_STATUSES.includes(status)) patch.status = status;
+    if (detail != null) patch.detail = detail;
+    applyStepUpdate(team.job, patch);
+    await saveTeam({ ...team, job: team.job });
+  }
+  const nameFrom = (step && !isMetaStepLabel(step.label) ? step.label : "") || label || content;
+  const before = bot.name;
+  const next = await nameWorkerForTask(bot, nameFrom, { teamId, assignment: content || detail, setBrief: true });
+  const renamed = next && next.name !== before ? [next] : [];
+  return { team: await getTeam(teamId), bot: next || bot, step, renamed };
 }
 
 /** When every non-summary step is done/blocked, mark Summary done. No text matching. */
@@ -283,14 +406,25 @@ export async function setTeamJob(teamId, spec) {
   const team = await getTeam(teamId);
   if (!team) return null;
   const job = newJob(spec);
-  return saveTeam({ ...team, job });
+  const saved = await saveTeam({ ...team, job });
+  const renamed = await syncJobWorkerNames(saved);
+  return { ...saved, renamed };
 }
 
 export async function patchTeamStep(teamId, patch) {
   const team = await getTeam(teamId);
   if (!team?.job) return null;
   const { job, step } = applyStepUpdate(team.job, patch);
-  if (!step) return { team, job, step: null };
+  if (!step) return { team, job, step: null, renamed: [] };
   const saved = await saveTeam({ ...team, job });
-  return { team: saved, job: saved.job, step };
+  const renamed = [];
+  if (step.botId && !isMetaStepLabel(step.label)) {
+    const bot = await store.getBot(step.botId);
+    if (bot) {
+      const before = bot.name;
+      const next = await nameWorkerForTask(bot, step.label, { teamId });
+      if (next && next.name !== before) renamed.push(next);
+    }
+  }
+  return { team: saved, job: saved.job, step, renamed };
 }

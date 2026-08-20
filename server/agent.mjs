@@ -185,12 +185,13 @@ const TOOLS = [
     function: {
       name: "message_teammate",
       description:
-        "Talk to a teammate. Keep it to ONE short line (place and rating, or a blocker). Long writeups stay in your own chat. Optional status/detail also updates the team job bar.",
+        "Talk to a teammate. Keep it to ONE short line (place and rating, or a blocker). Long writeups stay in your own chat. Chief: assigning a new task renames that Bot's tab to the step label. Optional status/detail also updates the team job bar.",
       parameters: {
         type: "object",
         properties: {
           bot_id: { type: "string", description: "Teammate id from list_teammates" },
           content: { type: "string", description: "One short line. Long notes stay in your own chat." },
+          label: { type: "string", description: "Job-step label. Chief: this becomes the worker's tab name." },
           status: { type: "string", enum: ["pending", "running", "done", "blocked", "looping"] },
           detail: { type: "string", description: "Short progress line for the job bar (max ~160 chars)" },
         },
@@ -210,7 +211,7 @@ const TOOLS = [
     type: "function",
     function: {
       name: "set_job",
-      description: "Chief: replace the team job on the progress bar. steps: [{label, bot_id}]. One-shot work uses this, not upsert_routine.",
+      description: "Chief: replace the team job on the progress bar. steps: [{label, bot_id}]. Worker tab names follow those labels. One-shot work uses this, not upsert_routine.",
       parameters: {
         type: "object",
         properties: {
@@ -1467,14 +1468,33 @@ async function execTool(bot, name, args, emit, settings) {
       bot.messages.push(note);
       emit("message", note);
       const status = teams.TASK_STATUSES.includes(args.status) ? args.status : null;
-      if (status) {
-        const patch = {
-          botId: bot.teamRole === "chief" ? mate.id : bot.id,
+      if (bot.teamRole === "chief") {
+        const assigned = await teams.onWorkerAssigned(bot.teamId, mate.id, {
+          label: args.label,
+          content,
+          status,
+          detail: args.detail,
+          stepId: args.step_id,
+        });
+        if (assigned?.team?.job) emit("job", { teamId: bot.teamId, job: assigned.team.job });
+        for (const b of assigned?.renamed || []) {
+          emit("teammate", {
+            bot: { id: b.id, name: b.name, teamId: b.teamId, teamRole: b.teamRole, color: b.color, harness: b.harness, vm: b.vm, description: b.description },
+          });
+        }
+        if (assigned?.bot?.name && assigned.bot.name !== mate.name) mate.name = assigned.bot.name;
+      } else if (status) {
+        const bumped = await teams.patchTeamStep(bot.teamId, {
+          botId: bot.id,
           status,
           detail: args.detail || content,
-        };
-        const bumped = await teams.patchTeamStep(bot.teamId, patch);
+        });
         if (bumped?.job) emit("job", { teamId: bot.teamId, job: bumped.job });
+        for (const b of bumped?.renamed || []) {
+          emit("teammate", {
+            bot: { id: b.id, name: b.name, teamId: b.teamId, teamRole: b.teamRole, color: b.color, harness: b.harness, vm: b.vm, description: b.description },
+          });
+        }
       }
       if (typeof dispatchTeammate === "function") {
         dispatchTeammate(mate.id, content, bot);
@@ -1492,6 +1512,11 @@ async function execTool(bot, name, args, emit, settings) {
       const saved = await teams.setTeamJob(bot.teamId, { title: args.title, steps: args.steps });
       if (!saved?.job) return { text: "could not set job" };
       emit("job", { teamId: bot.teamId, job: saved.job });
+      for (const b of saved.renamed || []) {
+        emit("teammate", {
+          bot: { id: b.id, name: b.name, teamId: b.teamId, teamRole: b.teamRole, color: b.color, harness: b.harness, vm: b.vm, description: b.description },
+        });
+      }
       return { text: `Job “${saved.job.title}” · ${saved.job.steps.length} steps` };
     }
     if (name === "update_task") {
@@ -1505,6 +1530,11 @@ async function execTool(bot, name, args, emit, settings) {
       });
       if (!bumped?.step) return { text: "no matching step — list_tasks and use label or step_id" };
       emit("job", { teamId: bot.teamId, job: bumped.job });
+      for (const b of bumped.renamed || []) {
+        emit("teammate", {
+          bot: { id: b.id, name: b.name, teamId: b.teamId, teamRole: b.teamRole, color: b.color, harness: b.harness, vm: b.vm, description: b.description },
+        });
+      }
       return { text: `${bumped.step.label}: ${bumped.step.status}${bumped.step.detail ? ` · ${bumped.step.detail}` : ""}` };
     }
     if (name === "ask_user") {
