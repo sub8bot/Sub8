@@ -1011,9 +1011,10 @@ export async function installOctoVault(container) {
 }
 
 export async function installOctoClick(container) {
-  const host = path.resolve(fileRoot, "vm", "octo-click.sh");
-  const cp = await docker(["cp", host, `${container}:/tmp/octo-click.sh`]);
-  if (!cp.ok) return;
+  const clickHost = path.resolve(fileRoot, "vm", "octo-click.sh");
+  const inputHost = path.resolve(fileRoot, "vm", "box-input.py");
+  await docker(["cp", clickHost, `${container}:/tmp/octo-click.sh`]);
+  const input = await docker(["cp", inputHost, `${container}:/tmp/box-input.py`]);
   await docker([
     "exec",
     "-u",
@@ -1021,7 +1022,8 @@ export async function installOctoClick(container) {
     container,
     "bash",
     "-lc",
-    "install -m 755 /tmp/octo-click.sh /usr/local/bin/octo-click",
+    "install -m 755 /tmp/octo-click.sh /usr/local/bin/octo-click" +
+      (input.ok ? " && install -m 755 /tmp/box-input.py /usr/local/bin/box-input" : ""),
   ]);
 }
 
@@ -1394,7 +1396,7 @@ export async function mouseMove(bot, x, y) {
     bot.vm.container,
     "bash",
     "-lc",
-    `${displayEnv(bot)}; unset WINDOW; xdotool mousemove --screen 0 ${p.x} ${p.y}`,
+    `${displayEnv(bot)}; if [ -x /usr/local/bin/box-input ]; then /usr/local/bin/box-input move ${p.x} ${p.y}; else unset WINDOW; xdotool mousemove --screen 0 ${p.x} ${p.y}; fi`,
   ]);
   if (!r.ok) throw new Error(`mousemove failed: ${r.out.slice(-400)}`);
 }
@@ -1407,8 +1409,10 @@ export async function mouseLocation(bot) {
     bot.vm.container,
     "bash",
     "-lc",
-    `${displayEnv(bot)}; xdotool getmouselocation --shell`,
+    `${displayEnv(bot)}; if [ -x /usr/local/bin/box-input ]; then /usr/local/bin/box-input location; else xdotool getmouselocation --shell; fi`,
   ]);
+  const ptr = r.out.match(/POINTER=(\d+),(\d+)/);
+  if (ptr) return { x: Number(ptr[1]), y: Number(ptr[2]), raw: r.out };
   const x = Number((r.out.match(/X=(\d+)/) || [])[1] || -1);
   const y = Number((r.out.match(/Y=(\d+)/) || [])[1] || -1);
   return { x, y, raw: r.out };
@@ -1448,7 +1452,7 @@ export async function click(bot, x, y, button = 1, count = 1) {
       bot.vm.container,
       "bash",
       "-lc",
-      `${displayEnv(bot)}; if [ -x /usr/local/bin/octo-click ]; then /usr/local/bin/octo-click ${p.x} ${p.y} ${button} ${n}; else ${pointerScript(p.x, p.y)}; xdotool click --clearmodifiers --repeat ${n} --delay 40 ${button}; eval "$(xdotool getmouselocation --shell)"; echo POINTER=$X,$Y; fi`,
+      `${displayEnv(bot)}; if [ -x /usr/local/bin/box-input ]; then /usr/local/bin/box-input click ${p.x} ${p.y} ${button} ${n}; elif [ -x /usr/local/bin/octo-click ]; then /usr/local/bin/octo-click ${p.x} ${p.y} ${button} ${n}; else ${pointerScript(p.x, p.y)}; xdotool click --clearmodifiers --repeat ${n} --delay 40 ${button}; eval "$(xdotool getmouselocation --shell)"; echo POINTER=$X,$Y; fi`,
     ]);
     if (!r.ok) throw new Error(`click failed: ${r.out.slice(-400)}`);
     await wait(160);
@@ -1465,7 +1469,7 @@ export async function drag(bot, x1, y1, x2, y2) {
     bot.vm.container,
     "bash",
     "-lc",
-    `${displayEnv(bot)}; ${pointerScript(a.x, a.y)}; xdotool mousedown 1; xdotool mousemove --screen 0 ${b.x} ${b.y}; xdotool mouseup 1`,
+    `${displayEnv(bot)}; if [ -x /usr/local/bin/box-input ]; then /usr/local/bin/box-input move ${a.x} ${a.y}; /usr/local/bin/box-input down 1; /usr/local/bin/box-input move ${b.x} ${b.y}; /usr/local/bin/box-input up 1; else ${pointerScript(a.x, a.y)}; xdotool mousedown 1; xdotool mousemove --screen 0 ${b.x} ${b.y}; xdotool mouseup 1; fi`,
   ]);
   if (!r.ok) throw new Error(`drag failed: ${r.out.slice(-400)}`);
 }
@@ -1474,7 +1478,7 @@ export async function typeText(bot, text) {
   await focusOwnedWindow(bot);
   if (!text) return;
   requireVm(bot, "type");
-  const escaped = String(text).replace(/'/g, `'\\''`);
+  const b64 = Buffer.from(String(text), "utf8").toString("base64");
   const r = await docker([
     "exec",
     "-u",
@@ -1482,26 +1486,15 @@ export async function typeText(bot, text) {
     bot.vm.container,
     "bash",
     "-lc",
-    `${displayEnv(bot)}; wid=$(xdotool getwindowfocus); xdotool windowactivate "$wid" 2>/dev/null || true; xdotool type --clearmodifiers --delay 12 '${escaped}'`,
+    `${displayEnv(bot)}; if [ -x /usr/local/bin/box-input ]; then /usr/local/bin/box-input type-b64 ${b64}; else echo '${b64}' | base64 -d | xclip -selection clipboard && xdotool key --clearmodifiers ctrl+v; fi`,
   ]);
-  if (!r.ok) {
-    const b64 = Buffer.from(String(text), "utf8").toString("base64");
-    const t = await docker([
-      "exec",
-      "-u",
-      "abc",
-      bot.vm.container,
-      "bash",
-      "-lc",
-      `${displayEnv(bot)}; echo '${b64}' | base64 -d | xclip -selection clipboard && xdotool key --clearmodifiers ctrl+v`,
-    ]);
-    if (!t.ok) throw new Error(`type failed: ${t.out.slice(-400)}`);
-  }
+  if (!r.ok) throw new Error(`type failed: ${r.out.slice(-400)}`);
 }
 
 export async function key(bot, keys) {
   await focusOwnedWindow(bot);
   const seq = String(keys).trim().replace(/\+/g, "+");
+  const safe = seq.replace(/[^A-Za-z0-9+_]/g, "");
   const r = await docker([
     "exec",
     "-u",
@@ -1509,7 +1502,7 @@ export async function key(bot, keys) {
     bot.vm.container,
     "bash",
     "-lc",
-    `${displayEnv(bot)}; xdotool key --clearmodifiers ${seq}`,
+    `${displayEnv(bot)}; if [ -x /usr/local/bin/box-input ]; then /usr/local/bin/box-input key ${safe}; else xdotool key --clearmodifiers ${safe}; fi`,
   ]);
   if (!r.ok) throw new Error(`key failed: ${r.out.slice(-400)}`);
 }
@@ -1520,6 +1513,10 @@ export async function scroll(bot, x, y, dy, dx = 0) {
   const hbtn = dx < 0 ? 6 : dx > 0 ? 7 : 0;
   const vn = Math.min(16, Math.max(vbtn ? 1 : 0, Math.abs(Math.round(dy / 40)) || 0));
   const hn = Math.min(16, Math.max(hbtn ? 1 : 0, Math.abs(Math.round(dx / 40)) || 0));
+  const clicker = (btn, n) =>
+    n && btn
+      ? `for i in $(seq 1 ${n}); do if [ -x /usr/local/bin/box-input ]; then /usr/local/bin/box-input down ${btn}; /usr/local/bin/box-input up ${btn}; else xdotool click ${btn}; fi; done;`
+      : "";
   const r = await docker([
     "exec",
     "-u",
@@ -1527,7 +1524,7 @@ export async function scroll(bot, x, y, dy, dx = 0) {
     bot.vm.container,
     "bash",
     "-lc",
-    `${displayEnv(bot)}; ${vn && vbtn ? `for i in $(seq 1 ${vn}); do xdotool click ${vbtn}; done;` : ""} ${hn && hbtn ? `for i in $(seq 1 ${hn}); do xdotool click ${hbtn}; done;` : ""} true`,
+    `${displayEnv(bot)}; ${clicker(vbtn, vn)} ${clicker(hbtn, hn)} true`,
   ]);
   if (!r.ok) throw new Error(`scroll failed: ${r.out.slice(-400)}`);
 }

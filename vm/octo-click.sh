@@ -1,6 +1,7 @@
 #!/bin/bash
 # Reliable screen-absolute click for Sub8 / Grok Build.
 # Usage: octo-click X Y [button] [count]
+# Prefers XTEST (box-input). Falls back to xdotool if XTEST is missing.
 set -euo pipefail
 export DISPLAY="${DISPLAY:-:1}"
 export XAUTHORITY="${XAUTHORITY:-/config/.Xauthority}"
@@ -9,6 +10,11 @@ TX="${1:?x}"
 TY="${2:?y}"
 BTN="${3:-1}"
 N="${4:-1}"
+if [ -x /usr/local/bin/box-input ]; then
+  if /usr/local/bin/box-input click "$TX" "$TY" "$BTN" "$N"; then
+    exit 0
+  fi
+fi
 REAL="${OCTO_XDOTOOL:-/usr/bin/xdotool}"
 unset WINDOW
 timeout 0.2 "$REAL" mousemove --sync --screen 0 "$TX" "$TY" >/dev/null 2>&1 \
