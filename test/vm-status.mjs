@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { parseLocalbotPs, resolveStreamPort, urlLooksOpen, screenshotCmd } from "../server/vm.mjs";
+import { parseLocalbotPs, parseDisplayPorts, resolveStreamPort, streamPortForDisplay, urlLooksOpen, screenshotCmd } from "../server/vm.mjs";
 import { applyHealthPort, CONNECTING_AFTER_MS, frameKey, healthIframeIsCurrent, shouldShowConnecting } from "../web/stream-bind.mjs";
 
 const states = parseLocalbotPs(
@@ -27,6 +27,20 @@ const mapped = parseLocalbotPs(
 );
 assert.equal(mapped.get("localbot-6d6cfe52")?.novncPort, 13101);
 assert.equal(mapped.get("localbot-438716ea")?.novncPort, null);
+
+const ranged = parseLocalbotPs(
+  "localbot-88c5ceac\trunning\tUp 1 minute\t0.0.0.0:13102->3000/tcp, 0.0.0.0:13103->3001/tcp, 0.0.0.0:13104->3002/tcp",
+);
+assert.equal(ranged.get("localbot-88c5ceac")?.novncPort, 13102);
+assert.equal(ranged.get("localbot-88c5ceac")?.portMap[3001], 13103);
+assert.deepEqual(parseDisplayPorts("0.0.0.0:13102->3000/tcp, [::]:13102->3000/tcp, 0.0.0.0:13103->3001/tcp"), {
+  3000: 13102,
+  3001: 13103,
+});
+assert.equal(streamPortForDisplay(1, { 3000: 13102, 3001: 13103 }, 13102), 13102);
+assert.equal(streamPortForDisplay(2, { 3000: 13102, 3001: 13103 }, 13102), 13103);
+assert.equal(streamPortForDisplay(2, { 3000: 13102 }, 13102), null, "do not steal :1's port for a worker");
+assert.equal(streamPortForDisplay(2, { 3000: 13102 }, 13103), 13103);
 
 // A stored port that still answers HTTP can belong to a *different* desk
 // after Docker remaps. Mapped always wins; stored is only a fallback.

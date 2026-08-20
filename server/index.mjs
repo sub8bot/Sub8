@@ -34,15 +34,17 @@ const busyIds = new Set();
 const internalToken = randomBytes(24).toString("hex");
 function toClient(bot, opts = {}) {
   const mapped = bot.vm?.container ? vm.cachedMappedPort(bot.vm.container) : null;
+  const portMap = bot.vm?.container ? vm.cachedPortMap(bot.vm.container) : null;
   const n = vm.displayNum(bot);
-  let novncPort = bot.vm?.novncPort;
-  if (n <= 1) novncPort = vm.resolveStreamPort(bot.vm?.novncPort, mapped);
-  else if (mapped && novncPort === mapped) novncPort = null;
+  const novncPort = vm.streamPortForDisplay(n, portMap || (mapped ? { 3000: mapped } : null), bot.vm?.novncPort);
   const client = publicBot(bot, { tail: opts.tail ?? 24, ...opts });
   if (client.vm) {
-    client.vm = { ...client.vm, display: bot.vm?.display || ":1", debugPort: bot.vm?.debugPort || vm.debugPortFor(n) };
-    if (novncPort && client.vm.novncPort !== novncPort) client.vm = { ...client.vm, novncPort };
-    if (n > 1 && !novncPort) client.vm = { ...client.vm, novncPort: null };
+    client.vm = {
+      ...client.vm,
+      display: bot.vm?.display || ":1",
+      debugPort: bot.vm?.debugPort || vm.debugPortFor(n),
+      novncPort: novncPort || null,
+    };
   }
   return {
     ...client,
@@ -1038,7 +1040,7 @@ app.get("/api/bots/:id/stream-health", async (req, res) => {
     if (health.novncPort && bot.vm?.novncPort !== health.novncPort) {
       bot.vm = { ...bot.vm, novncPort: health.novncPort };
       await store.upsertBot(bot);
-      if (bot.vm.computerId) {
+      if (vm.displayNum(bot) <= 1 && bot.vm.computerId) {
         const full = await computers.getComputer(bot.vm.computerId);
         if (full && full.novncPort !== health.novncPort) {
           await computers.saveComputer({ ...full, novncPort: health.novncPort });

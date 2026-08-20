@@ -366,6 +366,25 @@ export async function dockerStatus() {
   return dockerStatusInflight;
 }
 
+export function parseDisplayPorts(ports) {
+  const map = {};
+  const re = /:(\d+)->(300[0-7])\/tcp/g;
+  const s = String(ports || "");
+  let m;
+  while ((m = re.exec(s))) map[Number(m[2])] = Number(m[1]);
+  return map;
+}
+
+/** Host noVNC port for display :N. Never fall back to :1's mapping for N>1. */
+export function streamPortForDisplay(n, portMap, stored) {
+  const slot = Number(n) >= 1 ? Number(n) : 1;
+  const cport = 2999 + slot;
+  if (portMap && portMap[cport]) return portMap[cport];
+  if (slot <= 1) return (portMap && portMap[3000]) || stored || null;
+  if (stored && portMap && stored === portMap[3000]) return null;
+  return stored || null;
+}
+
 export function parseLocalbotPs(out) {
   const states = new Map();
   for (const line of String(out || "").split("\n")) {
@@ -373,8 +392,8 @@ export function parseLocalbotPs(out) {
     if (!name || !name.startsWith("localbot-")) continue;
     // docker ps already knows the host port; reading it here keeps a remembered
     // port from outliving the mapping it came from.
-    const mapped = /:(\d+)->3000\/tcp/.exec(ports || "");
-    const novncPort = mapped ? Number(mapped[1]) : null;
+    const portMap = parseDisplayPorts(ports);
+    const novncPort = portMap[3000] || null;
     const paused = state === "paused" || /paused/i.test(status || "");
     let st = "exited";
     if (paused) st = "paused";
@@ -382,7 +401,7 @@ export function parseLocalbotPs(out) {
     else if (state === "dead") st = "missing";
     else if (state === "created" || state === "exited") st = "exited";
     else if (state) st = state;
-    states.set(name, { exists: true, status: st, running: st === "running", paused, stuck: false, novncPort });
+    states.set(name, { exists: true, status: st, running: st === "running", paused, stuck: false, novncPort, portMap });
   }
   return states;
 }
@@ -877,6 +896,7 @@ export async function startVm(bot, onLog = () => {}, shouldAbort = async () => f
   onLog(`Starting computer on port ${port}…`);
   const runr = await docker(deskCreateArgs({ name, volume, port, image: resolvedImage }), { timeout: 60_000 });
   if (!runr.ok) throw new Error(`docker run failed: ${runr.out.slice(-800)}`);
+  invalidateDockerCache();
   await abortIfGone();
 
   await waitHttp(`http://127.0.0.1:${port}/`, 90_000, onLog, shouldAbort);
@@ -1042,6 +1062,11 @@ export function resolveStreamPort(stored, mapped) {
 export function cachedMappedPort(name) {
   if (!name || !containerListCache.value?.states) return null;
   return containerListCache.value.states.get(name)?.novncPort || null;
+}
+
+export function cachedPortMap(name) {
+  if (!name || !containerListCache.value?.states) return null;
+  return containerListCache.value.states.get(name)?.portMap || null;
 }
 
 async function waitHttp(url, timeoutMs, onLog, shouldAbort) {
@@ -1340,11 +1365,21 @@ export async function streamHealth(bot) {
   // Ask Docker first. Probing the stored port and treating HTTP 200 as "ours"
   // steals another desk's stream after a remap (stored 13100, mapped 13101).
   let mapped = null;
+  let portMap = null;
   if (running && name) {
     const st = await inspectState(name);
     mapped = st.novncPort || (await detectMappedPort(name));
+    portMap = st.portMap || null;
+    if (!portMap || !Object.keys(portMap).length) {
+      portMap = mapped ? { 3000: mapped } : {};
+      const n = displayNum(bot);
+      if (n > 1) {
+        const extra = await detectMappedPort(name, 2999 + n);
+        if (extra) portMap[2999 + n] = extra;
+      }
+    }
   }
-  const port = resolveStreamPort(bot.vm?.novncPort, mapped);
+  const port = streamPortForDisplay(displayNum(bot), portMap, bot.vm?.novncPort) || (displayNum(bot) <= 1 ? mapped : null);
   const http = await probe(port);
   let grok = false;
   let chrome = name ? setupProgress(name).ready || chromeCache.get(name)?.value === true : false;
