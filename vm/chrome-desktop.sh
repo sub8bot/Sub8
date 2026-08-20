@@ -13,12 +13,14 @@ flags=(
   --no-sandbox
   --disable-dev-shm-usage
   --disable-gpu
+  --renderer-process-limit=4
   --no-first-run
   --no-default-browser-check
   --disable-session-crashed-bubble
+  --hide-crash-restore-bubble
   --disable-infobars
   --test-type
-  --disable-features=TranslateUI
+  --disable-features=TranslateUI,MediaRouter
   --start-maximized
   --window-position=0,0
   --window-size=1024,768

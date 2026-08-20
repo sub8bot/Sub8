@@ -1731,31 +1731,30 @@ export async function claimChromeWindow(bot) {
     name,
     "bash",
     "-lc",
-    `${displayEnv(bot)}; TAG=${JSON.stringify(tag)}; ID8=${JSON.stringify(id8)};
+    `${displayEnv(bot)}; TAG=${JSON.stringify(tag)};
+tagwin() { w="$1"; [ -n "$w" ] || return 1; wmctrl -i -r "$w" -N "$TAG" 2>/dev/null || true; xdotool set_window --name "$TAG" "$w" 2>/dev/null || true; echo WINDOW=$w; }
 HIT=$(wmctrl -l 2>/dev/null | awk -v t="$TAG" 'index($0,t){print $1; exit}')
-if [ -n "$HIT" ]; then echo WINDOW=$HIT; exit 0; fi
-PROF=/config/chrome-profiles/$ID8
-mkdir -p "$PROF"
+if [ -n "$HIT" ]; then tagwin "$HIT"; exit 0; fi
+# One computer → one Chrome. Reuse any existing window instead of a new profile.
+EXIST=$(wmctrl -lx 2>/dev/null | awk '/[Cc]hrom/{print $1; exit}')
+if [ -n "$EXIST" ]; then tagwin "$EXIST"; exit 0; fi
 BEFORE=$(wmctrl -lx 2>/dev/null | awk '/[Cc]hrom/{print $1}')
-CH=$(command -v google-chrome-stable || command -v google-chrome || command -v chromium || true)
-$CH --user-data-dir="$PROF" --no-sandbox --disable-dev-shm-usage --disable-gpu --no-first-run --disable-session-crashed-bubble --test-type --window-size=900,700 --new-window about:blank >/tmp/chrome-$ID8.log 2>&1 &
+if [ -x /usr/local/bin/chrome-desktop ]; then
+  /usr/local/bin/chrome-desktop about:blank >/tmp/chrome-desk.log 2>&1 &
+else
+  CH=$(command -v google-chrome-stable || command -v google-chrome || command -v chromium || true)
+  $CH --no-sandbox --disable-dev-shm-usage --disable-gpu --renderer-process-limit=4 --no-first-run --new-window about:blank >/tmp/chrome-desk.log 2>&1 &
+fi
 for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
   sleep 0.35
   AFTER=$(wmctrl -lx 2>/dev/null | awk '/[Cc]hrom/{print $1}')
   for w in $AFTER; do
     echo "$BEFORE" | grep -q "$w" && continue
-    wmctrl -i -r "$w" -N "$TAG" 2>/dev/null || true
-    xdotool set_window --name "$TAG" "$w" 2>/dev/null || true
-    echo WINDOW=$w
-    exit 0
+    tagwin "$w"; exit 0
   done
 done
-w=$(wmctrl -lx 2>/dev/null | awk '/[Cc]hrom/{id=$1} END{print id}')
-if [ -n "$w" ]; then
-  wmctrl -i -r "$w" -N "$TAG" 2>/dev/null || true
-  echo WINDOW=$w
-  exit 0
-fi
+w=$(wmctrl -lx 2>/dev/null | awk '/[Cc]hrom/{print $1; exit}')
+if [ -n "$w" ]; then tagwin "$w"; exit 0; fi
 echo WINDOW=
 exit 1`,
   ]);
