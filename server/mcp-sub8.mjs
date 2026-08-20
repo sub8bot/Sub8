@@ -8,6 +8,7 @@ import * as vault from "./vault.mjs";
 import * as routines from "./routines.mjs";
 import * as teams from "./teams.mjs";
 import { resolveZone } from "./context.mjs";
+import * as memory from "./memory.mjs";
 
 const botId = process.env.SUB8BOT_BOT_ID || "";
 const token = process.env.SUB8_INTERNAL_TOKEN || "";
@@ -71,6 +72,20 @@ const TOOLS = [
       type: "object",
       properties: { command: { type: "string" } },
       required: ["command"],
+    },
+  },
+  {
+    name: "memory",
+    description:
+      "Read or write lasting notes on my computer under /config/agent-data and /config/workspace. Not HTTP. Use for durable facts and repeating-job history.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["read", "write", "append", "list"] },
+        path: { type: "string" },
+        content: { type: "string" },
+      },
+      required: ["action"],
     },
   },
   {
@@ -308,6 +323,20 @@ async function callTool(name, args = {}) {
     });
     const r = await vm.shell(bot, cmd);
     return { content: [{ type: "text", text: vault.redactSecrets(r.output || (r.ok ? "(ok)" : "(failed)"), secrets) }] };
+  }
+  if (name === "memory") {
+    const bot = await botOrThrow();
+    const r = await memory.handleMemory(bot, args);
+    await emit("message", {
+      id: `tl${Date.now()}mem`,
+      role: "activity",
+      kind: "tool",
+      name: "memory",
+      action: String(args.action || "read"),
+      summary: args.action === "append" ? "Noted memory" : args.action === "write" ? "Updated memory" : "Read memory",
+      ts: Date.now(),
+    });
+    return { content: [{ type: "text", text: r.text }], isError: r.ok === false };
   }
   if (name === "vault_list") {
     const rows = await vault.grantedAccounts(botId);

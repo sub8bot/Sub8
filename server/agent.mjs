@@ -9,6 +9,7 @@ import * as vault from "./vault.mjs";
 import * as hostCli from "./host-cli.mjs";
 import { detectLocalHarnesses, localSpec } from "./local-llm.mjs";
 import * as ctx from "./context.mjs";
+import * as memory from "./memory.mjs";
 import * as teams from "./teams.mjs";
 import * as store from "./store.mjs";
 
@@ -80,6 +81,23 @@ const TOOLS = [
       name: "shell",
       description: "Run a command on your computer.",
       parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "memory",
+      description:
+        "Read or write lasting notes on my computer (markdown under /config/agent-data and /config/workspace). Not HTTP. Use this for durable facts and repeating-job history.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["read", "write", "append", "list"] },
+          path: { type: "string", description: "Absolute under /config/agent-data or /config/workspace, or relative to this Bot's agent folder." },
+          content: { type: "string", description: "For write or append." },
+        },
+        required: ["action"],
+      },
     },
   },
   {
@@ -481,28 +499,7 @@ export async function pingHarness(settings, bot, providerOverride) {
 }
 
 async function teamPrompt(bot) {
-  if (!bot?.teamId) return "";
-  const team = await teams.getTeam(bot.teamId);
-  if (!team) return "";
-  const bots = await store.loadBots();
-  const mates = teams.membersOf(team, bots);
-  const rows = mates
-    .map((b) => `- ${b.teamRole || "member"} ${b.name} (${b.id})${b.id === bot.id ? " ← you" : ""}`)
-    .join("\n");
-  const role = bot.teamRole === "chief" ? "You are the chief." : "You are a worker.";
-  const desk =
-    bot.teamRole === "chief"
-      ? "Assign work with message_teammate. You share one Linux desk. Your Chrome window title starts with Sub8: plus the first 8 of your id. Do not drive a teammate's window."
-      : "Take assignments from the chief. Drive only your Chrome window (title starts with Sub8: plus the first 8 of your id). Report back with message_teammate or send_message.";
-  return [
-    "",
-    "## Team",
-    `Team “${team.name}”. ${role} ${desk}`,
-    "Teammates:",
-    rows || "- (none)",
-    "User messages in this thread are the team chat. send_message is visible to the human and the team.",
-    "",
-  ].join("\n");
+  return ctx.teamDeskPrompt(bot);
 }
 
 async function loadSystemPrompt(bot, settings, { hidden = false, compactRoutines = false } = {}) {
@@ -530,11 +527,16 @@ ${await vault.promptBlock(bot.id)}
 `;
 }
 
-export function publicBot(bot) {
+export function publicBot(bot, { tail } = {}) {
+  const all = bot.messages || [];
+  const limit = Number.isFinite(tail) ? Math.max(0, tail) : 24;
+  const messages = all.length > limit ? all.slice(-limit) : all;
   return {
     ...bot,
-    messages: (bot.messages || []).map((m) => ({ ...m, imagePath: undefined, imageB64: undefined })),
+    messages: messages.map((m) => ({ ...m, imagePath: undefined, imageB64: undefined })),
     routines: bot.routines || [],
+    messageCount: all.length,
+    messagesTruncated: all.length > messages.length,
   };
 }
 
@@ -550,6 +552,7 @@ const AUTO_SHOT = new Set([
 
 export async function runTurn({ bot, settings, userText, emit, hidden = false, images = [], signal, pullNudges, persistUser = true } = {}) {
   if (!Array.isArray(bot.routines)) bot.routines = [];
+  await memory.ensureLayout(bot).catch(() => {});
   if (!hidden && routines.looksLikeSchedule(userText)) {
     const parsed = routines.parseSchedule(userText);
     const { routine, merged, rejected } = routines.upsertRoutine(bot, {
@@ -877,7 +880,7 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
 export function localContinueQuery(userText) {
   const t = String(userText || "").trim();
   if (t.length < 1600) return t || "Continue.";
-  return "Continue the same standing job. Do not re-read MEMORY.md, VOICE.md, or X-JOURNAL unless a specific fact is missing. Prefer computer screenshot / open / click on x.com. One real desktop step.";
+  return "Continue the same standing job. Do not re-read memory files unless a specific fact is missing. Prefer computer screenshot / open / click. One real desktop step.";
 }
 
 function lastVisualImage(history) {
@@ -1047,6 +1050,14 @@ function toolSummary(name, args = {}, result = "") {
   if (name === "shell") {
     const c = String(args.command || "").trim();
     return c ? `Ran ${c.slice(0, 48)}${c.length > 48 ? "…" : ""}` : "Ran a command";
+  }
+  if (name === "memory") {
+    const a = String(args.action || "read");
+    const p = String(args.path || "").split("/").pop() || "notes";
+    if (a === "list") return "Listed memory files";
+    if (a === "append") return `Noted ${p}`;
+    if (a === "write") return `Updated ${p}`;
+    return `Read ${p}`;
   }
   if (name === "upsert_routine") return args.name ? `Set up “${args.name}”` : "Updated a routine";
   if (name === "list_routines") return "Checked routines";
@@ -1264,9 +1275,14 @@ async function execTool(bot, name, args, emit, settings) {
       "delete_teammate",
       "web_search",
       "vault_list",
+      "memory",
     ]);
     if (bot.vm?.status !== "running" && !hostTools.has(name)) {
       return { text: "Computer is not running yet." };
+    }
+    if (name === "memory") {
+      const r = await memory.handleMemory(bot, args);
+      return { text: r.text };
     }
     if (name === "vault_list") {
       const rows = await vault.grantedAccounts(bot.id);

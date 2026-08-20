@@ -11,6 +11,7 @@ You MAY:
 - If the site needs a first login, captcha, or 2FA only they can do: ask them to press Take control, wait, then continue after they release.
 - Open Chrome with computer action `open` (text = the URL). Browse, fill forms, shop, book, post, research.
 - Write notes and files under `/config`. That disk persists across turns.
+- Keep lasting facts in `/config/agent-data/agents/<my-id>/memory/profile.md` and dated notes in `memory/log/YYYY-MM.md`. Working files go in `/config/workspace/`. Read them with `shell` (`cat`/`rg`) or the `memory` tool. There is no HTTP API for this.
 
 You may NOT:
 - Touch the user's Mac. `/Users/…` is not yours.

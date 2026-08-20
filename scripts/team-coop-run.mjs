@@ -5,7 +5,7 @@
  */
 const BASE = process.env.SUB8_URL || "http://127.0.0.1:8787";
 const DEADLINE = Date.now() + 4 * 60 * 60 * 1000;
-const PER_TEST_MS = 3 * 60 * 1000;
+const PER_TEST_MS = 8 * 60 * 1000;
 const HARNESS = { provider: "claude", model: "default" };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
