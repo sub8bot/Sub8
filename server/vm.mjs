@@ -1291,7 +1291,7 @@ export async function streamHealth(bot) {
         name,
         "bash",
         "-lc",
-        "xset q >/dev/null 2>&1 && echo X_OK",
+        "(xdpyinfo >/dev/null 2>&1 || xset q >/dev/null 2>&1) && echo X_OK",
       ],
       { timeout: 8_000 },
     );
