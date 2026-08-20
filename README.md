@@ -9,7 +9,15 @@
   Chat with a Bot. Watch it click, type, and work — never on your Mac.
 </p>
 
+<p align="center">
+  <a href="https://github.com/sub8bot/Sub8/stargazers"><img src="https://img.shields.io/github/stars/sub8bot/Sub8?style=social" alt="GitHub stars"></a>
+  <a href="https://github.com/sub8bot/Sub8/releases/latest"><img src="https://img.shields.io/github/v/release/sub8bot/Sub8" alt="Latest release"></a>
+  <a href="https://github.com/sub8bot/Sub8/blob/master/LICENSE"><img src="https://img.shields.io/github/license/sub8bot/Sub8" alt="MIT"></a>
+</p>
+
 Sub8 is a desktop app for macOS, Windows, and Linux. Each Bot gets an isolated Linux desktop (Docker). You talk in the chat; the Bot uses the computer like a person — screenshot, then mouse and keyboard. Mid-task questions are answered while it keeps working.
+
+A **team** shares one Linux computer and splits the work: the chief assigns steps, each teammate has a private X display and one Chrome tab, and a job bar tracks pending / running / done / blocked. Page tools (snapshot, click-by-ref) drive websites; pixel tools stay for native UI.
 
 The mascot is the Smooth octopus you see in the rail: live Three.js, emoji faces, looping motions.
 
@@ -17,16 +25,22 @@ The mascot is the Smooth octopus you see in the rail: live Three.js, emoji faces
   <img src="docs/brand/octobot-catalog.png" width="720" alt="Sub8 face catalog">
 </p>
 
+<p align="center">
+  <a href="https://star-history.com/#sub8bot/Sub8&Date">
+    <img src="https://api.star-history.com/svg?repos=sub8bot/Sub8&type=Date" alt="Star history" width="640">
+  </a>
+</p>
+
 ## Install
 
-Grab a build from [Releases](https://github.com/sub8bot/Sub8/releases).
+Grab a build from [Releases](https://github.com/sub8bot/Sub8/releases/latest).
 
 | Platform | Artifact |
 |---|---|
-| macOS (Apple Silicon) | [`Sub8-mac-arm64.dmg`](https://github.com/sub8bot/Sub8/releases/download/v0.3.14/Sub8-mac-arm64.dmg) — signed and notarized |
-| macOS (Intel) | [`Sub8-mac-x64.dmg`](https://github.com/sub8bot/Sub8/releases/download/v0.3.14/Sub8-mac-x64.dmg) — signed and notarized |
-| Windows | [`Sub8-win-x64.exe`](https://github.com/sub8bot/Sub8/releases/download/v0.3.14/Sub8-win-x64.exe) installer, or [`Sub8-win-x64.zip`](https://github.com/sub8bot/Sub8/releases/download/v0.3.14/Sub8-win-x64.zip) |
-| Linux | [`Sub8-linux-x86_64.AppImage`](https://github.com/sub8bot/Sub8/releases/download/v0.3.14/Sub8-linux-x86_64.AppImage) or [`Sub8-linux-x64.tar.gz`](https://github.com/sub8bot/Sub8/releases/download/v0.3.14/Sub8-linux-x64.tar.gz) |
+| macOS (Apple Silicon) | [`Sub8-mac-arm64.dmg`](https://github.com/sub8bot/Sub8/releases/latest/download/Sub8-mac-arm64.dmg) — signed and notarized |
+| macOS (Intel) | [`Sub8-mac-x64.dmg`](https://github.com/sub8bot/Sub8/releases/latest/download/Sub8-mac-x64.dmg) — signed and notarized |
+| Windows | [`Sub8-win-x64.exe`](https://github.com/sub8bot/Sub8/releases/latest/download/Sub8-win-x64.exe) installer, or [`Sub8-win-x64.zip`](https://github.com/sub8bot/Sub8/releases/latest/download/Sub8-win-x64.zip) |
+| Linux | [`Sub8-linux-x86_64.AppImage`](https://github.com/sub8bot/Sub8/releases/latest/download/Sub8-linux-x86_64.AppImage) or [`Sub8-linux-x64.tar.gz`](https://github.com/sub8bot/Sub8/releases/latest/download/Sub8-linux-x64.tar.gz) |
 
 **macOS:** open the DMG, drag Sub8 to Applications, launch. Gatekeeper should accept it (Developer ID + notarized).
 
@@ -38,10 +52,12 @@ You also need Docker (Colima on a Mac, or Docker Desktop) so each Bot can have a
 
 ## What it does
 
-- Isolated Linux XFCE desktops per Bot — the assistant never touches the host
-- Two tunnels: outside computer-use (screenshot / click / type) and inside `docker exec` shell
-- SpaceXAI (`grok-4.6`) or Grok Build (host CLI, drives the Bot computer through Sub8 tools)
-- Live desktop view, mid-task chat, Stop, standing routines
+- Isolated Linux desks per Bot (slim Debian + Xvfb + Chrome, not a full XFCE webtop) — the assistant never touches the host
+- **Teams:** one shared computer, per-member screens (`:1` chief, `:2`–`:8` workers), job progress bar, `message_teammate` / `set_job` / `update_task`
+- Page agent (CDP snapshot / click-by-ref) for websites; screenshot / click / type for pixels
+- Two tunnels: outside computer-use and inside `docker exec` shell
+- SpaceXAI (`grok-4.6`), Claude, Grok Build, Hermes, or Codex as the harness
+- Live desktop view, mid-task chat, Stop, standing routines at local wall-clock time
 - Cute octopus avatars with faces and motions — browse them at `/tool.html`
 
 ## Develop
