@@ -78,6 +78,19 @@ test("explicit cadence still becomes a routine", () => {
   assert.equal(routines.looksLikeSchedule("watch X inbox every 7 minutes"), true);
 });
 
+test("Maps hours and teammate reports are not routines", () => {
+  const tacos = `Tacos replies:
+Re-verified on my own screen (display :3). Hours: page reads "Closed · Opens 10 AM" — consistent with 10 AM–10 PM daily.
+Rating: 4.6 ★ · 1,530 reviews.`;
+  assert.equal(routines.looksLikeSchedule(tacos), false);
+  assert.equal(routines.looksLikeTeammateTraffic(tacos), true);
+  assert.equal(routines.looksLikeSchedule("check the inbox daily"), true);
+  assert.equal(
+    routines.looksLikeSchedule("Scout replies:\nVerified Kuma Sushi 4.7 on Google Maps, display :4."),
+    false,
+  );
+});
+
 test("can you open chrome is work, not a chat question", () => {
   assert.equal(isChatQuestion("can you open chrome"), false);
   assert.equal(isChatQuestion("search google flights"), false);

@@ -1200,7 +1200,10 @@ Web pages: browser snapshot, then click/fill by ref, or browser navigate. Pixels
 
 async function deliverTeammateReply(toId, from, content) {
   if (!toId || !content || toId === from?.id) return;
-  const text = `${from?.name || "Teammate"} replies:\n${content}`;
+  const text = `${from?.name || "Teammate"} replies:
+${content}
+
+This is a teammate report, not a new job and not a routine. Do not upsert_routine. Do not open Chrome or re-search unless the report is empty or failed. If you were waiting on several reports, add this one. When you have them all, send_message one short list and stop.`;
   const incoming = {
     id: `a${Date.now()}rp`,
     role: "assistant",
