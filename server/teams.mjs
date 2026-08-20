@@ -9,7 +9,10 @@ export const teamsPath = path.join(dataDir, "teams.json");
 
 let writeChain = Promise.resolve();
 function withFile(fn) {
-  const run = writeChain.then(fn, fn);
+  const run = writeChain.then(
+    () => store.withFileLock(`${teamsPath}.lock`, fn),
+    () => store.withFileLock(`${teamsPath}.lock`, fn),
+  );
   writeChain = run.then(
     () => {},
     () => {},
@@ -20,15 +23,17 @@ function withFile(fn) {
 async function readAll() {
   try {
     const rows = JSON.parse(await fs.readFile(teamsPath, "utf8"));
-    return Array.isArray(rows) ? rows : [];
-  } catch {
-    return [];
+    if (!Array.isArray(rows)) throw new Error("teams.json is not an array");
+    return rows;
+  } catch (err) {
+    if (err?.code === "ENOENT") return [];
+    throw err;
   }
 }
 
 async function writeAll(rows) {
   await fs.mkdir(dataDir, { recursive: true });
-  await fs.writeFile(teamsPath, JSON.stringify(rows, null, 2));
+  await store.writeJsonAtomic(teamsPath, rows);
   return rows;
 }
 
@@ -339,13 +344,14 @@ export async function nameWorkerForTask(bot, label, { teamId, assignment, setBri
   if (!want) return bot;
   const brief = setBrief ? String(assignment || label || "").replace(/\s+/g, " ").trim().slice(0, 200) : "";
   if (bot.name === want && (!brief || bot.description === brief)) return bot;
-  bot.name = want;
-  if (brief) {
-    bot.description = brief;
-    bot.instructions = brief;
-  }
-  await store.upsertBot(bot);
-  return bot;
+  const patched = await store.patchBot(bot.id, (b) => {
+    b.name = want;
+    if (brief) {
+      b.description = brief;
+      b.instructions = brief;
+    }
+  });
+  return patched || bot;
 }
 
 export async function syncJobWorkerNames(team) {

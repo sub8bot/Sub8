@@ -2040,9 +2040,136 @@ async function ensureDesktops() {
   return dock;
 }
 
+async function collectRecoverHints() {
+  const [teamRows, comps] = await Promise.all([teams.listTeams(), computers.listComputers()]);
+  const hints = new Map();
+  const take = (id) => {
+    if (!hints.has(id)) hints.set(id, { id });
+    return hints.get(id);
+  };
+  for (const c of comps) {
+    if (!c.lastBotId) continue;
+    if (c.status === "missing") continue;
+    const h = take(c.lastBotId);
+    h.vm = {
+      status: c.status === "running" ? "running" : c.status || "idle",
+      container: c.container || null,
+      volume: c.volume || null,
+      novncPort: c.novncPort || null,
+      computerId: c.id,
+      detached: false,
+      hint: "",
+    };
+    const desk = String(c.name || "");
+    if (desk.endsWith("'s desk") && !h.name) h.name = desk.slice(0, -"'s desk".length);
+  }
+  for (const t of teamRows) {
+    const msgs = await teams.loadMessages(t.id);
+    const names = new Map();
+    for (const m of msgs || []) {
+      if (m.speakerId && m.speakerName) names.set(m.speakerId, m.speakerName);
+    }
+    for (const id of t.memberIds || []) {
+      const h = take(id);
+      h.teamId = t.id;
+      h.teamRole = id === t.chiefId ? "chief" : "worker";
+      if (names.get(id)) h.name = names.get(id);
+    }
+    const withVm = (t.memberIds || []).map((id) => hints.get(id)).find((x) => x?.vm?.container);
+    if (withVm?.vm) {
+      for (const id of t.memberIds || []) {
+        const h = take(id);
+        if (!h.vm?.container) h.vm = { ...withVm.vm };
+      }
+    }
+  }
+  const live = await store.loadBots();
+  const byTeam = new Map();
+  for (const b of live) {
+    if (b.teamId && b.harness) byTeam.set(b.teamId, b.harness);
+  }
+  for (const h of hints.values()) {
+    if (!h.harness && h.teamId && byTeam.get(h.teamId)) h.harness = byTeam.get(h.teamId);
+    if (!h.harness) h.harness = { provider: "claude", model: "default" };
+  }
+  return [...hints.values()];
+}
+
+async function restoreDeskAutomations(bot) {
+  const box = bot?.vm?.container;
+  if (!box || (bot.routines || []).length) return bot;
+  const listed = await vm.docker(
+    ["exec", "-u", "abc", box, "bash", "-lc", `find /config/agent-data/agents/${bot.id}/automations -name automation.json 2>/dev/null`],
+    { timeout: 15_000 },
+  );
+  const files = String(listed.out || "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.endsWith("automation.json"));
+  if (!files.length) return bot;
+  const rows = [];
+  for (const file of files) {
+    const got = await vm.docker(["exec", "-u", "abc", box, "cat", file], { timeout: 15_000 });
+    if (!got.ok) continue;
+    try {
+      const auto = JSON.parse(got.out);
+      const parsed = routines.parseSchedule(auto.cadence || auto.name || "");
+      rows.push({
+        id: auto.id || undefined,
+        name: auto.name || "Routine",
+        instruction: auto.instruction || "",
+        intervalMs: parsed?.intervalMs,
+        schedule: parsed?.schedule,
+        enabled: false,
+        groupKey: auto.groupKey || routines.groupKey(auto.instruction || auto.name || ""),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    } catch {
+      /* skip one file */
+    }
+  }
+  if (!rows.length) return bot;
+  return store.patchBot(bot.id, (b) => {
+    b.routines = rows.map((r) => ({
+      id: r.id || randomUUID(),
+      name: r.name,
+      instruction: r.instruction,
+      intervalMs: r.intervalMs || 5 * 60_000,
+      schedule: r.schedule || undefined,
+      enabled: r.enabled !== false,
+      groupKey: r.groupKey || "general",
+      createdAt: r.createdAt || Date.now(),
+      updatedAt: Date.now(),
+    }));
+  });
+}
+
 const httpServer = app.listen(PORT, "127.0.0.1", async () => {
   console.log(`Sub8 http://127.0.0.1:${PORT}`);
   try {
+    const hints = await collectRecoverHints();
+    const recovered = await store.recoverMissingBots(hints);
+    if (recovered.length) {
+      console.log("recovered bots", recovered.map((b) => `${b.name} ${b.id.slice(0, 8)}`).join(", "));
+      for (const row of recovered) {
+        try {
+          await restoreDeskAutomations(row);
+        } catch (err) {
+          console.error("restore automations", row.id, err.message || err);
+        }
+      }
+      const all = await store.loadBots();
+      for (const t of await teams.listTeams()) {
+        const mates = teams.membersOf(t, all);
+        if (mates.length < 2) continue;
+        const chief = mates.find((m) => m.id === t.chiefId) || mates[0];
+        vm.applyTeamDisplays(t, mates, chief?.vm?.novncPort || null);
+        for (const m of mates) await store.upsertBot(m);
+      }
+      broadcast("bots", all.map(toClient));
+      broadcast("teams", await publicTeams());
+    }
     const bots = await store.loadBots();
     const mig = await computers.migrateFromBots(bots, {
       containerName: vm.containerName,

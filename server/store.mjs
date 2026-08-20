@@ -46,6 +46,40 @@ async function ensure() {
   await fs.mkdir(conversationsDir, { recursive: true });
 }
 
+export async function writeJsonAtomic(file, value) {
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.${Date.now()}.tmp`);
+  await fs.writeFile(tmp, JSON.stringify(value, null, 2));
+  await fs.rename(tmp, file);
+}
+
+export async function withFileLock(lockFile, fn) {
+  await fs.mkdir(path.dirname(lockFile), { recursive: true });
+  const t0 = Date.now();
+  for (;;) {
+    try {
+      const fh = await fs.open(lockFile, "wx");
+      try {
+        await fh.write(String(process.pid));
+        return await fn();
+      } finally {
+        await fh.close().catch(() => {});
+        await fs.unlink(lockFile).catch(() => {});
+      }
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      if (Date.now() - t0 > 20_000) throw new Error(`lock timeout ${lockFile}`);
+      try {
+        const st = await fs.stat(lockFile);
+        if (Date.now() - st.mtimeMs > 30_000) await fs.unlink(lockFile);
+      } catch {
+        /* lock gone */
+      }
+      await new Promise((r) => setTimeout(r, 10 + Math.random() * 25));
+    }
+  }
+}
+
 export async function loadConversation(id) {
   try {
     const rows = JSON.parse(await fs.readFile(conversationPath(id), "utf8"));
@@ -82,7 +116,7 @@ export async function deleteMessages(botId, ids) {
     bot.messages = before.filter((m) => !drop.has(m.id));
     bot.updatedAt = Date.now();
     await replaceConversation(botId, bot.messages);
-    await fs.writeFile(botsPath, JSON.stringify(bots, null, 2));
+    await writeJsonAtomic(botsPath, bots);
     return bot;
   });
 }
@@ -154,7 +188,10 @@ export async function saveSettings(next) {
 
 let writeChain = Promise.resolve();
 function withBots(fn) {
-  const run = writeChain.then(fn, fn);
+  const run = writeChain.then(
+    () => withFileLock(`${botsPath}.lock`, fn),
+    () => withFileLock(`${botsPath}.lock`, fn),
+  );
   writeChain = run.then(
     () => {},
     () => {},
@@ -162,47 +199,55 @@ function withBots(fn) {
   return run;
 }
 
+async function readBotsFile() {
+  try {
+    const raw = await fs.readFile(botsPath, "utf8");
+    const bots = JSON.parse(raw);
+    if (!Array.isArray(bots)) throw new Error("bots.json is not an array");
+    return bots;
+  } catch (err) {
+    if (err?.code === "ENOENT") return [];
+    throw err;
+  }
+}
+
 async function loadBotsUnlocked() {
   await ensure();
-  try {
-    const bots = JSON.parse(await fs.readFile(botsPath, "utf8"));
-    let migratedHarness = false;
-    for (const b of bots) {
-      if (!Array.isArray(b.routines)) b.routines = [];
-      if (!Array.isArray(b.messages)) b.messages = [];
-      if (!b.grokSessionId) b.grokSessionId = b.id;
-      if (!b.harness || typeof b.harness !== "object" || !b.harness.provider) {
-        b.harness = { provider: "grok-build", model: "grok-4.6" };
-        migratedHarness = true;
-      }
-      const fileMsgs = await loadConversation(b.id);
-      if (fileMsgs.length) b.messages = unionMessages(b.messages, fileMsgs);
-      else if (b.messages.length) await saveConversation(b.id, b.messages);
-      if (!b.avatar || typeof b.avatar !== "object") {
-        b.avatar = { expression: "neutral", animation: "idle", body: "rounder" };
-      } else {
-        const ok = ["mantle","tall","chubby","slim","soft","rounder","short","long","curl","plush"];
-        const body = b.avatar.body === "mantle" || !ok.includes(b.avatar.body) ? "rounder" : b.avatar.body;
-        b.avatar = {
-          expression: b.avatar.expression || "neutral",
-          animation: b.avatar.animation || "idle",
-          body,
-        };
-      }
+  const bots = await readBotsFile();
+  let migratedHarness = false;
+  for (const b of bots) {
+    if (!Array.isArray(b.routines)) b.routines = [];
+    if (!Array.isArray(b.messages)) b.messages = [];
+    if (!b.grokSessionId) b.grokSessionId = b.id;
+    if (!b.harness || typeof b.harness !== "object" || !b.harness.provider) {
+      b.harness = { provider: "grok-build", model: "grok-4.6" };
+      migratedHarness = true;
     }
-    if (migratedHarness) {
-      const disk = JSON.parse(await fs.readFile(botsPath, "utf8"));
-      for (const row of disk) {
-        if (!row.harness || typeof row.harness !== "object" || !row.harness.provider) {
-          row.harness = { provider: "grok-build", model: "grok-4.6" };
-        }
-      }
-      await fs.writeFile(botsPath, JSON.stringify(disk, null, 2));
+    const fileMsgs = await loadConversation(b.id);
+    if (fileMsgs.length) b.messages = unionMessages(b.messages, fileMsgs);
+    else if (b.messages.length) await saveConversation(b.id, b.messages);
+    if (!b.avatar || typeof b.avatar !== "object") {
+      b.avatar = { expression: "neutral", animation: "idle", body: "rounder" };
+    } else {
+      const ok = ["mantle","tall","chubby","slim","soft","rounder","short","long","curl","plush"];
+      const body = b.avatar.body === "mantle" || !ok.includes(b.avatar.body) ? "rounder" : b.avatar.body;
+      b.avatar = {
+        expression: b.avatar.expression || "neutral",
+        animation: b.avatar.animation || "idle",
+        body,
+      };
     }
-    return bots;
-  } catch {
-    return [];
   }
+  if (migratedHarness) {
+    const disk = await readBotsFile();
+    for (const row of disk) {
+      if (!row.harness || typeof row.harness !== "object" || !row.harness.provider) {
+        row.harness = { provider: "grok-build", model: "grok-4.6" };
+      }
+    }
+    await writeJsonAtomic(botsPath, disk);
+  }
+  return bots;
 }
 
 export async function loadBots() {
@@ -212,7 +257,7 @@ export async function loadBots() {
 export async function saveBots(bots) {
   return withBots(async () => {
     await ensure();
-    await fs.writeFile(botsPath, JSON.stringify(bots, null, 2));
+    await writeJsonAtomic(botsPath, bots);
     return bots;
   });
 }
@@ -341,7 +386,7 @@ export async function upsertBot(bot) {
     } else bots.push(bot);
     bot.updatedAt = Date.now();
     bot.messages = await saveConversation(bot.id, bot.messages);
-    await fs.writeFile(botsPath, JSON.stringify(bots, null, 2));
+    await writeJsonAtomic(botsPath, bots);
     return bot;
   });
 }
@@ -355,7 +400,7 @@ export async function patchBot(id, fn) {
     await fn(bots[i]);
     bots[i].updatedAt = Date.now();
     await saveConversation(bots[i].id, bots[i].messages);
-    await fs.writeFile(botsPath, JSON.stringify(bots, null, 2));
+    await writeJsonAtomic(botsPath, bots);
     return bots[i];
   });
 }
@@ -369,7 +414,7 @@ export async function deleteBot(id) {
     const bots = await loadBotsUnlocked();
     const next = bots.filter((b) => b.id !== id);
     if (next.length === bots.length) return null;
-    await fs.writeFile(botsPath, JSON.stringify(next, null, 2));
+    await writeJsonAtomic(botsPath, next);
     try {
       await fs.unlink(conversationPath(id));
     } catch {
@@ -382,4 +427,43 @@ export async function deleteBot(id) {
     }
     return next;
   });
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export async function listConversationIds() {
+  await ensure();
+  try {
+    const names = await fs.readdir(conversationsDir);
+    return names.filter((n) => n.endsWith(".json")).map((n) => n.slice(0, -5));
+  } catch {
+    return [];
+  }
+}
+
+/** Re-create bot rows that vanished from a raced bots.json write. Does not start computers. */
+export async function recoverMissingBots(hints = []) {
+  const added = [];
+  for (const h of hints) {
+    if (!h?.id || !UUID_RE.test(h.id)) continue;
+    const existing = await getBot(h.id);
+    if (existing) continue;
+    const bot = newBot({
+      name: h.name || "Bot",
+      title: h.title || "",
+      description: h.description || "",
+      instructions: h.instructions || h.description || "",
+      harness: h.harness && typeof h.harness === "object" ? h.harness : { provider: "claude", model: "default" },
+      color: h.color,
+    });
+    bot.id = h.id;
+    bot.grokSessionId = h.id;
+    bot.teamId = h.teamId || "";
+    bot.teamRole = h.teamRole === "chief" || h.teamRole === "worker" ? h.teamRole : "";
+    if (h.vm && typeof h.vm === "object") bot.vm = { ...bot.vm, ...h.vm };
+    if (Array.isArray(h.routines) && h.routines.length) bot.routines = h.routines;
+    await upsertBot(bot);
+    added.push(bot);
+  }
+  return added;
 }
