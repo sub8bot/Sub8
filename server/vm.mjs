@@ -1737,7 +1737,8 @@ if [ -n "$HIT" ]; then echo WINDOW=$HIT; exit 0; fi
 PROF=/config/chrome-profiles/$ID8
 mkdir -p "$PROF"
 BEFORE=$(wmctrl -lx 2>/dev/null | awk '/[Cc]hrom/{print $1}')
-google-chrome --user-data-dir="$PROF" --no-first-run --disable-session-crashed-bubble --new-window about:blank >/tmp/chrome-$ID8.log 2>&1 &
+CH=$(command -v google-chrome-stable || command -v google-chrome || command -v chromium || true)
+$CH --user-data-dir="$PROF" --no-sandbox --disable-dev-shm-usage --disable-gpu --no-first-run --disable-session-crashed-bubble --test-type --window-size=900,700 --new-window about:blank >/tmp/chrome-$ID8.log 2>&1 &
 for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
   sleep 0.35
   AFTER=$(wmctrl -lx 2>/dev/null | awk '/[Cc]hrom/{print $1}')
