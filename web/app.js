@@ -78,6 +78,7 @@ const state = {
   cloudDraft: { computers: [], bots: [] },
   selectedCloud: localStorage.getItem("selectedCloudBot") || null,
   cloudPromptLater: false,
+  cloudSoonOpen: false,
   computers: [],
   computerId: null,
   computerStats: {},
@@ -1059,6 +1060,7 @@ function render() {
   paintGrokAuth();
   paintAccountGate();
   paintHarnessBanner();
+  paintCloudSoon();
   syncEditorChips(bot);
   refreshAvatars();
 }
@@ -1501,15 +1503,10 @@ function paintPlaceSwitch() {
     return;
   }
   host.hidden = false;
-  const onCloud = isCloudPlace();
-  const soon = cloudComingSoon();
-  const signed = Boolean(state.account?.signedIn);
-  const cloudTitle = soon ? "Cloud desks coming soon" : signed ? "Cloud (draft)" : "Sign in to open Cloud";
+  const onCloud = isCloudPlace() || state.cloudSoonOpen;
   host.innerHTML = `
-    <button type="button" class="place-btn ${onCloud ? "" : "on"}" data-act="place" data-id="local" title="This Mac">Mac</button>
-    <button type="button" class="place-btn ${onCloud ? "on" : ""} ${soon ? "soon" : ""}" data-act="place" data-id="cloud" title="${escapeHtml(cloudTitle)}">Cloud${
-      soon ? ` <span class="soon-tag">soon</span>` : ""
-    }</button>`;
+    <button type="button" class="place-btn ${onCloud ? "" : "on"}" data-act="place" data-id="local" title="Local">Local</button>
+    <button type="button" class="place-btn ${onCloud ? "on" : ""}" data-act="place" data-id="cloud" title="Cloud">Cloud</button>`;
 }
 
 function paintTeamCluster(cluster, t, bot) {
@@ -3744,7 +3741,7 @@ function statusLabel(info) {
 
 function paintHarnessBanner() {
   let host = $("#harness-banner");
-  if (isCloudPlace()) {
+  if (isCloudPlace() || state.cloudSoonOpen) {
     if (host) {
       host.innerHTML = "";
       host.hidden = true;
@@ -6635,11 +6632,18 @@ async function loadCloudDraft() {
 }
 
 async function switchPlace(id) {
+  if (id === "local") {
+    state.cloudSoonOpen = false;
+    if (cloudComingSoon() || !isCloudPlace()) {
+      paintPlaceSwitch();
+      paintCloudSoon();
+      return;
+    }
+  }
   if (id === "cloud" && cloudComingSoon()) {
-    state.modal = "settings";
-    state.section = "account";
-    state.accountError = "";
-    paintModal();
+    state.cloudSoonOpen = true;
+    paintPlaceSwitch();
+    paintCloudSoon();
     return;
   }
   if (id === "cloud" && !state.account?.signedIn) {
@@ -6655,6 +6659,29 @@ async function switchPlace(id) {
     state.accountError = err.message || "Could not switch place.";
     paintAccountGate();
   }
+}
+
+function paintCloudSoon() {
+  let host = $("#cloud-soon-host");
+  const main = $("#shell-root .main") || $(".main");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "cloud-soon-host";
+    if (main) main.appendChild(host);
+    else document.body.appendChild(host);
+  }
+  if (!state.cloudSoonOpen) {
+    host.innerHTML = "";
+    host.hidden = true;
+    return;
+  }
+  host.hidden = false;
+  host.innerHTML = `<div class="cloud-soon">
+    <p class="kicker">Cloud</p>
+    <h2>Cloud is coming soon</h2>
+    <p>Always-on desks that keep working when the lid is closed. Local stays on this computer. Sign in with X on <a href="https://sub8.bot" data-act="open-url" data-url="https://sub8.bot">sub8.bot</a> to get on the list.</p>
+    <button type="button" class="pill" data-act="place" data-id="local">Back to Local</button>
+  </div>`;
 }
 
 async function dismissCloudPrompt() {
