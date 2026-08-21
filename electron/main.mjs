@@ -11,7 +11,12 @@ let PORT = process.env.PORT || "8787";
 let URL = process.env.LOCALBOT_URL || `http://127.0.0.1:${PORT}`;
 
 function extraPath() {
-  const extras = ["/opt/homebrew/bin", "/usr/local/bin", path.join(os.homedir(), ".docker", "bin")];
+  const extras = [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    path.join(os.homedir(), ".docker", "bin"),
+    path.join(os.homedir(), ".sub8", "bin"),
+  ];
   return extras.filter((p) => fs.existsSync(p)).join(path.delimiter);
 }
 

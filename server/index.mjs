@@ -164,27 +164,49 @@ app.get("/api/health", async (_req, res) => {
   res.json({ ok: true, docker });
 });
 
+app.get("/api/docker", async (_req, res) => {
+  const docker = await vm.dockerStatus();
+  res.json({ ok: true, docker, install: vm.dockerInstallProgress() });
+});
+
+async function wakeDesksAfterDocker() {
+  const rows = await computers.listComputers();
+  const list = await vm.listLocalbotStates({ force: true });
+  for (const row of rows) {
+    const st = list.states.get(row.container);
+    if (st && (st.status === "exited" || st.status === "created") && row.status !== "exited" && row.status !== "stopped") {
+      await vm.startExistingContainer(row.container);
+    }
+  }
+}
+
 app.post("/api/docker/recover", async (req, res) => {
   req.setTimeout(180_000);
   res.setTimeout(180_000);
   try {
     const r = await vm.recoverDocker();
-    if (r.ok) {
-      const rows = await computers.listComputers();
-      const list = await vm.listLocalbotStates({ force: true });
-      for (const row of rows) {
-        const st = list.states.get(row.container);
-        if (st && (st.status === "exited" || st.status === "created") && row.status !== "exited" && row.status !== "stopped") {
-          await vm.startExistingContainer(row.container);
-        }
-      }
-    }
+    if (r.ok) await wakeDesksAfterDocker();
     const docker = r.docker || (await vm.dockerStatus());
     const computersLive = docker.ok ? await liveComputers() : await computers.listComputers();
     broadcast("computers", { dirty: true });
     res.json({ ok: r.ok, action: r.action, killed: r.killed, log: r.log || "", docker, computers: computersLive });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post("/api/docker/install", async (req, res) => {
+  req.setTimeout(720_000);
+  res.setTimeout(720_000);
+  try {
+    const r = await vm.installDocker();
+    if (r.ok) await wakeDesksAfterDocker();
+    const docker = r.docker || (await vm.dockerStatus());
+    const computersLive = docker.ok ? await liveComputers() : await computers.listComputers();
+    broadcast("computers", { dirty: true });
+    res.json({ ok: r.ok, action: r.action, log: r.log || "", docker, hint: r.hint || "", computers: computersLive });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, hint: err.message });
   }
 });
 
@@ -2450,6 +2472,9 @@ const httpServer = app.listen(PORT, "127.0.0.1", async () => {
   }, 12_000);
   vault.startVaultBridge(() => store.loadBots());
 });
+httpServer.requestTimeout = 900_000;
+httpServer.headersTimeout = 900_000;
+httpServer.timeout = 900_000;
 httpServer.on("error", (err) => {
   console.error(`listen ${PORT}`, err.message || err);
   process.exit(1);

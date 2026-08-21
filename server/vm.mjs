@@ -11,16 +11,44 @@ function isWindows() {
   return process.platform === "win32" || process.env.OS === "Windows_NT";
 }
 
+export function sub8BinDir(home = os.homedir()) {
+  return path.join(home || os.homedir() || "", ".sub8", "bin");
+}
+
+export function hostPathDirs(home = os.homedir()) {
+  const h = home || os.homedir() || "";
+  if (isWindows()) {
+    const pf = process.env.ProgramFiles || "C:\\Program Files";
+    return [
+      path.join(pf, "Docker", "Docker", "resources", "bin"),
+      path.join(h, ".docker", "bin"),
+      path.join(h, ".sub8", "bin"),
+    ];
+  }
+  return [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    path.join(h, ".docker", "bin"),
+    path.join(h, ".sub8", "bin"),
+    path.join(h, ".local", "bin"),
+    "/Applications/Docker.app/Contents/Resources/bin",
+  ];
+}
+
 export function dockerBin() {
   // Docker Desktop ships an extensionless `docker` sh-wrapper next to docker.exe.
   // Node's spawn on Windows can pick that file and fail to exec.
-  if (isWindows()) return "docker.exe";
-  const home = process.env.HOME || os.homedir() || "";
+  const home = process.env.HOME || process.env.USERPROFILE || os.homedir() || "";
+  if (isWindows()) {
+    const candidates = [process.env.DOCKER_BIN, ...hostPathDirs(home).map((d) => path.join(d, "docker.exe"))].filter(Boolean);
+    for (const p of candidates) {
+      if (fsSync.existsSync(p)) return p;
+    }
+    return "docker.exe";
+  }
   const candidates = [
     process.env.DOCKER_BIN,
-    "/opt/homebrew/bin/docker",
-    "/usr/local/bin/docker",
-    path.join(home, ".docker", "bin", "docker"),
+    ...hostPathDirs(home).map((d) => path.join(d, "docker")),
     "/usr/bin/docker",
   ].filter(Boolean);
   for (const p of candidates) {
@@ -139,13 +167,14 @@ export function deskCreateArgs({ name, volume, port, image } = {}) {
 
 function dockerEnv() {
   const env = { ...process.env };
+  const home = env.HOME || env.USERPROFILE || os.homedir() || "";
   if (isWindows()) {
     if (/colima|unix:\/\//i.test(env.DOCKER_HOST || "")) delete env.DOCKER_HOST;
-    return env;
+  } else {
+    const host = resolveDockerHost();
+    if (host) env.DOCKER_HOST = host;
   }
-  const host = resolveDockerHost();
-  if (host) env.DOCKER_HOST = host;
-  const extras = ["/opt/homebrew/bin", "/usr/local/bin", path.join(env.HOME || os.homedir() || "", ".docker", "bin")];
+  const extras = hostPathDirs(home);
   const prefix = extras.filter((p) => fsSync.existsSync(p)).join(path.delimiter);
   if (prefix) env.PATH = `${prefix}${path.delimiter}${env.PATH || "/usr/bin:/bin"}`;
   return env;
@@ -262,12 +291,12 @@ let dockerFailStreak = 0;
 
 function dockerInstallHint() {
   if (process.platform === "darwin") {
-    return "Install Docker or start Colima. Sub8 needs Docker so each Bot can have a computer.";
+    return "Click Install Docker. Sub8 will install Colima (not Docker Desktop) so each Bot can have a computer.";
   }
   if (process.platform === "win32") {
-    return "Install Docker Desktop and wait until it is running. Sub8 needs Docker so each Bot can have a computer.";
+    return "Click Install Docker. Sub8 will install Docker Desktop so each Bot can have a computer.";
   }
-  return "Install Docker Engine and start the daemon. Sub8 needs Docker so each Bot can have a computer.";
+  return "Click Install Docker. Sub8 will install Docker Engine so each Bot can have a computer.";
 }
 
 function dockerDaemonHint() {
@@ -292,16 +321,17 @@ function timedOut(r) {
 }
 
 function hostBin(name) {
-  const home = process.env.HOME || os.homedir() || "";
-  const candidates = [
-    `/opt/homebrew/bin/${name}`,
-    `/usr/local/bin/${name}`,
-    path.join(home, ".local", "bin", name),
-  ];
-  for (const p of candidates) {
+  const home = process.env.HOME || process.env.USERPROFILE || os.homedir() || "";
+  const exe = isWindows() && !/\.exe$/i.test(name) ? `${name}.exe` : name;
+  for (const dir of hostPathDirs(home)) {
+    const p = path.join(dir, exe);
     if (fsSync.existsSync(p)) return p;
   }
   return name;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function invalidateDockerCache() {
@@ -356,14 +386,134 @@ function settleDockerStatus(value) {
   return value;
 }
 
+export const BREW_DOCKER_PACKAGES = ["colima", "docker"];
+
+export function brewPath() {
+  for (const p of ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"]) {
+    if (fsSync.existsSync(p)) return p;
+  }
+  return "";
+}
+
+export function dockerDesktopPath(platform = process.platform) {
+  if (platform === "win32") {
+    return path.join(process.env.ProgramFiles || "C:\\Program Files", "Docker", "Docker", "Docker Desktop.exe");
+  }
+  if (platform === "darwin") return "/Applications/Docker.app";
+  return "";
+}
+
+export function dockerDocsUrl(platform = process.platform) {
+  if (platform === "win32") return "https://docs.docker.com/desktop/setup/install/windows-install/";
+  if (platform === "linux") return "https://docs.docker.com/engine/install/";
+  return "https://docs.docker.com/desktop/setup/install/mac-install/";
+}
+
+export function dockerDesktopInstallerUrl(platform = "win32", arch = "x64") {
+  if (platform !== "win32") return "";
+  const a = arch === "arm64" ? "arm64" : "amd64";
+  return `https://desktop.docker.com/win/main/${a}/Docker%20Desktop%20Installer.exe`;
+}
+
+export function dockerStaticArch(arch = process.arch) {
+  return arch === "arm64" || arch === "aarch64" ? "aarch64" : "x86_64";
+}
+
+export function dockerCliIndexUrl(platform = "darwin", arch = process.arch) {
+  const osDir = platform === "darwin" ? "mac" : "linux";
+  return `https://download.docker.com/${osDir}/static/stable/${dockerStaticArch(arch)}/`;
+}
+
+export function colimaBinaryName(platform = "darwin", arch = process.arch) {
+  const osName = platform === "darwin" ? "Darwin" : platform === "linux" ? "Linux" : "Windows";
+  const a = arch === "arm64" || arch === "aarch64" ? "arm64" : "x86_64";
+  return `colima-${osName}-${a}`;
+}
+
+export function limaArchiveName(version, platform = "darwin", arch = process.arch) {
+  const ver = String(version || "").replace(/^v/i, "");
+  const osName = platform === "darwin" ? "Darwin" : "Linux";
+  const a = arch === "arm64" || arch === "aarch64" ? "arm64" : "x86_64";
+  return `lima-${ver}-${osName}-${a}.tar.gz`;
+}
+
+export function pickLatestDockerTarball(listing = "") {
+  const found = [];
+  for (const m of String(listing).matchAll(/docker-(\d+\.\d+\.\d+)\.tgz/gi)) {
+    if (/rootless/i.test(m[0])) continue;
+    found.push({ file: `docker-${m[1]}.tgz`, version: m[1] });
+  }
+  if (!found.length) return "";
+  found.sort((a, b) => {
+    const as = a.version.split(".").map((n) => Number(n) || 0);
+    const bs = b.version.split(".").map((n) => Number(n) || 0);
+    for (let i = 0; i < 3; i++) {
+      const d = (as[i] || 0) - (bs[i] || 0);
+      if (d) return d;
+    }
+    return 0;
+  });
+  return found.at(-1).file;
+}
+
+export function colimaStartArgs({ cpus, totalMemBytes } = {}) {
+  const ncpu = Number(cpus) > 0 ? Number(cpus) : os.cpus()?.length || 4;
+  const gb = (Number(totalMemBytes) > 0 ? Number(totalMemBytes) : os.totalmem()) / 1024 ** 3;
+  const cpu = Math.max(2, Math.min(4, Math.floor(ncpu / 2) || 2));
+  const memory = gb >= 24 ? 8 : gb >= 12 ? 4 : 2;
+  return { cpu, memory };
+}
+
+export function planDockerInstall(facts = {}) {
+  const platform = facts.platform || "darwin";
+  if (facts.daemon) return { action: "noop", engine: "existing" };
+  if (facts.cli) return { action: "recover", engine: facts.colima ? "colima" : facts.desktop ? "desktop" : "existing" };
+  if (platform === "darwin") {
+    if (facts.desktop) return { action: "start-desktop", engine: "desktop" };
+    if (facts.brew) return { action: "brew-colima", engine: "colima", packages: [...BREW_DOCKER_PACKAGES] };
+    return { action: "static-colima", engine: "colima", dest: "sub8-bin" };
+  }
+  if (platform === "linux") return { action: "engine-get-docker", engine: "moby" };
+  if (platform === "win32") {
+    if (facts.desktop) return { action: "start-desktop", engine: "desktop" };
+    if (facts.winget) return { action: "winget-desktop", engine: "desktop", package: "Docker.DockerDesktop" };
+    return { action: "download-desktop", engine: "desktop" };
+  }
+  return { action: "unsupported", engine: "" };
+}
+
+const installJob = { busy: false, action: "", log: "" };
+let installInflight = null;
+
+export function dockerInstallProgress() {
+  return { installing: installJob.busy, action: installJob.action, log: installJob.log };
+}
+
+function decorateDocker(value) {
+  const p = dockerInstallProgress();
+  return {
+    ...(value || {}),
+    platform: process.platform,
+    installing: p.installing,
+    installAction: p.action || "",
+    installLog: p.log || "",
+  };
+}
+
 export async function dockerStatus() {
   const now = Date.now();
-  if (dockerStatusCache.value && now - dockerStatusCache.at < 4000) return dockerStatusCache.value;
-  if (dockerStatusInflight) return dockerStatusInflight;
-  dockerStatusInflight = dockerStatusFresh().finally(() => {
-    dockerStatusInflight = null;
-  });
-  return dockerStatusInflight;
+  let value;
+  if (dockerStatusCache.value && now - dockerStatusCache.at < 4000) {
+    value = dockerStatusCache.value;
+  } else if (dockerStatusInflight) {
+    value = await dockerStatusInflight;
+  } else {
+    dockerStatusInflight = dockerStatusFresh().finally(() => {
+      dockerStatusInflight = null;
+    });
+    value = await dockerStatusInflight;
+  }
+  return decorateDocker(value);
 }
 
 export function parseDisplayPorts(ports) {
@@ -435,48 +585,465 @@ export async function recoverDocker() {
   invalidateDockerCache();
   const killed = killHungDockerClients();
   let docker = await dockerStatusFresh();
-  if (docker.ok) return { ok: true, action: "retry", killed, docker };
+  if (docker.ok) return { ok: true, action: "retry", killed, docker: decorateDocker(docker) };
 
   if (process.platform === "darwin") {
     const colima = hostBin("colima");
     const listed = await run(colima, ["list"], { timeout: 12_000, env: dockerEnv() });
-    const running = /\bRunning\b/i.test(listed.out || "");
-    if (!running) {
-      const start = await run(colima, ["start"], { timeout: 180_000, env: dockerEnv() });
+    const missingColima = /enoent|not found|cannot find/i.test(listed.out || "");
+    if (!missingColima) {
+      const running = /\bRunning\b/i.test(listed.out || "");
+      if (!running) {
+        const start = await run(colima, ["start"], { timeout: 180_000, env: dockerEnv() });
+        invalidateDockerCache();
+        docker = await dockerStatusFresh();
+        if (docker.ok) {
+          return { ok: true, action: "colima-start", killed, docker: decorateDocker(docker), log: (start.out || "").slice(-500) };
+        }
+      } else {
+        const rst = await run(colima, ["ssh", "--", "sudo", "service", "docker", "restart"], {
+          timeout: 60_000,
+          env: dockerEnv(),
+        });
+        await sleep(2500);
+        invalidateDockerCache();
+        docker = await dockerStatusFresh();
+        if (docker.ok) return { ok: true, action: "docker-restart", killed, docker: decorateDocker(docker), log: (rst.out || "").slice(-500) };
+        const cr = await run(colima, ["restart"], { timeout: 180_000, env: dockerEnv() });
+        invalidateDockerCache();
+        docker = await dockerStatusFresh();
+        if (docker.ok) return { ok: true, action: "colima-restart", killed, docker: decorateDocker(docker), log: (cr.out || "").slice(-500) };
+      }
+    }
+    const desktop = dockerDesktopPath("darwin");
+    if (desktop && fsSync.existsSync(desktop)) {
+      const opened = await startDockerDesktop("darwin");
       invalidateDockerCache();
       docker = await dockerStatusFresh();
-      return { ok: docker.ok, action: "colima-start", killed, docker, log: (start.out || "").slice(-500) };
+      return { ok: docker.ok, action: "docker-desktop", killed, docker: decorateDocker(docker), log: (opened.log || "").slice(-500) };
     }
-    const rst = await run(colima, ["ssh", "--", "sudo", "service", "docker", "restart"], {
-      timeout: 60_000,
-      env: dockerEnv(),
-    });
-    await new Promise((r) => setTimeout(r, 2500));
-    invalidateDockerCache();
-    docker = await dockerStatusFresh();
-    if (docker.ok) return { ok: true, action: "docker-restart", killed, docker, log: (rst.out || "").slice(-500) };
-    const cr = await run(colima, ["restart"], { timeout: 180_000, env: dockerEnv() });
-    invalidateDockerCache();
-    docker = await dockerStatusFresh();
-    return { ok: docker.ok, action: "colima-restart", killed, docker, log: (cr.out || "").slice(-500) };
+    return { ok: false, action: missingColima ? "retry" : "colima-start", killed, docker: decorateDocker(docker) };
   }
 
   if (isWindows()) {
-    const exe = "C:\\Program Files\\Docker\\Docker\\Docker Desktop.exe";
-    if (fsSync.existsSync(exe)) {
-      try {
-        spawn(exe, [], { detached: true, stdio: "ignore", windowsHide: true }).unref();
-      } catch {
-        /* ignore */
-      }
-      await new Promise((r) => setTimeout(r, 8000));
+    const exe = dockerDesktopPath("win32");
+    if (exe && fsSync.existsSync(exe)) {
+      await startDockerDesktop("win32");
       invalidateDockerCache();
       docker = await dockerStatusFresh();
-      return { ok: docker.ok, action: "docker-desktop", killed, docker };
+      return { ok: docker.ok, action: "docker-desktop", killed, docker: decorateDocker(docker) };
     }
   }
 
-  return { ok: false, action: "retry", killed, docker };
+  if (process.platform === "linux") {
+    const started = await linuxStartDocker();
+    invalidateDockerCache();
+    docker = await dockerStatusFresh();
+    if (started.ok || docker.ok) {
+      return { ok: docker.ok, action: "systemctl-start", killed, docker: decorateDocker(docker), log: (started.out || "").slice(-500) };
+    }
+  }
+
+  return { ok: false, action: "retry", killed, docker: decorateDocker(docker) };
+}
+
+function sayInstall(line) {
+  const s = String(line || "").replace(/\r/g, "").trim();
+  if (!s) return;
+  const prev = installJob.log ? `${installJob.log}\n` : "";
+  installJob.log = `${prev}${s}`.slice(-12_000);
+}
+
+function sayInstallChunk(chunk) {
+  const lines = String(chunk || "")
+    .split(/\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  for (const line of lines.slice(-8)) sayInstall(line);
+}
+
+function binExists(name) {
+  const p = hostBin(name);
+  return Boolean(p && p !== name && fsSync.existsSync(p));
+}
+
+function wingetBin() {
+  const home = process.env.LOCALAPPDATA || "";
+  const candidates = [
+    path.join(home, "Microsoft", "WindowsApps", "winget.exe"),
+    path.join(process.env.SystemRoot || "C:\\Windows", "System32", "winget.exe"),
+    path.join(process.env.ProgramFiles || "C:\\Program Files", "Microsoft", "WindowsApps", "winget.exe"),
+  ];
+  for (const p of candidates) {
+    if (p && fsSync.existsSync(p)) return p;
+  }
+  return "";
+}
+
+function probeDockerInstallFacts(docker = {}) {
+  const platform = process.platform;
+  const desktop = dockerDesktopPath(platform);
+  return {
+    platform,
+    arch: process.arch,
+    cli: Boolean(docker.cli),
+    daemon: Boolean(docker.ok || docker.daemon),
+    brew: Boolean(brewPath()),
+    desktop: Boolean(desktop && fsSync.existsSync(desktop)),
+    colima: binExists("colima"),
+    winget: platform === "win32" && Boolean(wingetBin()),
+  };
+}
+
+async function fetchText(url, { timeout = 60_000 } = {}) {
+  const res = await fetch(url, {
+    headers: { "User-Agent": "Sub8", Accept: "application/vnd.github+json" },
+    signal: AbortSignal.timeout(timeout),
+    redirect: "follow",
+  });
+  if (!res.ok) throw new Error(`GET ${url} → ${res.status}`);
+  return res.text();
+}
+
+async function downloadToFile(url, dest, { timeout = 300_000 } = {}) {
+  const res = await fetch(url, {
+    headers: { "User-Agent": "Sub8" },
+    signal: AbortSignal.timeout(timeout),
+    redirect: "follow",
+  });
+  if (!res.ok) throw new Error(`download failed (${res.status})`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  await fs.mkdir(path.dirname(dest), { recursive: true });
+  await fs.writeFile(dest, buf);
+  return dest;
+}
+
+async function latestGithubAsset(repo, match) {
+  const data = JSON.parse(await fetchText(`https://api.github.com/repos/${repo}/releases/latest`, { timeout: 45_000 }));
+  const assets = data.assets || [];
+  const asset = assets.find((a) => match.test(String(a.name || "")));
+  if (!asset?.browser_download_url) throw new Error(`No ${repo} asset matching ${match}`);
+  return { tag: data.tag_name, name: asset.name, url: asset.browser_download_url };
+}
+
+async function startDockerDesktop(platform = process.platform) {
+  if (platform === "win32") {
+    const exe = dockerDesktopPath("win32");
+    if (!exe || !fsSync.existsSync(exe)) return { ok: false, log: "Docker Desktop is not installed." };
+    try {
+      spawn(exe, [], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+    } catch (err) {
+      return { ok: false, log: String(err.message || err) };
+    }
+    await sleep(8000);
+    return { ok: true, log: "Started Docker Desktop." };
+  }
+  if (platform === "darwin") {
+    const opened = await run("open", ["-a", "Docker"], { timeout: 20_000, env: dockerEnv() });
+    await sleep(8000);
+    return { ok: opened.ok, log: opened.out || "Started Docker Desktop." };
+  }
+  return { ok: false, log: "" };
+}
+
+function privilegeBin() {
+  for (const p of ["/usr/bin/pkexec", "/usr/bin/sudo"]) {
+    if (fsSync.existsSync(p)) return p;
+  }
+  return "";
+}
+
+async function linuxPrivilege(script, { timeout = 300_000 } = {}) {
+  const bin = privilegeBin();
+  if (!bin) return { ok: false, out: "Need pkexec or sudo to install Docker Engine.", code: 1 };
+  const args = bin.endsWith("sudo") ? ["-n", "sh", "-c", script] : ["sh", "-c", script];
+  return run(bin, args, { timeout, env: dockerEnv(), onData: sayInstallChunk });
+}
+
+async function linuxStartDocker() {
+  const script = "systemctl enable --now docker || service docker start || true";
+  const bin = privilegeBin();
+  if (!bin) {
+    const r = await run("systemctl", ["start", "docker"], { timeout: 30_000, env: dockerEnv() });
+    return r;
+  }
+  return linuxPrivilege(script, { timeout: 60_000 });
+}
+
+async function startColimaEngine() {
+  const colima = hostBin("colima");
+  const { cpu, memory } = colimaStartArgs();
+  sayInstall(`Starting Colima (${cpu} CPUs, ${memory} GB RAM)… First start can take a few minutes.`);
+  const listed = await run(colima, ["list"], { timeout: 20_000, env: dockerEnv() });
+  if (/\bRunning\b/i.test(listed.out || "")) {
+    sayInstall("Colima is already running.");
+    return { ok: true, out: listed.out };
+  }
+  const hasProfile = /\bdefault\b/i.test(listed.out || "") && !/enoent|not found/i.test(listed.out || "");
+  const args = hasProfile ? ["start"] : ["start", "--cpu", String(cpu), "--memory", String(memory), "--save-config"];
+  const start = await run(colima, args, { timeout: 600_000, env: dockerEnv(), onData: sayInstallChunk });
+  if (!start.ok) sayInstall((start.out || "colima start failed").slice(-800));
+  return start;
+}
+
+async function brewInstallColima() {
+  const brew = brewPath();
+  if (!brew) return { ok: false, out: "Homebrew not found." };
+  sayInstall("Installing Colima and the Docker CLI with Homebrew…");
+  const r = await run(brew, ["install", ...BREW_DOCKER_PACKAGES], {
+    timeout: 420_000,
+    env: { ...dockerEnv(), HOMEBREW_NO_ANALYTICS: "1", HOMEBREW_NO_ENV_HINTS: "1", NONINTERACTIVE: "1" },
+    onData: sayInstallChunk,
+  });
+  if (!r.ok) sayInstall((r.out || "brew install failed").slice(-800));
+  return r;
+}
+
+async function installStaticColima() {
+  const destDir = sub8BinDir();
+  const root = path.dirname(destDir);
+  const platform = "darwin";
+  const arch = process.arch;
+  await fs.mkdir(destDir, { recursive: true });
+  sayInstall("Downloading Docker CLI, Colima, and Lima into ~/.sub8/bin…");
+
+  const indexUrl = dockerCliIndexUrl(platform, arch);
+  const listing = await fetchText(indexUrl, { timeout: 45_000 });
+  const tarball = pickLatestDockerTarball(listing);
+  if (!tarball) throw new Error("Could not find a Docker CLI build on download.docker.com");
+  const dockerTmp = path.join(os.tmpdir(), `sub8-${tarball}`);
+  sayInstall(`Docker CLI ${tarball}`);
+  await downloadToFile(indexUrl + tarball, dockerTmp);
+  const extractDir = path.join(os.tmpdir(), `sub8-docker-cli-${process.pid}`);
+  await fs.rm(extractDir, { recursive: true, force: true });
+  await fs.mkdir(extractDir, { recursive: true });
+  const tarDocker = await run("tar", ["-xzf", dockerTmp, "-C", extractDir], { timeout: 60_000 });
+  if (!tarDocker.ok) throw new Error(tarDocker.out || "Could not extract Docker CLI");
+  const dockerSrc = path.join(extractDir, "docker", "docker");
+  if (!fsSync.existsSync(dockerSrc)) throw new Error("Docker CLI tarball did not contain docker/docker");
+  await fs.copyFile(dockerSrc, path.join(destDir, "docker"));
+  await fs.chmod(path.join(destDir, "docker"), 0o755);
+  await fs.rm(extractDir, { recursive: true, force: true }).catch(() => {});
+
+  const colimaName = colimaBinaryName(platform, arch);
+  const colimaUrl = `https://github.com/abiosoft/colima/releases/latest/download/${colimaName}`;
+  sayInstall(`Colima ${colimaName}`);
+  const colimaDest = path.join(destDir, "colima");
+  await downloadToFile(colimaUrl, `${colimaDest}.tmp`);
+  await fs.rename(`${colimaDest}.tmp`, colimaDest);
+  await fs.chmod(colimaDest, 0o755);
+
+  const limaArch = arch === "arm64" ? "arm64" : "x86_64";
+  const lima = await latestGithubAsset("lima-vm/lima", new RegExp(`^lima-\\d[\\w.+-]*-Darwin-${limaArch}\\.tar\\.gz$`));
+  sayInstall(`Lima ${lima.name}`);
+  const limaTmp = path.join(os.tmpdir(), lima.name);
+  await downloadToFile(lima.url, limaTmp);
+  const tarLima = await run("tar", ["-xzf", limaTmp, "-C", root], { timeout: 60_000 });
+  if (!tarLima.ok) throw new Error(tarLima.out || "Could not extract Lima");
+  for (const name of ["limactl", "lima"]) {
+    const p = path.join(destDir, name);
+    if (fsSync.existsSync(p)) await fs.chmod(p, 0o755).catch(() => {});
+  }
+  sayInstall(`Installed engine tools in ${destDir}`);
+  return { ok: true };
+}
+
+async function installLinuxEngine() {
+  sayInstall("Installing Docker Engine (needs an admin prompt)…");
+  const first = await linuxPrivilege("curl -fsSL https://get.docker.com | sh", { timeout: 420_000 });
+  if (!first.ok) {
+    sayInstall("Official installer failed; trying the distro package…");
+    let pkg = { ok: false, out: first.out || "" };
+    if (fsSync.existsSync("/usr/bin/apt-get")) {
+      pkg = await linuxPrivilege(
+        "DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io",
+        { timeout: 420_000 },
+      );
+    } else if (fsSync.existsSync("/usr/bin/dnf")) {
+      pkg = await linuxPrivilege("dnf install -y docker", { timeout: 420_000 });
+    } else if (fsSync.existsSync("/usr/bin/pacman")) {
+      pkg = await linuxPrivilege("pacman -S --noconfirm docker", { timeout: 420_000 });
+    }
+    if (!pkg.ok) {
+      return { ok: false, out: pkg.out || first.out || "Could not install Docker Engine." };
+    }
+  }
+  const user = os.userInfo().username || process.env.USER || "";
+  if (user) {
+    sayInstall(`Adding ${user} to the docker group…`);
+    await linuxPrivilege(`usermod -aG docker '${String(user).replace(/'/g, "")}'`, { timeout: 30_000 });
+  }
+  sayInstall("Starting the Docker service…");
+  await linuxStartDocker();
+  await sleep(2000);
+  return { ok: true };
+}
+
+async function wingetInstallDesktop() {
+  const winget = wingetBin() || "winget";
+  sayInstall("Installing Docker Desktop with winget…");
+  const r = await run(
+    winget,
+    [
+      "install",
+      "-e",
+      "--id",
+      "Docker.DockerDesktop",
+      "--accept-package-agreements",
+      "--accept-source-agreements",
+      "--disable-interactivity",
+    ],
+    { timeout: 600_000, env: dockerEnv(), onData: sayInstallChunk },
+  );
+  return r;
+}
+
+async function downloadAndRunDesktopInstaller() {
+  const url = dockerDesktopInstallerUrl("win32", process.arch);
+  const dest = path.join(os.tmpdir(), "DockerDesktopInstaller.exe");
+  sayInstall("Downloading Docker Desktop installer…");
+  await downloadToFile(url, dest, { timeout: 300_000 });
+  sayInstall("Launching Docker Desktop installer…");
+  const quiet = await run(dest, ["install", "--quiet", "--accept-license"], { timeout: 600_000, onData: sayInstallChunk });
+  if (quiet.ok) return quiet;
+  sayInstall("Quiet install didn’t finish; opening the installer…");
+  return run(dest, ["install"], { timeout: 600_000, onData: sayInstallChunk });
+}
+
+async function finishInstall(action, extraHint = "") {
+  invalidateDockerCache();
+  await sleep(1500);
+  const status = await dockerStatusFresh();
+  let hint = "";
+  if (!status.ok) {
+    hint = extraHint || status.hint || `Docker is not ready yet. ${dockerDocsUrl()}`;
+    if (process.platform === "linux") {
+      const info = await docker(["info"], { timeout: 8_000 });
+      if (/permission denied|dial unix/i.test(info.out || "")) {
+        hint = "Docker Engine is installed. Log out and back in so your account can use it, then click Start Docker.";
+      }
+    }
+  }
+  if (hint) sayInstall(hint);
+  else sayInstall("Docker is ready.");
+  return { ok: status.ok, action, log: installJob.log.slice(-8000), docker: decorateDocker(status), hint };
+}
+
+async function installDockerInner() {
+  invalidateDockerCache();
+  let docker = await dockerStatusFresh();
+  if (docker.ok) {
+    sayInstall("Docker is already running.");
+    return { ok: true, action: "noop", log: installJob.log, docker: decorateDocker(docker), hint: "" };
+  }
+
+  const facts = probeDockerInstallFacts(docker);
+  const plan = planDockerInstall(facts);
+  installJob.action = plan.action;
+  sayInstall(`Using ${plan.action}.`);
+
+  if (plan.action === "noop") {
+    return { ok: true, action: "noop", log: installJob.log, docker: decorateDocker(docker), hint: "" };
+  }
+
+  if (plan.action === "recover") {
+    const r = await recoverDocker();
+    if (r.log) sayInstall(r.log);
+    return {
+      ok: r.ok,
+      action: r.action || "recover",
+      log: installJob.log.slice(-8000),
+      docker: r.docker || decorateDocker(await dockerStatusFresh()),
+      hint: r.ok ? "" : r.docker?.hint || docker.hint || "",
+    };
+  }
+
+  if (plan.action === "start-desktop") {
+    sayInstall("Starting Docker Desktop…");
+    const started = await startDockerDesktop(facts.platform);
+    if (started.log) sayInstall(started.log);
+    return finishInstall("start-desktop");
+  }
+
+  if (plan.action === "brew-colima") {
+    const brew = await brewInstallColima();
+    if (!brew.ok) {
+      sayInstall("Homebrew install failed; trying standalone binaries…");
+      await installStaticColima();
+    }
+    const start = await startColimaEngine();
+    return finishInstall(start.ok ? "brew-colima" : "colima-start", start.ok ? "" : (start.out || "").slice(-400));
+  }
+
+  if (plan.action === "static-colima") {
+    await installStaticColima();
+    const start = await startColimaEngine();
+    return finishInstall(start.ok ? "static-colima" : "colima-start", start.ok ? "" : (start.out || "").slice(-400));
+  }
+
+  if (plan.action === "engine-get-docker") {
+    const eng = await installLinuxEngine();
+    if (!eng.ok) {
+      const hint = `Could not install Docker Engine. ${dockerDocsUrl("linux")}`;
+      sayInstall(hint);
+      invalidateDockerCache();
+      docker = await dockerStatusFresh();
+      return { ok: false, action: "engine-get-docker", log: installJob.log.slice(-8000), docker: decorateDocker(docker), hint };
+    }
+    return finishInstall("engine-get-docker");
+  }
+
+  if (plan.action === "winget-desktop") {
+    const wg = await wingetInstallDesktop();
+    if (!wg.ok) {
+      sayInstall("winget failed; downloading the official installer…");
+      const dl = await downloadAndRunDesktopInstaller();
+      if (!dl.ok) sayInstall((dl.out || "installer failed").slice(-400));
+    }
+    const desktop = dockerDesktopPath("win32");
+    if (desktop && fsSync.existsSync(desktop)) await startDockerDesktop("win32");
+    return finishInstall(wg.ok ? "winget-desktop" : "download-desktop");
+  }
+
+  if (plan.action === "download-desktop") {
+    const dl = await downloadAndRunDesktopInstaller();
+    if (!dl.ok) {
+      const hint = `Could not run the Docker Desktop installer. ${dockerDocsUrl("win32")}`;
+      sayInstall(hint);
+      invalidateDockerCache();
+      docker = await dockerStatusFresh();
+      return { ok: false, action: "download-desktop", log: installJob.log.slice(-8000), docker: decorateDocker(docker), hint };
+    }
+    const desktop = dockerDesktopPath("win32");
+    if (desktop && fsSync.existsSync(desktop)) await startDockerDesktop("win32");
+    return finishInstall("download-desktop");
+  }
+
+  const hint = `This system is not supported for in-app Docker install. ${dockerDocsUrl()}`;
+  sayInstall(hint);
+  return { ok: false, action: plan.action || "unsupported", log: installJob.log, docker: decorateDocker(docker), hint };
+}
+
+export async function installDocker() {
+  if (installInflight) return installInflight;
+  installJob.busy = true;
+  installJob.action = "install";
+  installJob.log = "";
+  installInflight = (async () => {
+    try {
+      return await installDockerInner();
+    } catch (err) {
+      sayInstall(String(err.message || err));
+      invalidateDockerCache();
+      const docker = await dockerStatusFresh();
+      const hint = `${err.message || "Install failed"}. ${dockerDocsUrl()}`;
+      return { ok: false, action: installJob.action || "install", log: installJob.log.slice(-8000), docker: decorateDocker(docker), hint };
+    } finally {
+      installJob.busy = false;
+      installInflight = null;
+    }
+  })();
+  return installInflight;
 }
 
 export async function startExistingContainer(name) {

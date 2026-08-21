@@ -16,6 +16,7 @@ export function extraPath() {
     "/usr/local/bin",
     path.join(home, ".local", "bin"),
     path.join(home, ".docker", "bin"),
+    path.join(home, ".sub8", "bin"),
   ];
   return extras.filter((p) => fsSync.existsSync(p)).join(path.delimiter);
 }

@@ -1374,7 +1374,7 @@ h2.md-h { font-size: 16px; }
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  max-width: 22rem;
+  max-width: 26rem;
 }
 .desk-docker-acts {
   display: flex;
@@ -1382,6 +1382,20 @@ h2.md-h { font-size: 16px; }
   justify-content: center;
   gap: 8px;
   margin-top: 8px;
+}
+.desk-docker-log {
+  width: 100%;
+  max-height: 9rem;
+  overflow: auto;
+  margin: 0;
+  padding: 8px 10px;
+  text-align: left;
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--muted);
+  background: rgba(0, 0, 0, 0.22);
+  border-radius: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .chat-more {
   align-self: center;

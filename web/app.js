@@ -39,6 +39,9 @@ const state = {
   grokAuthAsk: false,
   brainSetup: null,
   docker: null,
+  dockerBusy: false,
+  dockerLog: "",
+  dockerInstallFailed: false,
   dockerGateDismissed: false,
   update: null,
   updateBusy: false,
@@ -373,43 +376,82 @@ function dockerStuck() {
   return Boolean(state.docker?.stuck);
 }
 
+function dockerPlatform() {
+  return String(state.docker?.platform || "").toLowerCase();
+}
+
+function dockerIsWindows() {
+  return dockerPlatform() === "win32" || /Windows/i.test(navigator.userAgent || "");
+}
+
+function dockerIsLinux() {
+  if (dockerIsWindows()) return false;
+  return dockerPlatform() === "linux" || (/Linux/i.test(navigator.userAgent || "") && !/Android/i.test(navigator.userAgent || ""));
+}
+
+function dockerInstalling() {
+  return state.dockerBusy === "install" || Boolean(state.docker?.installing);
+}
+
 function dockerKind() {
   if (!dockerMissing()) return "";
-  if (state.dockerBusy) return "preparing";
+  if (state.dockerBusy || state.docker?.installing) return "preparing";
   if (state.docker?.cli === false) return "missing";
   if (dockerStuck()) return "stuck";
   return "starting";
 }
 
+function dockerMissingCopy() {
+  if (dockerIsWindows()) return "Sub8 will install Docker Desktop so each bot can have a computer.";
+  if (dockerIsLinux()) return "Sub8 will install Docker Engine so each bot can have a computer.";
+  return "Sub8 will install a Docker engine (Colima on a Mac — not Docker Desktop) so each bot can have a computer.";
+}
+
+function dockerPaneLog() {
+  const log = String(state.docker?.installLog || state.dockerLog || "").trim();
+  if (!log) return "";
+  return `<pre class="desk-docker-log">${escapeHtml(log.slice(-4000))}</pre>`;
+}
+
 function dockerPaneHtml() {
   const kind = dockerKind() || "starting";
   const hint = String(state.docker?.hint || "").trim();
+  const installing = dockerInstalling();
   const titles = {
-    preparing: "Starting Docker…",
+    preparing: installing ? "Installing Docker…" : "Starting Docker…",
     starting: "Waiting for Docker…",
     stuck: "Can't reach Docker",
     missing: "Docker is not installed",
   };
   const details = {
-    preparing: "Checking the engine. The desktop will show here when it's ready.",
+    preparing: installing
+      ? hint || "Downloading and starting a Docker engine. This can take a few minutes."
+      : "Checking the engine. The desktop will show here when it's ready.",
     starting: hint || "Docker is installed but not ready yet. This area updates on its own.",
     stuck: hint || "Docker stopped answering. Desks are probably still running.",
-    missing: hint || "Install Docker so each Bot can have a computer.",
+    missing: state.dockerInstallFailed && hint ? hint : dockerMissingCopy(),
   };
-  const startLabel = state.dockerBusy ? "Starting…" : kind === "stuck" ? "Recover Docker" : "Start Docker";
+  const busy = Boolean(state.dockerBusy);
+  const startLabel = busy ? "Starting…" : kind === "stuck" ? "Recover Docker" : "Start Docker";
   const start =
-    kind === "missing"
+    kind === "missing" || installing
       ? ""
-      : `<button type="button" class="pill primary" data-act="recover-docker" ${state.dockerBusy ? "disabled" : ""}>${escapeHtml(startLabel)}</button>`;
-  const install =
-    kind === "missing" || kind === "starting"
-      ? `<button type="button" class="pill" data-act="install-docker">Install Docker</button>`
+      : `<button type="button" class="pill primary" data-act="recover-docker" ${busy ? "disabled" : ""}>${escapeHtml(startLabel)}</button>`;
+  const showInstall = kind === "missing" || kind === "starting" || installing || state.docker?.cli === false;
+  const installLabel = installing || state.dockerBusy === "install" ? "Installing…" : "Install Docker";
+  const install = showInstall
+    ? `<button type="button" class="pill ${kind === "missing" || installing ? "primary" : ""}" data-act="install-docker" ${busy ? "disabled" : ""}>${escapeHtml(installLabel)}</button>`
+    : "";
+  const desktop =
+    dockerIsWindows() || state.dockerInstallFailed
+      ? `<button type="button" class="pill" data-act="docker-desktop-docs">Get Docker Desktop</button>`
       : "";
   return `<div class="desk-docker" data-docker="${kind}">
     <strong>${titles[kind]}</strong>
     <span>${escapeHtml(details[kind])}</span>
-    <span class="muted">Checking automatically.</span>
-    <div class="desk-docker-acts">${start}${install}</div>
+    ${dockerPaneLog()}
+    <span class="muted">${installing ? "Installing in the app — you can leave this pane open." : "Checking automatically."}</span>
+    <div class="desk-docker-acts">${start}${install}${desktop}</div>
   </div>`;
 }
 
@@ -418,9 +460,8 @@ function dockerMissingHtml() {
 }
 
 function dockerInstallUrl() {
-  const ua = navigator.userAgent || "";
-  if (/Windows/i.test(ua)) return "https://docs.docker.com/desktop/setup/install/windows-install/";
-  if (/Linux/i.test(ua) && !/Android/i.test(ua)) return "https://docs.docker.com/desktop/setup/install/linux/";
+  if (dockerIsWindows()) return "https://docs.docker.com/desktop/setup/install/windows-install/";
+  if (dockerIsLinux()) return "https://docs.docker.com/engine/install/";
   return "https://docs.docker.com/desktop/setup/install/mac-install/";
 }
 
@@ -3303,9 +3344,13 @@ function computersHtml() {
               isCloudPlace()
                 ? `<button type="button" class="pill primary" data-act="cloud-new-computer">New computer</button>`
                 : dockerMissing()
-                  ? `<button type="button" class="pill primary" data-act="recover-docker" ${state.dockerBusy ? "disabled" : ""}>${
-                      state.dockerBusy ? "Recovering…" : "Recover Docker"
-                    }</button>`
+                  ? state.docker?.cli === false
+                    ? `<button type="button" class="pill primary" data-act="install-docker" ${state.dockerBusy ? "disabled" : ""}>${
+                        dockerInstalling() ? "Installing…" : "Install Docker"
+                      }</button>`
+                    : `<button type="button" class="pill primary" data-act="recover-docker" ${state.dockerBusy ? "disabled" : ""}>${
+                        state.dockerBusy ? "Recovering…" : "Recover Docker"
+                      }</button>`
                   : ""
             }
             <select class="field csort" data-computer-sort>
@@ -4061,9 +4106,13 @@ function settingsHtml() {
                     : "Required. Each Bot’s computer is a Linux desktop in Docker."
               }</div></div>${
                 dockerMissing()
-                  ? `<button type="button" class="pill primary" data-act="recover-docker" ${state.dockerBusy ? "disabled" : ""}>${
-                      state.dockerBusy ? "Recovering…" : "Recover"
-                    }</button>`
+                  ? state.docker?.cli === false
+                    ? `<button type="button" class="pill primary" data-act="install-docker" ${state.dockerBusy ? "disabled" : ""}>${
+                        dockerInstalling() ? "Installing…" : "Install Docker"
+                      }</button>`
+                    : `<button type="button" class="pill primary" data-act="recover-docker" ${state.dockerBusy ? "disabled" : ""}>${
+                        state.dockerBusy ? "Recovering…" : "Recover"
+                      }</button>`
                   : `<span class="muted">Ready</span>`
               }</div>
               <div class="row"><div><div class="lbl">This Bot's desktop</div><div class="sub">${
@@ -4555,6 +4604,10 @@ function bindDelegated() {
       return;
     }
     if (act === "install-docker") {
+      installDocker();
+      return;
+    }
+    if (act === "docker-desktop-docs") {
       openExternal(dockerInstallUrl());
       return;
     }
@@ -6329,18 +6382,53 @@ async function refreshComputerPreviews() {
 
 async function recoverDocker() {
   if (state.dockerBusy) return;
-  state.dockerBusy = true;
+  state.dockerBusy = "recover";
   paintDockerGate();
   if (state.modal === "computers" || state.modal === "settings") paintModal();
   try {
     const r = await api("/api/docker/recover", { method: "POST", body: {} });
     if (r.docker) state.docker = r.docker;
+    if (r.log) state.dockerLog = r.log;
     if (Array.isArray(r.computers)) state.computers = r.computers;
     if (r.ok) state.dockerGateDismissed = false;
     await refresh();
     await loadComputers();
   } catch {
     /* pane already shows the current Docker state */
+  } finally {
+    state.dockerBusy = false;
+    paintDockerGate();
+    if (state.modal === "computers" || state.modal === "settings") paintModal();
+  }
+}
+
+async function installDocker() {
+  if (state.dockerBusy) return;
+  if (state.docker?.cli) {
+    await recoverDocker();
+    return;
+  }
+  state.dockerBusy = "install";
+  state.dockerInstallFailed = false;
+  state.dockerLog = state.docker?.installLog || "Installing Docker…";
+  paintDockerGate();
+  if (state.modal === "computers" || state.modal === "settings") paintModal();
+  try {
+    const r = await api("/api/docker/install", { method: "POST", body: {} });
+    if (r.docker) state.docker = r.docker;
+    if (r.log) state.dockerLog = r.log;
+    if (r.hint && r.docker) state.docker.hint = r.hint;
+    if (Array.isArray(r.computers)) state.computers = r.computers;
+    state.dockerInstallFailed = !r.ok;
+    if (r.ok) {
+      state.dockerGateDismissed = false;
+      await refresh();
+      await loadComputers();
+    }
+  } catch (err) {
+    state.dockerInstallFailed = true;
+    state.dockerLog = `${state.dockerLog ? `${state.dockerLog}\n` : ""}${err?.message || "Install failed"}`;
+    if (state.docker) state.docker.hint = err?.message || "Install failed";
   } finally {
     state.dockerBusy = false;
     paintDockerGate();
