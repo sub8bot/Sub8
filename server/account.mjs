@@ -294,6 +294,33 @@ export async function completeSession(payload) {
   });
 }
 
+const xPumps = new Map();
+
+function pumpXWait(state) {
+  const raw = String(state || "").trim();
+  if (!raw || xPumps.has(raw)) return;
+  const run = (async () => {
+    const deadline = Date.now() + 5 * 60 * 1000;
+    while (Date.now() < deadline) {
+      try {
+        const local = await loadAccount();
+        if (sessionLive(local.session)) return;
+        const row = await cloudWaitX(raw);
+        if (row?.signedIn && row.token) {
+          await completeSession(row);
+          return;
+        }
+        if (row?.error && row.error !== "unknown state" && !row.signedIn) return;
+      } catch {
+        /* Browser is often focused on x.com; keep polling from Node. */
+      }
+      await new Promise((r) => setTimeout(r, 800));
+    }
+  })();
+  xPumps.set(raw, run);
+  run.finally(() => xPumps.delete(raw));
+}
+
 export async function startX() {
   const started = await cloudStartX();
   if (started.session) {
@@ -312,6 +339,7 @@ export async function startX() {
       handle: row.session.handle || "",
     };
   }
+  if (started.state) pumpXWait(started.state);
   return {
     ok: true,
     mock: false,
@@ -328,10 +356,12 @@ export async function waitX(state) {
     err.code = "BAD_SESSION";
     throw err;
   }
+  const local = await loadAccount();
+  if (sessionLive(local.session)) return { signedIn: true };
   const row = await cloudWaitX(raw);
-  if (row.error && !row.signedIn) {
+  if (row?.error && row.error !== "unknown state" && !row.signedIn) {
     const err = new Error(row.error);
-    err.code = row.error === "unknown state" ? "BAD_SESSION" : "CLOUD";
+    err.code = "CLOUD";
     throw err;
   }
   if (!row.signedIn || !row.token) return { signedIn: false };

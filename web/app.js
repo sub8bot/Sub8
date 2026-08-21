@@ -6739,14 +6739,28 @@ async function signInWithX() {
     if (!started.authorizeUrl || !started.state) throw new Error("X sign-in did not start.");
     openExternal(started.authorizeUrl);
     const deadline = Date.now() + 5 * 60 * 1000;
-    while (Date.now() < deadline && xWait === token) {
-      await new Promise((r) => setTimeout(r, 1500));
-      if (xWait !== token) return;
+    const poll = async () => {
       const waited = await api(`/api/account/x/wait?state=${encodeURIComponent(started.state)}`);
       if (waited.signedIn) {
         await applyAccount(waited);
-        return;
+        return true;
       }
+      return false;
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && xWait === token) poll().catch(() => {});
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    try {
+      while (Date.now() < deadline && xWait === token) {
+        await new Promise((r) => setTimeout(r, 800));
+        if (xWait !== token) return;
+        if (await poll()) return;
+      }
+    } finally {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
     }
     if (xWait === token) throw new Error("Sign-in timed out. Try again.");
   } catch (err) {
@@ -7481,5 +7495,8 @@ function watchStream() {
     const bot = state.bots.find((b) => b.id === state.selected);
     const still = $(".screen-still");
     if (bot?.id && still) refreshStill(still, bot.id);
+    if (state.accountBusy || (state.account && !state.account.signedIn)) {
+      refreshSettings().catch(() => {});
+    }
   });
 })();

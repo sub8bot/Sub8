@@ -166,6 +166,7 @@ function create() {
     webPreferences: {
       sandbox: true,
       contextIsolation: true,
+      backgroundThrottling: false,
       preload: path.join(here, "preload.cjs"),
     },
   });

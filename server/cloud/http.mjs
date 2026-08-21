@@ -43,9 +43,12 @@ export async function startX({ baseUrl } = {}) {
 export async function waitX(state, { baseUrl } = {}) {
   const base = String(baseUrl || "").replace(/\/+$/, "");
   const url = `${base}/auth/x/wait?state=${encodeURIComponent(state || "")}`;
-  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  const res = await fetch(url, { headers: { Accept: "application/json", "Cache-Control": "no-store" } });
   const json = await readJson(res);
-  if (res.status === 404) return { signedIn: false, error: json.error || "unknown state" };
-  if (!res.ok) throw apiError(res, json, `X wait failed (${res.status})`);
+  if (res.status === 404) return { signedIn: false };
+  if (!res.ok) {
+    if (res.status === 400) return { signedIn: false, error: json.error };
+    throw apiError(res, json, `X wait failed (${res.status})`);
+  }
   return json;
 }

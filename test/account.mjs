@@ -194,6 +194,11 @@ await test("dummy Sign in with X stores a session", async () => {
   assert.equal(pub.handle, "dev");
 });
 
+await test("waitX is a no-op once a session is already stored", async () => {
+  const waited = await account.waitX("stale-state");
+  assert.equal(waited.signedIn, true);
+});
+
 await test("setView cloud is blocked while desks are coming soon", async () => {
   const prev = process.env.SUB8_CLOUD;
   delete process.env.SUB8_CLOUD;
