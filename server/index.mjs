@@ -22,6 +22,8 @@ import { resolveZone } from "./context.mjs";
 import * as teams from "./teams.mjs";
 import * as teammate from "./teammate.mjs";
 import * as memory from "./memory.mjs";
+import * as account from "./account.mjs";
+import * as cloudDraft from "./cloud/draft.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = appRoot;
@@ -209,6 +211,22 @@ app.get("/api/ready", async (_req, res) => {
   }
 });
 
+async function accountPayload() {
+  if (!account.cloudFeaturesEnabled()) return account.disabledAccount();
+  const bots = await store.loadBots();
+  const row = await account.loadAccount({ hasLocalBots: bots.length > 0 });
+  return account.publicAccount(row, {
+    requireAccount: account.requireAccount(),
+    hasLocalBots: bots.length > 0,
+  });
+}
+
+function sendAccountError(res, err) {
+  const code = err.code || "ERROR";
+  const status = code === "BAD_EMAIL" || code === "BAD_SESSION" ? 422 : code === "ACCOUNT_REQUIRED" ? 403 : 400;
+  res.status(status).json({ error: err.message || "account error", code });
+}
+
 app.get("/api/settings", async (_req, res) => {
   const s = await store.loadSettings();
   const safe = { ...s, harness: { ...s.harness, apiKey: s.harness.apiKey ? "••••" : "" } };
@@ -220,7 +238,205 @@ app.get("/api/settings", async (_req, res) => {
     docker: await vm.dockerStatus(),
     appVersion: appUpdate.appVersion(),
     harnessProviders: HARNESS_PROVIDERS,
+    account: await accountPayload(),
   });
+});
+
+app.get("/api/account", async (_req, res) => {
+  try {
+    res.json(await accountPayload());
+  } catch (err) {
+    sendAccountError(res, err);
+  }
+});
+
+function accountOff(res) {
+  if (account.cloudFeaturesEnabled()) return false;
+  res.status(404).json({ error: "Accounts are off. Unset SUB8_ACCOUNT=0 to enable sign-in.", code: "ACCOUNT_OFF" });
+  return true;
+}
+
+function cloudProductOff(res) {
+  if (account.cloudProductEnabled()) return false;
+  res.status(404).json({ error: "Cloud desks are coming soon.", code: "CLOUD_SOON" });
+  return true;
+}
+
+app.post("/api/account/local", async (_req, res) => {
+  if (accountOff(res)) return;
+  try {
+    await account.chooseLocal();
+    res.json(await accountPayload());
+  } catch (err) {
+    sendAccountError(res, err);
+  }
+});
+
+app.post("/api/account/magic", async (req, res) => {
+  if (accountOff(res)) return;
+  try {
+    const started = await account.startMagic(req.body?.email);
+    const pub = await accountPayload();
+    res.json({ ...pub, mock: started.mock, sent: !started.mock });
+  } catch (err) {
+    sendAccountError(res, err);
+  }
+});
+
+app.post("/api/account/complete", async (req, res) => {
+  if (accountOff(res)) return;
+  try {
+    await account.completeSession(req.body || {});
+    res.json(await accountPayload());
+  } catch (err) {
+    sendAccountError(res, err);
+  }
+});
+
+app.post("/api/account/x/start", async (_req, res) => {
+  if (accountOff(res)) return;
+  try {
+    const started = await account.startX();
+    const pub = await accountPayload();
+    res.json({ ...pub, ...started });
+  } catch (err) {
+    sendAccountError(res, err);
+  }
+});
+
+app.get("/api/account/x/wait", async (req, res) => {
+  if (accountOff(res)) return;
+  try {
+    const waited = await account.waitX(req.query?.state);
+    const pub = await accountPayload();
+    res.json({ ...pub, signedIn: Boolean(waited.signedIn || pub.signedIn) });
+  } catch (err) {
+    sendAccountError(res, err);
+  }
+});
+
+app.post("/api/account/logout", async (_req, res) => {
+  if (accountOff(res)) return;
+  try {
+    await account.logout();
+    res.json(await accountPayload());
+  } catch (err) {
+    sendAccountError(res, err);
+  }
+});
+
+app.post("/api/account/cloud-prompt", async (req, res) => {
+  if (accountOff(res)) return;
+  try {
+    if (req.body?.never || req.body?.dismiss) await account.dismissCloudPrompt();
+    res.json(await accountPayload());
+  } catch (err) {
+    sendAccountError(res, err);
+  }
+});
+
+app.post("/api/account/view", async (req, res) => {
+  if (accountOff(res)) return;
+  try {
+    await account.setView(req.body?.view);
+    res.json(await accountPayload());
+  } catch (err) {
+    sendAccountError(res, err);
+  }
+});
+
+async function requireCloudSession(_req, res) {
+  if (cloudProductOff(res)) return null;
+  const pub = await accountPayload();
+  if (!pub.signedIn) {
+    res.status(401).json({ error: "Sign in to use Cloud.", code: "SIGN_IN" });
+    return null;
+  }
+  return pub;
+}
+
+app.get("/api/cloud/draft", async (_req, res) => {
+  try {
+    if (!(await requireCloudSession(_req, res))) return;
+    res.json(await cloudDraft.snapshot());
+  } catch (err) {
+    sendAccountError(res, err);
+  }
+});
+
+app.post("/api/cloud/draft/computers", async (req, res) => {
+  try {
+    if (!(await requireCloudSession(req, res))) return;
+    const row = await cloudDraft.createComputer({ name: req.body?.name, size: req.body?.size });
+    res.json({ computer: row, ...(await cloudDraft.snapshot()) });
+  } catch (err) {
+    sendAccountError(res, err);
+  }
+});
+
+app.patch("/api/cloud/draft/computers/:id", async (req, res) => {
+  try {
+    if (!(await requireCloudSession(req, res))) return;
+    const row = await cloudDraft.patchComputer(req.params.id, req.body || {});
+    if (!row) return res.status(404).json({ error: "not found" });
+    res.json({ computer: row, ...(await cloudDraft.snapshot()) });
+  } catch (err) {
+    sendAccountError(res, err);
+  }
+});
+
+app.delete("/api/cloud/draft/computers/:id", async (req, res) => {
+  try {
+    if (!(await requireCloudSession(req, res))) return;
+    const ok = await cloudDraft.destroyComputer(req.params.id);
+    if (!ok) return res.status(404).json({ error: "not found" });
+    res.json(await cloudDraft.snapshot());
+  } catch (err) {
+    sendAccountError(res, err);
+  }
+});
+
+app.post("/api/cloud/draft/bots", async (req, res) => {
+  try {
+    if (!(await requireCloudSession(req, res))) return;
+    const bot = await cloudDraft.createBot(req.body || {});
+    res.json({ bot, ...(await cloudDraft.snapshot()) });
+  } catch (err) {
+    sendAccountError(res, err);
+  }
+});
+
+app.patch("/api/cloud/draft/bots/:id", async (req, res) => {
+  try {
+    if (!(await requireCloudSession(req, res))) return;
+    const bot = await cloudDraft.patchBot(req.params.id, req.body || {});
+    if (!bot) return res.status(404).json({ error: "not found" });
+    res.json({ bot, ...(await cloudDraft.snapshot()) });
+  } catch (err) {
+    sendAccountError(res, err);
+  }
+});
+
+app.delete("/api/cloud/draft/bots/:id", async (req, res) => {
+  try {
+    if (!(await requireCloudSession(req, res))) return;
+    const ok = await cloudDraft.deleteBot(req.params.id);
+    if (!ok) return res.status(404).json({ error: "not found" });
+    res.json(await cloudDraft.snapshot());
+  } catch (err) {
+    sendAccountError(res, err);
+  }
+});
+
+app.post("/api/cloud/draft/bots/:id/messages", async (req, res) => {
+  try {
+    if (!(await requireCloudSession(req, res))) return;
+    const bot = await cloudDraft.addMessage(req.params.id, req.body?.content);
+    if (!bot) return res.status(404).json({ error: "not found" });
+    res.json({ bot, ...(await cloudDraft.snapshot()) });
+  } catch (err) {
+    sendAccountError(res, err);
+  }
 });
 
 app.post("/api/internal/emit", async (req, res) => {

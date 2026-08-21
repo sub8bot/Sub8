@@ -589,6 +589,7 @@ flowchart TB
 | New color | `web/palette.js` |
 | New tool | `TOOLS` + handler in `agent.mjs` |
 | New API | route in `server/index.mjs` + `app.js` |
+| Cloud client / dummy auth | `server/cloud/` (HTTP client + dummy; control plane is a **private** repo) |
 | Prompt change | `prompts/*.txt` |
 | Default look | `LOOK_DEFAULTS` in `avatar.js` |
 

@@ -69,6 +69,13 @@ const state = {
   harnessTab: "grok-build",
   harnessTests: {},
   harnessBannerDismissed: {},
+  account: null,
+  accountEmail: "",
+  accountBusy: false,
+  accountError: "",
+  cloudDraft: { computers: [], bots: [] },
+  selectedCloud: localStorage.getItem("selectedCloudBot") || null,
+  cloudPromptLater: false,
   computers: [],
   computerId: null,
   computerStats: {},
@@ -127,6 +134,47 @@ function hexIcon(color, letter, extra = "") {
 
 function letter(bot) {
   return (bot.name || "B").slice(0, 1).toUpperCase();
+}
+
+function cloudOn() {
+  return state.account?.enabled === true;
+}
+
+function cloudProductOn() {
+  return cloudOn() && state.account?.cloudProduct === true;
+}
+
+function cloudComingSoon() {
+  return cloudOn() && state.account?.comingSoon === true;
+}
+
+function accountLabel() {
+  const a = state.account;
+  if (!a?.signedIn) return "Sign in";
+  if (a.handle) return `@${a.handle}`;
+  return a.email || "Signed in";
+}
+
+function isCloudPlace() {
+  return cloudProductOn() && state.account?.view === "cloud" && state.account?.signedIn;
+}
+
+function viewBots() {
+  return isCloudPlace() ? state.cloudDraft?.bots || [] : state.bots;
+}
+
+function viewComputers() {
+  return isCloudPlace() ? state.cloudDraft?.computers || [] : state.computers;
+}
+
+function activeBotId() {
+  return isCloudPlace() ? state.selectedCloud : state.selected;
+}
+
+function currentBot() {
+  const list = viewBots();
+  const id = activeBotId();
+  return list.find((b) => b.id === id) || list[0] || null;
 }
 
 let liveFrameKey = null;
@@ -188,6 +236,11 @@ function noComputerHtml(bot) {
 function attachLiveFrame(bot) {
   const wrap = $("#screen-wrap");
   if (!wrap) return;
+  if (isCloudPlace() || bot?.vm?.kind === "cloud-draft") {
+    liveFrameKey = null;
+    wrap.innerHTML = cloudDeskHtml(bot);
+    return;
+  }
   if (dockerMissing()) {
     liveFrameKey = null;
     wrap.innerHTML = `<div class="screen-status desk-empty">${dockerPaneHtml()}</div>`;
@@ -219,6 +272,44 @@ function attachLiveFrame(bot) {
   const iframe = wrap.querySelector("iframe");
   if (liveFrameKey !== key || !healthIframeIsCurrent(iframe, bot)) mountLiveFrame(bot);
   paintScreenStatus(bot);
+}
+
+function cloudDeskHtml(bot) {
+  const desk = bot?.desk || viewComputers().find((c) => c.id === bot?.computerId || c.id === bot?.vm?.computerId) || viewComputers()[0];
+  if (!desk && !bot) {
+    return `<div class="screen-status desk-empty cloud-desk">
+      <div>
+        <strong>Cloud is a draft</strong>
+        <span>No VM is running. Create a computer to click through the story — Grok on a desk that would stay on after you close the laptop.</span>
+        <div class="desk-actions" style="margin-top:12px;justify-content:center">
+          <button class="pill primary" data-act="cloud-new-computer" type="button">New Cloud computer</button>
+        </div>
+      </div>
+    </div>`;
+  }
+  const grokOn = Boolean(desk?.harness?.signedIn);
+  const keyOn = Boolean(desk?.harness?.apiKeySet);
+  return `<div class="cloud-desk-art">
+    <div class="cloud-desk-bar">Draft · ${escapeHtml(desk?.region || "nyc1")} · ${escapeHtml(desk?.ram || "4 GB")} · not a real VM</div>
+    <div class="cloud-desk-screen">
+      <div class="cloud-desk-chrome">
+        <i></i><i></i><i></i>
+        <span>${escapeHtml(desk?.name || "Cloud desk")}</span>
+      </div>
+      <div class="cloud-desk-body">
+        <p><strong>${escapeHtml(bot?.name || "Cloud")}</strong> would work here with the lid closed.</p>
+        <p class="muted">Harness on this desk — Grok OAuth or an API key. Dummy for now.</p>
+        <div class="cloud-desk-harness">
+          <button type="button" class="pill ${grokOn ? "primary" : ""}" data-act="cloud-harness-grok" data-id="${escapeHtml(desk?.id || "")}">${
+            grokOn ? "Grok signed in (draft)" : "Sign in Grok (draft)"
+          }</button>
+          <button type="button" class="pill ${keyOn ? "primary" : ""}" data-act="cloud-harness-key" data-id="${escapeHtml(desk?.id || "")}">${
+            keyOn ? `Key ${escapeHtml(desk.harness.apiKeyHint || "set")}` : "Paste API key (draft)"
+          }</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
 }
 
 function vmStatusTitle(bot) {
@@ -624,6 +715,16 @@ function scheduleStreamRetry(bot, ms) {
 }
 
 function rememberSelected(id) {
+  if (isCloudPlace()) {
+    state.selectedCloud = id || null;
+    try {
+      if (id) localStorage.setItem("selectedCloudBot", id);
+      else localStorage.removeItem("selectedCloudBot");
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
   state.selected = id || null;
   try {
     if (id) localStorage.setItem("selectedBot", id);
@@ -930,7 +1031,7 @@ function toolIcon(action) {
 function render() {
   ensureShell();
   applyDeskSize();
-  const bot = state.bots.find((b) => b.id === state.selected) || state.bots[0];
+  const bot = currentBot();
   paintTitle(bot);
   paintRail(bot);
   paintChatPane(bot);
@@ -947,6 +1048,7 @@ function render() {
   paintTeach(bot);
   paintCtxMenu();
   paintGrokAuth();
+  paintAccountGate();
   paintHarnessBanner();
   syncEditorChips(bot);
   refreshAvatars();
@@ -1219,7 +1321,7 @@ function paintTitle(bot) {
   const bar = $("#titlebar");
   const collapsed = !state.showComputer && !state.botEdit && state.deskSize !== "full";
   const runningN = (state.computers || []).filter((c) => c.status === "running").length;
-  const stamp = `${bot?.id || ""}|${state.botEdit ? "1" : "0"}|${state.deskSize}|${collapsed ? "1" : "0"}|c${runningN}`;
+  const stamp = `${bot?.id || ""}|${state.botEdit ? "1" : "0"}|${state.deskSize}|${collapsed ? "1" : "0"}|c${runningN}|${state.account?.view || ""}|${state.account?.email || ""}`;
   if (bar.dataset.stamp === stamp && bar.querySelector("[data-act=vault]") && bar.querySelector("[data-act=computers]")) {
     const name = bar.querySelector(".botname-btn .bot-label");
     if (name && bot) name.textContent = teamOf(bot)?.name || bot.name;
@@ -1238,10 +1340,15 @@ function paintTitle(bot) {
           </button>`
         : "Sub8"
     }
-      <span class="muted harness-chip">${escapeHtml(provider)} · ${escapeHtml(model)}</span>
+      <span class="muted harness-chip">${escapeHtml(isCloudPlace() ? "Cloud draft" : provider)} · ${escapeHtml(isCloudPlace() ? bot?.desk?.ram || "4 GB" : model)}</span>
     </div>
     <div class="spacer"></div>
     <div class="title-actions">
+      ${
+        cloudOn()
+          ? `<button class="account-chip" data-act="account-settings" title="Account">${escapeHtml(accountLabel())}</button>`
+          : ""
+      }
       <button class="iconbtn computer-btn" data-act="computers" title="Computers">${iconComputer()}${
         runningN ? `<span class="computer-badge">${runningN}</span>` : ""
       }</button>
@@ -1317,10 +1424,11 @@ function pullTeams() {
 }
 
 function railLayout() {
-  const vis = state.bots.filter((b) => !b.hidden);
+  const vis = viewBots().filter((b) => !b.hidden);
   const teamed = new Set();
   const byId = new Map();
-  for (const t of state.teams || []) {
+  const teams = isCloudPlace() ? [] : state.teams || [];
+  for (const t of teams) {
     byId.set(t.id, { id: t.id, name: t.name, bots: [] });
   }
   for (const b of vis) {
@@ -1332,7 +1440,7 @@ function railLayout() {
   const teamGroups = [...byId.values()]
     .filter((t) => t.bots.length)
     .map((t) => {
-      const rec = (state.teams || []).find((row) => row.id === t.id) || {};
+      const rec = teams.find((row) => row.id === t.id) || {};
       return { ...t, name: rec.name || t.name, section: rec.section || "", pinned: Boolean(rec.pinned) };
     });
   const pinned = vis.filter((b) => b.pinned && !teamed.has(b.id));
@@ -1375,6 +1483,26 @@ function ensureRailTeamNode(t) {
   return cluster;
 }
 
+function paintPlaceSwitch() {
+  const host = $("#place-switch");
+  if (!host) return;
+  if (!cloudOn()) {
+    host.innerHTML = "";
+    host.hidden = true;
+    return;
+  }
+  host.hidden = false;
+  const onCloud = isCloudPlace();
+  const soon = cloudComingSoon();
+  const signed = Boolean(state.account?.signedIn);
+  const cloudTitle = soon ? "Cloud desks coming soon" : signed ? "Cloud (draft)" : "Sign in to open Cloud";
+  host.innerHTML = `
+    <button type="button" class="place-btn ${onCloud ? "" : "on"}" data-act="place" data-id="local" title="This Mac">Mac</button>
+    <button type="button" class="place-btn ${onCloud ? "on" : ""} ${soon ? "soon" : ""}" data-act="place" data-id="cloud" title="${escapeHtml(cloudTitle)}">Cloud${
+      soon ? ` <span class="soon-tag">soon</span>` : ""
+    }</button>`;
+}
+
 function paintTeamCluster(cluster, t, bot) {
   cluster.dataset.id = t.id;
   cluster.draggable = true;
@@ -1397,6 +1525,7 @@ function paintRail(bot) {
   const rail = $("#rail");
   if (rail.dataset.ready !== "scroll") {
     rail.innerHTML = `
+      <div class="place-switch" id="place-switch"></div>
       <button class="plus" data-act="create" title="Create new Bot">+</button>
       <div class="rail-bots" id="rail-bots"></div>
       <button class="me" data-act="profile" title="App settings"></button>
@@ -1404,9 +1533,10 @@ function paintRail(bot) {
     rail.dataset.ready = "scroll";
     bindRailResize();
   }
+  paintPlaceSwitch();
   const host = $("#rail-bots");
   const { pinned, pinnedTeams, groups, teamGroups } = railLayout();
-  const keep = new Set(state.bots.map((b) => b.id));
+  const keep = new Set(viewBots().map((b) => b.id));
   const teamKeep = new Set((teamGroups || []).map((t) => t.id));
   const nodes = new Map();
   const teamNodes = new Map();
@@ -1785,7 +1915,13 @@ function paintTeamTabs(bot) {
 function paintChatPane(bot) {
   const chat = $("#chat");
   if (!bot) {
-    chat.innerHTML = `<div class="empty">Create a Bot to get started.</div>`;
+    chat.innerHTML = isCloudPlace()
+      ? `<div class="empty cloud-empty">
+          <strong>Cloud (draft)</strong>
+          <p>No Bot on this mock desk yet. Create one to try the chat. Closing the laptop would not stop a real Cloud computer.</p>
+          <button type="button" class="pill primary" data-act="create">New Cloud Bot</button>
+        </div>`
+      : `<div class="empty">Create a Bot to get started.</div>`;
     return;
   }
   if (chat.dataset.ui !== "chrome-tabs-5" || !$("#thread") || !$("#send textarea[name=q]") || !$(".composer-mic") || !$(".chat-head") || !$("#composer-mentions") || !$("#team-brief") || !$("#job-progress") || !$("#chat [data-act=stop-turn]")) {
@@ -2161,11 +2297,11 @@ function pickerHtml() {
   return `<div class="picker">
     <input id="pickq" placeholder="Search or create Bots" />
     <div class="pick" data-act="create"><span class="avatar" style="background:#f3f4f6;color:#111">+</span> Create new Bot <span class="kbd">⌘1</span></div>
-    <div class="pick" data-act="create-team"><span class="avatar" style="background:#111;color:#fff">T</span> Create team (chief + worker)</div>
-    ${state.bots
+    ${isCloudPlace() ? "" : `<div class="pick" data-act="create-team"><span class="avatar" style="background:#111;color:#fff">T</span> Create team (chief + worker)</div>`}
+    ${viewBots()
       .map(
         (b) =>
-          `<div class="pick ${b.id === state.selected ? "on" : ""}">
+          `<div class="pick ${b.id === activeBotId() ? "on" : ""}">
             <button class="pick-main" data-act="select" data-id="${b.id}">
               <span class="avatar sm" data-avatar="${b.id}" data-avatar-slot="pick" data-avatar-size="40" data-avatar-framing="body"></span>
               ${escapeHtml(b.name)}
@@ -2220,7 +2356,7 @@ function paintLivePane(bot) {
   paintPaneHead(bot);
   const computer = $("#computer-stack");
   const editor = $("#bot-editor");
-  pane.hidden = !bot || (!state.showComputer && !state.botEdit && state.deskSize !== "full");
+  pane.hidden = (!bot && !isCloudPlace()) || (!state.showComputer && !state.botEdit && state.deskSize !== "full");
   if (computer) computer.hidden = !state.showComputer || state.botEdit;
   if (editor) {
     editor.hidden = !state.botEdit;
@@ -2241,8 +2377,8 @@ function paintLivePane(bot) {
     const hard = bot?.vm?.status === "error" && bot.vm.error && !isTransientVmError(bot.vm.error);
     err.textContent = hard ? bot.vm.error : "";
   }
-  paintRoutineList(bot);
-  if (bot) attachLiveFrame(bot);
+  if (bot) paintRoutineList(bot);
+  if (bot || isCloudPlace()) attachLiveFrame(bot);
 }
 
 function paintPaneHead(bot) {
@@ -3005,7 +3141,7 @@ function harnessLabel(id) {
 }
 
 function sortedComputers() {
-  const rows = [...(state.computers || [])];
+  const rows = [...viewComputers()];
   const rank = { running: 0, paused: 1, starting: 2, exited: 3, stopped: 3, missing: 4 };
   const key = state.computerSort || "name";
   rows.sort((a, b) => {
@@ -3046,7 +3182,13 @@ function computerPreviewHtml(c) {
   return `<div class="cprev">
     ${src ? `<img alt="" src="${src}${src.includes("?") ? "&" : "?"}t=${tick}" onerror="this.style.display='none'" />` : ""}
     <div class="cprev-empty">${
-      c.stuck || c.stale ? "Can't reach Docker" : c.status === "running" || c.status === "starting" ? "No preview yet" : "Desk is off"
+      c.kind === "cloud-draft" || c.draft
+        ? "Draft desk"
+        : c.stuck || c.stale
+          ? "Can't reach Docker"
+          : c.status === "running" || c.status === "starting"
+            ? "No preview yet"
+            : "Desk is off"
     }</div>
   </div>`;
 }
@@ -3059,6 +3201,9 @@ function computerBotLink(c) {
 }
 
 function computerActions(row) {
+  if (isCloudPlace() || row.kind === "cloud-draft") {
+    return `<button type="button" class="danger" data-act="computer-act" data-do="destroy" data-id="${row.id}">Destroy draft</button>`;
+  }
   return `
     ${
       row.status === "paused"
@@ -3086,7 +3231,7 @@ function computersHtml() {
   const id = state.computerId || rows[0]?.id || "";
   const row = rows.find((c) => c.id === id) || rows[0];
   const view = state.computerView === "list" ? "list" : "grid";
-  const freeBots = state.bots.filter((b) => !b.hidden && !b.vm?.computerId);
+  const freeBots = viewBots().filter((b) => !b.hidden && !b.vm?.computerId);
   const attachPicker =
     row && state.computerAttach
       ? `<div class="cattach">${
@@ -3140,16 +3285,22 @@ function computersHtml() {
         <button type="button" class="close" data-act="close-modal" title="Close" aria-label="Close">${iconClose()}</button>
         <div class="ctool">
           <div>
-            <h2 style="margin:0">Computers</h2>
-            <p class="muted" style="margin:4px 0 0">Linux desks. Quit pauses them. They wake when you open Sub8.</p>
+            <h2 style="margin:0">${isCloudPlace() ? "Cloud computers" : "Computers"}</h2>
+            <p class="muted" style="margin:4px 0 0">${
+              isCloudPlace()
+                ? "Draft desks. Nothing is billed. Destroy is safe."
+                : "Linux desks. Quit pauses them. They wake when you open Sub8."
+            }</p>
           </div>
           <div class="ctool-right">
             ${
-              dockerMissing()
-                ? `<button type="button" class="pill primary" data-act="recover-docker" ${state.dockerBusy ? "disabled" : ""}>${
-                    state.dockerBusy ? "Recovering…" : "Recover Docker"
-                  }</button>`
-                : ""
+              isCloudPlace()
+                ? `<button type="button" class="pill primary" data-act="cloud-new-computer">New computer</button>`
+                : dockerMissing()
+                  ? `<button type="button" class="pill primary" data-act="recover-docker" ${state.dockerBusy ? "disabled" : ""}>${
+                      state.dockerBusy ? "Recovering…" : "Recover Docker"
+                    }</button>`
+                  : ""
             }
             <select class="field csort" data-computer-sort>
               <option value="name" ${state.computerSort === "name" ? "selected" : ""}>Name</option>
@@ -3164,8 +3315,8 @@ function computersHtml() {
             </div>
           </div>
         </div>
-        ${dockerMissing() ? dockerMissingHtml() : ""}
-        <div class="cboard ${view}">${cards || `<div class="muted" style="padding:20px">None yet.</div>`}</div>
+        ${!isCloudPlace() && dockerMissing() ? dockerMissingHtml() : ""}
+        <div class="cboard ${view}">${cards || `<div class="muted" style="padding:20px">${isCloudPlace() ? "No Cloud desk yet." : "None yet."}</div>`}</div>
         ${detail}
       </div>
     </div>
@@ -3220,7 +3371,8 @@ function createBotHtml() {
     <div class="modal create-modal" data-modal="1">
       <div class="sbody" style="width:100%">
         <button class="close" data-act="close-modal">×</button>
-        <h2>Create new Bot</h2>
+        <h2>${isCloudPlace() ? "Create Cloud Bot" : "Create new Bot"}</h2>
+        ${isCloudPlace() ? `<p class="muted" style="margin-top:-8px">Draft only — lives on a mock desk, not Docker.</p>` : ""}
         <div class="botset">
           <div class="create-top">
             <div class="avatar-preview sm" data-avatar="create" data-avatar-slot="create" data-avatar-size="128" data-avatar-framing="body" data-preview="1"></div>
@@ -3238,7 +3390,7 @@ function createBotHtml() {
             </div>
           </div>
         </div>
-        <button type="button" class="pill primary" data-act="confirm-create" id="confirm-create">Create Bot</button>
+        <button type="button" class="pill primary" data-act="confirm-create" id="confirm-create">${isCloudPlace() ? "Create draft Bot" : "Create Bot"}</button>
       </div>
     </div>
   </div>`;
@@ -3583,6 +3735,13 @@ function statusLabel(info) {
 
 function paintHarnessBanner() {
   let host = $("#harness-banner");
+  if (isCloudPlace()) {
+    if (host) {
+      host.innerHTML = "";
+      host.hidden = true;
+    }
+    return;
+  }
   if (!host) {
     const after = $("#update-banner") || $("#titlebar");
     host = document.createElement("div");
@@ -3730,6 +3889,53 @@ function harnessHtml(h) {
     </div>`;
 }
 
+function accountHtml() {
+  const a = state.account || {};
+  const email = state.accountEmail || a.email || "";
+  const who = a.handle ? `@${a.handle}` : a.email || "";
+  if (a.signedIn) {
+    return `<h2>Account</h2>
+      <p class="muted" style="margin-top:-8px">This is your Sub8 account. It is not your Grok or Claude login.</p>
+      <div class="card">
+        <div class="row"><div class="lbl">Signed in</div><span class="muted">${escapeHtml(who)}${a.mockAuth ? " · dummy" : ""}</span></div>
+        <div class="row"><div class="lbl">Cloud</div><span class="muted">${
+          a.comingSoon ? "Coming soon" : a.view === "cloud" ? "Cloud (draft)" : "This Mac"
+        }</span></div>
+        <div class="row"><div class="sub">${
+          a.comingSoon
+            ? "You're on the list. Always-on Cloud desks are not shipping yet. This Mac keeps working."
+            : "Cloud desks in this build are a draft. Sign out to keep using This Mac only."
+        }</div>
+          <button type="button" class="pill" data-act="account-logout">Sign out</button></div>
+      </div>`;
+  }
+  return `<h2>Account</h2>
+    <p class="muted" style="margin-top:-8px">Sign in with X for a Sub8 account. This Mac keeps working without one.${
+      a.comingSoon ? " Cloud desks are coming soon." : ""
+    }</p>
+    <div class="card">
+      ${
+        a.xLogin
+          ? `<div class="row"><div class="sub">Opens x.com in your browser. Return here after you approve.</div>
+        <button type="button" class="pill primary" data-act="account-x" ${state.accountBusy ? "disabled" : ""}>${
+            state.accountBusy ? "Waiting for X…" : "Sign in with X"
+          }</button></div>`
+          : `<div class="row"><div><div class="lbl">Email</div><div class="sub">${
+              a.mockAuth ? "Dev sign-in — no email is sent." : "We’ll email a sign-in link."
+            }</div></div>
+        <input class="field" style="max-width:240px" type="email" autocomplete="email" data-account-email value="${escapeHtml(email)}" placeholder="you@example.com" /></div>
+      ${a.cloudConfigured || a.mockAuth ? "" : `<div class="row"><div class="sub">Cloud sign-in is not configured in this build. You can still use This Mac.</div></div>`}
+      <div class="row">
+        <div class="sub">Grok / Claude / Codex logins stay under Harness.</div>
+        <button type="button" class="pill primary" data-act="account-magic" ${state.accountBusy ? "disabled" : ""}>${
+          state.accountBusy ? "Signing in…" : a.mockAuth ? "Sign in" : "Email a link"
+        }</button>
+      </div>`
+      }
+      ${state.accountError ? `<div class="row"><div class="sub" style="color:var(--danger)">${escapeHtml(state.accountError)}</div></div>` : ""}
+    </div>`;
+}
+
 function aboutHtml() {
   const ver = state.appVersion || state.update?.currentVersion || "0.3.21";
   const credit = (act, url, icon, title, sub) =>
@@ -3761,11 +3967,11 @@ function aboutHtml() {
         <pre class="about-license">Copyright (c) 2026 Daniel Farina
 
 Use, modify, and run Sub8 freely — including at a company.
-  You may not offer a competing hosted Sub8 Cloud to third parties.
-  Each version becomes MIT four years after it is published.
-  
-  This is source-available, not OSI open source, until that date.
-  Full terms: LICENSE in the Sub8 repository.</pre>
+You may not offer a competing hosted Sub8 Cloud to third parties.
+Each version becomes MIT four years after it is published.
+
+This is source-available, not OSI open source, until that date.
+Full terms: LICENSE in the Sub8 repository.</pre>
       </div>
     </div>`;
 }
@@ -3774,10 +3980,12 @@ function settingsHtml() {
   const s = state.settings || {};
   const h = s.harness || {};
   if (state.section === "usage") state.section = "general";
+  if (state.section === "account" && !cloudOn()) state.section = "general";
   const sec = state.section;
   return `<div class="overlay">
     <div class="modal" data-modal="1">
       <nav class="snav">
+        ${cloudOn() ? `<button type="button" class="${sec === "account" ? "active" : ""}" data-act="sec" data-id="account">${iconPerson()} <span>Account</span></button>` : ""}
         <button type="button" class="${sec === "general" ? "active" : ""}" data-act="sec" data-id="general">${iconGear()} <span>General</span></button>
         <button type="button" class="${sec === "harness" ? "active" : ""}" data-act="sec" data-id="harness">${iconHarness()} <span>Harness</span></button>
         <button type="button" class="${sec === "updates" ? "active" : ""}" data-act="sec" data-id="updates">${iconMonitor()} <span>Computer</span></button>
@@ -3786,7 +3994,9 @@ function settingsHtml() {
       <div class="sbody">
         <button type="button" class="close" data-act="close-modal" title="Close" aria-label="Close">${iconClose()}</button>
         ${
-          sec === "harness"
+          sec === "account" && cloudOn()
+            ? accountHtml()
+            : sec === "harness"
             ? harnessHtml(h)
             : sec === "about"
             ? aboutHtml()
@@ -3917,6 +4127,11 @@ function bindDelegated() {
       document.querySelector("[data-act=sched-interval-add], [data-act=sched-advanced-add]")?.click();
       return;
     }
+    if (e.key === "Enter" && e.target?.hasAttribute?.("data-account-email")) {
+      e.preventDefault();
+      document.querySelector("[data-act=account-magic]")?.click();
+      return;
+    }
     if (e.key === "Enter" && e.target?.id === "vault-group-name") {
       e.preventDefault();
       addVaultGroup();
@@ -3949,7 +4164,7 @@ function bindDelegated() {
     }
   });
   document.addEventListener("pointerdown", (e) => {
-    const el = e.target.closest("[data-act=cycle-desk], [data-act=expand-pane], [data-act=open-desk], [data-act=bot-settings], [data-act=collapse-pane], [data-act=collapse-full], [data-act=vault], [data-act=computers], [data-act=settings], [data-act=profile]");
+    const el = e.target.closest("[data-act=cycle-desk], [data-act=expand-pane], [data-act=open-desk], [data-act=bot-settings], [data-act=collapse-pane], [data-act=collapse-full], [data-act=vault], [data-act=computers], [data-act=settings], [data-act=profile], [data-act=account-settings]");
     if (!el) return;
     e.preventDefault();
     e.stopPropagation();
@@ -3973,6 +4188,14 @@ function bindDelegated() {
         paintModal();
         refreshComputerPreviews();
       });
+      render();
+      return;
+    }
+    if (act === "account-settings") {
+      titlePointerAct = act;
+      state.modal = "settings";
+      state.section = "account";
+      state.accountError = "";
       render();
       return;
     }
@@ -4265,6 +4488,38 @@ function bindDelegated() {
       persistVaultShare();
       return;
     }
+    if (act === "account-settings") {
+      state.modal = "settings";
+      state.section = "account";
+      state.accountError = "";
+    }
+    if (act === "account-local") {
+      chooseLocalAccount();
+      return;
+    }
+    if (act === "account-magic") {
+      const typed = document.querySelector("[data-account-email]")?.value;
+      if (typed != null) state.accountEmail = typed;
+      signInAccount();
+      return;
+    }
+    if (act === "account-x") {
+      signInWithX();
+      return;
+    }
+    if (act === "account-logout") {
+      logoutAccount();
+      return;
+    }
+    if (act === "account-cloud-later") {
+      state.cloudPromptLater = true;
+      paintAccountGate();
+      return;
+    }
+    if (act === "account-cloud-never") {
+      dismissCloudPrompt();
+      return;
+    }
     if (act === "settings") {
       state.modal = "settings";
       state.section = "general";
@@ -4328,12 +4583,14 @@ function bindDelegated() {
       state.botEdit = false;
       state.confirmDeleteId = null;
       state.humanControl = false;
-      const picked = state.bots.find((b) => b.id === el.dataset.id);
-      if (picked?.unread) {
-        picked.unread = false;
-        api(`/api/bots/${picked.id}`, { method: "PATCH", body: { unread: false } });
+      if (!isCloudPlace()) {
+        const picked = state.bots.find((b) => b.id === el.dataset.id);
+        if (picked?.unread) {
+          picked.unread = false;
+          api(`/api/bots/${picked.id}`, { method: "PATCH", body: { unread: false } });
+        }
+        loadBotHistory(el.dataset.id);
       }
-      loadBotHistory(el.dataset.id);
     }
     if (act === "create") {
       resetCreateForm();
@@ -4553,8 +4810,37 @@ function bindDelegated() {
     }
     if (act === "computer-act") {
       const doit = el.dataset.do;
-      if (doit === "destroy" && !confirm("Destroy this computer and its files? This cannot be undone.")) return;
+      if (doit === "destroy" && !confirm(isCloudPlace() ? "Destroy this draft computer?" : "Destroy this computer and its files? This cannot be undone.")) return;
+      if (isCloudPlace()) {
+        destroyCloudComputer(el.dataset.id);
+        return;
+      }
       computerAction(el.dataset.id, doit);
+      return;
+    }
+    if (act === "place") {
+      switchPlace(el.dataset.id);
+      return;
+    }
+    if (act === "cloud-new-computer") {
+      createCloudComputer();
+      return;
+    }
+    if (act === "cloud-harness-grok") {
+      signCloudHarness(el.dataset.id, "grok");
+      return;
+    }
+    if (act === "cloud-harness-key") {
+      signCloudHarness(el.dataset.id, "key");
+      return;
+    }
+    if (act === "account-cloud-later") {
+      state.cloudPromptLater = true;
+      paintAccountGate();
+      return;
+    }
+    if (act === "account-cloud-never") {
+      dismissCloudPrompt();
       return;
     }
     if (act === "reset-vm") {
@@ -5512,7 +5798,7 @@ async function onSend(e) {
   const input = e.target.q;
   const text = input.value.trim();
   const files = state.attachments;
-  if ((!text && !files.length) || !state.selected) return;
+  if ((!text && !files.length) || !activeBotId()) return;
   input.value = "";
   state.draft = "";
   state.attachments = [];
@@ -5527,8 +5813,8 @@ async function onSend(e) {
   const content = [text, names && !text ? `Attached ${names}` : names && text ? `(attached ${names})` : "", extras]
     .filter(Boolean)
     .join(" ");
-  const bot = state.bots.find((b) => b.id === state.selected);
-  const team = teamOf(bot);
+  const bot = currentBot();
+  const team = isCloudPlace() ? null : teamOf(bot);
   const members = teamBots(team);
   const toIds = mentionedMemberIds(content, members);
   if (bot) {
@@ -5544,11 +5830,21 @@ async function onSend(e) {
     paintChat(bot);
     refreshAvatars();
   }
+  if (isCloudPlace()) {
+    try {
+      const snap = await api(`/api/cloud/draft/bots/${bot.id}/messages`, { method: "POST", body: { content } });
+      state.cloudDraft = snap;
+      render();
+    } catch (err) {
+      window.alert(err.message || "Draft chat failed.");
+    }
+    return;
+  }
   if (team && toIds.length) {
     await api(`/api/teams/${team.id}/messages`, { method: "POST", body: { content, images, toIds } });
     return;
   }
-  await api(`/api/bots/${state.selected}/messages`, { method: "POST", body: { content, images } });
+  await api(`/api/bots/${bot.id}/messages`, { method: "POST", body: { content, images } });
 }
 
 function mentionedMemberIds(text, members) {
@@ -5781,6 +6077,25 @@ async function confirmCreateBot() {
     btn.textContent = "Creating…";
   }
   try {
+    if (isCloudPlace()) {
+      const snap = await api("/api/cloud/draft/bots", {
+        method: "POST",
+        body: {
+          name,
+          description,
+          avatar: defaultAvatar({ expression: face, animation: "idle" }),
+          harness,
+        },
+      });
+      state.cloudDraft = snap;
+      const bot = snap.bot;
+      resetCreateForm();
+      rememberSelected(bot.id);
+      state.modal = null;
+      state.picker = false;
+      render();
+      return;
+    }
     const bot = await api("/api/bots", {
       method: "POST",
       body: {
@@ -6036,8 +6351,28 @@ async function computerAction(id, action, body = {}) {
 }
 
 async function saveBot() {
-  const bot = state.bots.find((b) => b.id === state.selected);
+  const bot = currentBot();
   if (!bot) return;
+  if (isCloudPlace()) {
+    const snap = await api(`/api/cloud/draft/bots/${bot.id}`, {
+      method: "PATCH",
+      body: {
+        name: $("#bn")?.value ?? bot.name,
+        description: $("#bd")?.value ?? bot.description,
+        instructions: $("#bi")?.value ?? bot.instructions,
+        harness: {
+          provider: $("#bh")?.value || bot.harness?.provider || "grok-build",
+          model: ($("#bm")?.value ?? bot.harness?.model ?? "").trim(),
+        },
+        color: bot.color,
+        avatar: defaultAvatar(bot.avatar),
+      },
+    });
+    state.cloudDraft = snap;
+    state.botEdit = false;
+    render();
+    return;
+  }
   await api(`/api/bots/${bot.id}`, {
     method: "PATCH",
     body: {
@@ -6184,6 +6519,8 @@ async function refreshSettings() {
   state.settings = r.settings;
   state.timezone = r.timezone;
   state.hasGrokAuth = Boolean(r.hasGrokAuth);
+  if (r.account) state.account = r.account;
+  if (r.account?.signedIn) await loadCloudDraft();
   if (r.docker) state.docker = r.docker;
   if (r.appVersion) state.appVersion = r.appVersion;
   applyTheme();
@@ -6209,12 +6546,263 @@ function wantsGrokBuild() {
   return p === "grok-build" || !p;
 }
 
+async function applyAccount(next) {
+  state.account = next;
+  state.accountBusy = false;
+  if (next?.email) state.accountEmail = next.email;
+  if (next?.signedIn) await loadCloudDraft();
+  paintAccountGate();
+  if (state.modal === "settings") paintModal();
+  render();
+}
+
+async function loadCloudDraft() {
+  if (!state.account?.signedIn || cloudComingSoon()) {
+    state.cloudDraft = { computers: [], bots: [] };
+    return;
+  }
+  try {
+    state.cloudDraft = await api("/api/cloud/draft");
+    const bots = state.cloudDraft?.bots || [];
+    if (state.selectedCloud && !bots.some((b) => b.id === state.selectedCloud)) state.selectedCloud = bots[0]?.id || null;
+  } catch {
+    state.cloudDraft = { computers: [], bots: [] };
+  }
+}
+
+async function switchPlace(id) {
+  if (id === "cloud" && cloudComingSoon()) {
+    state.modal = "settings";
+    state.section = "account";
+    state.accountError = "";
+    paintModal();
+    return;
+  }
+  if (id === "cloud" && !state.account?.signedIn) {
+    state.cloudPromptLater = false;
+    if (state.account) state.account.needsCloudPrompt = true;
+    paintAccountGate();
+    return;
+  }
+  try {
+    const next = await api("/api/account/view", { method: "POST", body: { view: id } });
+    await applyAccount(next);
+  } catch (err) {
+    state.accountError = err.message || "Could not switch place.";
+    paintAccountGate();
+  }
+}
+
+async function dismissCloudPrompt() {
+  try {
+    const next = await api("/api/account/cloud-prompt", { method: "POST", body: { never: true } });
+    state.cloudPromptLater = true;
+    await applyAccount(next);
+  } catch (err) {
+    state.accountError = err.message || "Could not dismiss.";
+    paintAccountGate();
+  }
+}
+
+async function createCloudComputer() {
+  try {
+    const snap = await api("/api/cloud/draft/computers", { method: "POST", body: { name: "Cloud desk", size: "4gb" } });
+    state.cloudDraft = snap;
+    if (state.modal === "computers") paintModal();
+    else render();
+  } catch (err) {
+    window.alert(err.message || "Could not create a draft desk.");
+  }
+}
+
+async function destroyCloudComputer(id) {
+  try {
+    state.cloudDraft = await api(`/api/cloud/draft/computers/${id}`, { method: "DELETE" });
+    if (state.modal === "computers") paintModal();
+    else render();
+  } catch (err) {
+    window.alert(err.message || "Could not destroy the draft desk.");
+  }
+}
+
+async function signCloudHarness(id, kind) {
+  if (!id) return;
+  const harness =
+    kind === "key"
+      ? { provider: "spacexai", apiKeySet: true, apiKey: "sk-ant-draft", apiKeyHint: "sk-ant…" }
+      : { provider: "grok-build", signedIn: true };
+  try {
+    const snap = await api(`/api/cloud/draft/computers/${id}`, { method: "PATCH", body: { harness } });
+    state.cloudDraft = snap;
+    render();
+  } catch (err) {
+    window.alert(err.message || "Could not update harness.");
+  }
+}
+
+async function chooseLocalAccount() {
+  state.accountBusy = true;
+  state.accountError = "";
+  paintAccountGate();
+  try {
+    const next = await api("/api/account/local", { method: "POST", body: {} });
+    await applyAccount(next);
+  } catch (err) {
+    state.accountBusy = false;
+    state.accountError = err.message || "Could not continue on this Mac.";
+    paintAccountGate();
+  }
+}
+
+let xWait = null;
+
+async function signInWithX() {
+  state.accountBusy = true;
+  state.accountError = "";
+  paintAccountGate();
+  if (state.modal === "settings") paintModal();
+  const token = { id: Date.now() };
+  xWait = token;
+  try {
+    const started = await api("/api/account/x/start", { method: "POST" });
+    if (started.signedIn) {
+      await applyAccount(started);
+      return;
+    }
+    if (!started.authorizeUrl || !started.state) throw new Error("X sign-in did not start.");
+    openExternal(started.authorizeUrl);
+    const deadline = Date.now() + 5 * 60 * 1000;
+    while (Date.now() < deadline && xWait === token) {
+      await new Promise((r) => setTimeout(r, 1500));
+      if (xWait !== token) return;
+      const waited = await api(`/api/account/x/wait?state=${encodeURIComponent(started.state)}`);
+      if (waited.signedIn) {
+        await applyAccount(waited);
+        return;
+      }
+    }
+    if (xWait === token) throw new Error("Sign-in timed out. Try again.");
+  } catch (err) {
+    if (xWait !== token) return;
+    state.accountBusy = false;
+    state.accountError = err.message || "Sign-in failed.";
+    paintAccountGate();
+    if (state.modal === "settings") paintModal();
+  }
+}
+
+async function signInAccount() {
+  state.accountBusy = true;
+  state.accountError = "";
+  paintAccountGate();
+  if (state.modal === "settings") paintModal();
+  try {
+    const next = await api("/api/account/magic", { method: "POST", body: { email: state.accountEmail } });
+    await applyAccount(next);
+    if (next?.sent && !next?.signedIn) state.accountError = `Link sent to ${next.email}. Open it on this Mac.`;
+  } catch (err) {
+    state.accountBusy = false;
+    state.accountError = err.message || "Sign-in failed.";
+    paintAccountGate();
+    if (state.modal === "settings") paintModal();
+  }
+}
+
+async function logoutAccount() {
+  xWait = null;
+  try {
+    const next = await api("/api/account/logout", { method: "POST", body: {} });
+    state.accountEmail = "";
+    await applyAccount(next);
+  } catch (err) {
+    state.accountError = err.message || "Could not sign out.";
+    if (state.modal === "settings") paintModal();
+  }
+}
+
+function paintAccountGate() {
+  let host = $("#account-gate-host");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "account-gate-host";
+    document.body.appendChild(host);
+  }
+  if (!cloudOn()) {
+    host.innerHTML = "";
+    return;
+  }
+  const a = state.account;
+  const email = escapeHtml(state.accountEmail || "");
+  const signInCard = a?.xLogin
+    ? `<div class="account-place signin">
+            <strong>Sign in with X</strong>
+            <span>${a?.comingSoon ? "Creates your Sub8 account. Cloud desks are coming soon." : "Unlocks Cloud."}</span>
+            <button type="button" class="pill primary" data-act="account-x" ${state.accountBusy ? "disabled" : ""}>${
+              state.accountBusy ? "Waiting for X…" : "Sign in with X"
+            }</button>
+          </div>`
+    : `<div class="account-place signin">
+            <strong>Sign in</strong>
+            <span>${a?.mockAuth ? "Dummy login — no email is sent. Unlocks the Cloud draft." : "Email a link. Unlocks Cloud."}</span>
+            <input class="field" type="email" autocomplete="email" data-account-email value="${email}" placeholder="you@example.com" />
+            <button type="button" class="pill primary" data-act="account-magic" ${state.accountBusy ? "disabled" : ""}>${
+              state.accountBusy ? "Signing in…" : a?.mockAuth ? "Sign in" : "Email a link"
+            }</button>
+          </div>`;
+  if (a && !a.ready && a.needsChoice) {
+    host.innerHTML = `<div class="overlay account-gate" data-account-gate="1">
+    <div class="modal account-gate-modal">
+      <div class="sbody" style="width:100%">
+        <h2>Where should this Sub8 live?</h2>
+        <p class="muted">This Mac keeps chats on the device. Cloud is a separate place that would stay on after you close the laptop.</p>
+        <div class="account-gate-grid">
+          ${
+            a.hideLocal
+              ? ""
+              : `<button type="button" class="account-place" data-act="account-local" ${state.accountBusy ? "disabled" : ""}>
+            <strong>This Mac</strong>
+            <span>Docker on this machine. No account. Same as today.</span>
+          </button>`
+          }
+          ${signInCard}
+        </div>
+        ${state.accountError ? `<p class="muted" style="color:var(--danger)">${escapeHtml(state.accountError)}</p>` : ""}
+        <p class="muted">Grok / Claude / Codex stay in Settings → Harness.</p>
+      </div>
+    </div>
+  </div>`;
+    return;
+  }
+  if (a?.needsCloudPrompt && !state.cloudPromptLater && !a.signedIn) {
+    host.innerHTML = `<div class="overlay account-gate account-promo" data-account-gate="1">
+    <div class="modal account-gate-modal">
+      <div class="sbody" style="width:100%">
+        <h2>Try Cloud?</h2>
+        <p class="muted">Your Bots stay on this Mac. Cloud is a draft of a desk that would keep working with the lid closed — Grok on that VM, or an Anthropic API key.</p>
+        <div class="account-gate-grid">${signInCard}</div>
+        ${state.accountError ? `<p class="muted" style="color:var(--danger)">${escapeHtml(state.accountError)}</p>` : ""}
+        <div class="routine-editor-foot">
+          <button type="button" class="pill" data-act="account-cloud-never">Don't show again</button>
+          <button type="button" class="pill primary" data-act="account-cloud-later">Not now</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+    return;
+  }
+  host.innerHTML = "";
+}
+
 function paintGrokAuth() {
   let host = $("#grok-auth-host");
   if (!host) {
     host = document.createElement("div");
     host.id = "grok-auth-host";
     document.body.appendChild(host);
+  }
+  if (state.account && (!state.account.ready || (state.account.needsCloudPrompt && !state.cloudPromptLater))) {
+    host.innerHTML = "";
+    return;
   }
   // null = unknown; never prompt until the server said we are signed out
   const need = wantsGrokBuild() && state.hasGrokAuth === false && state.grokAuthAsk && state.grokAuthAsk !== "later";

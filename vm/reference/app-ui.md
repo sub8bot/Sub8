@@ -4,6 +4,8 @@ Only these paths. If you are not sure, say so. Do not invent menus.
 
 ## Settings (gear)
 
+- Account — Sub8 sign-in (email). Not Grok/Claude/Codex. This Mac works without it; Cloud needs it
+- Place switcher on the rail — This Mac vs Cloud (Cloud is a draft until real VMs ship)
 - General — theme (System / Light / Dark), this Mac timezone, Sub8 app updates
 - Harness — which model stack this app uses (Grok Build, Claude, Codex, Hermes, Ollama, LM Studio, SpaceXAI)
 - Computer — Docker status, Reload computer (keeps files), Open in browser (same desktop in a tab), Reset computer (wipes the Linux desktop)

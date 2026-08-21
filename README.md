@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/sub8bot/Sub8/stargazers"><img src="https://img.shields.io/github/stars/sub8bot/Sub8?style=social" alt="GitHub stars"></a>
   <a href="https://github.com/sub8bot/Sub8/releases/latest"><img src="https://img.shields.io/github/v/release/sub8bot/Sub8" alt="Latest release"></a>
-  <a href="https://github.com/sub8bot/Sub8/blob/master/LICENSE"><img src="https://img.shields.io/github/license/sub8bot/Sub8" alt="Business Source License 1.1"></a>
+  <a href="https://github.com/sub8bot/Sub8/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-BSL%201.1-blue" alt="Business Source License 1.1"></a>
 </p>
 
 Sub8 is a desktop app for macOS, Windows, and Linux. Each Bot gets an isolated Linux desktop (Docker). You talk in the chat; the Bot uses the computer like a person — screenshot, then mouse and keyboard. Mid-task questions are answered while it keeps working.
@@ -103,3 +103,7 @@ Not affiliated with xAI.
 ## License
 
 [Business Source License 1.1](LICENSE) © 2026 Daniel Farina.
+
+Source is public. You may use, modify, and run Sub8 — including inside a company. You may not offer a competing hosted Sub8 Cloud (always-on computers / agents as a service) to third parties. Each version becomes [MIT](https://opensource.org/licenses/MIT) four years after it is published.
+
+This is **source-available**, not OSI open source, until that change date. The Sub8 Cloud control plane is a separate, private repo.
