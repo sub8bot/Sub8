@@ -9,13 +9,16 @@ import { hostHasGrokAuth } from "./vm.mjs";
 import { applyAuthAlert, parseClaudeAuthStatus } from "./harness-auth.mjs";
 
 export const HARNESS_CATALOG = [
-  { id: "grok-build", label: "Grok Build", kind: "cli-host" },
-  { id: "hermes", label: "Hermes", kind: "cli-host" },
-  { id: "claude", label: "Claude", kind: "cli-host" },
-  { id: "codex", label: "Codex", kind: "cli-host" },
-  { id: "ollama", label: "Ollama", kind: "openai-local" },
-  { id: "lmstudio", label: "LM Studio", kind: "openai-local" },
+  { id: "grok-build", label: "Grok Build", kind: "cli-host", installUrl: "https://docs.x.ai/docs/build/overview" },
+  { id: "hermes", label: "Hermes", kind: "cli-host", installUrl: "https://hermes-agent.nousresearch.com" },
+  { id: "claude", label: "Claude", kind: "cli-host", installUrl: "https://code.claude.com/docs/en/setup" },
+  { id: "codex", label: "Codex", kind: "cli-host", installUrl: "https://github.com/openai/codex" },
+  { id: "ollama", label: "Ollama", kind: "openai-local", installUrl: "https://ollama.com/download" },
+  { id: "lmstudio", label: "LM Studio", kind: "openai-local", installUrl: "https://lmstudio.ai" },
   { id: "spacexai", label: "SpaceXAI", kind: "openai" },
+  { id: "openrouter", label: "OpenRouter", kind: "openai" },
+  { id: "openai", label: "OpenAI", kind: "openai" },
+  { id: "custom", label: "Custom API", kind: "openai" },
 ];
 
 function exists(p) {

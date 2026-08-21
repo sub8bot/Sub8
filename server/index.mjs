@@ -10,6 +10,7 @@ import * as routines from "./routines.mjs";
 import { runTurn, publicBot, pingHarness, webSearch, orchestratorReply, isChatQuestion, HARNESS_PROVIDERS, harnessFor, setTeamDispatch, setTeamReply, setStopBot } from "./agent.mjs";
 import { detectLocalHarnesses } from "./local-llm.mjs";
 import { collectHarnessStatus } from "./harness-status.mjs";
+import { applySimulate } from "../web/brain-setup.mjs";
 import { looksLikeAuthFailure, rewriteHarnessOutput } from "./harness-auth.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { setHumanControl, isHumanControl } from "./control.mjs";
@@ -822,10 +823,13 @@ app.get("/api/harness/local", async (_req, res) => {
   res.json(await detectLocalHarnesses({ force: true }));
 });
 
-app.get("/api/harness/status", async (_req, res) => {
+app.get("/api/harness/status", async (req, res) => {
   try {
     const settings = await store.loadSettings();
-    res.json(await collectHarnessStatus(settings));
+    let snap = await collectHarnessStatus(settings);
+    const sim = String(req.query?.simulate || process.env.SUB8_SIMULATE_HARNESS || "").trim();
+    if (sim && process.env.SUB8_PACKAGED !== "1") snap = applySimulate(snap, sim);
+    res.json(snap);
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

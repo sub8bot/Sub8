@@ -452,7 +452,17 @@ export const HARNESS_PROVIDERS = [
   { id: "ollama", label: "Ollama", kind: "openai-local" },
   { id: "lmstudio", label: "LM Studio", kind: "openai-local" },
   { id: "spacexai", label: "SpaceXAI", kind: "openai" },
+  { id: "openrouter", label: "OpenRouter", kind: "openai" },
+  { id: "openai", label: "OpenAI", kind: "openai" },
+  { id: "custom", label: "Custom API", kind: "openai" },
 ];
+
+const OPENAI_API_DEFAULTS = {
+  spacexai: { baseUrl: "https://api.x.ai/v1", model: "grok-4.6" },
+  openrouter: { baseUrl: "https://openrouter.ai/api/v1", model: "openai/gpt-4.1-mini" },
+  openai: { baseUrl: "https://api.openai.com/v1", model: "gpt-4.1-mini" },
+  custom: { baseUrl: "https://api.openai.com/v1", model: "gpt-4.1-mini" },
+};
 
 export function normalizeProvider(p) {
   const id = String(p || "").trim();
@@ -470,7 +480,6 @@ export function harnessFor(bot, settings) {
 
 export function resolveClient(settings, bot) {
   const h = harnessFor(bot, settings);
-  const key = (h.apiKey && h.apiKey.trim()) || process.env[h.apiKeyEnv || "XAI_API_KEY"] || process.env.XAI_API_KEY;
   if (h.provider === "claude" || h.provider === "codex" || h.provider === "hermes" || h.provider === "grok-build") {
     return { kind: "cli-host", provider: h.provider, model: h.provider === "grok-build" ? h.model || "grok-4.6" : h.model };
   }
@@ -487,13 +496,25 @@ export function resolveClient(settings, bot) {
       }),
     };
   }
-  if (!key) throw new Error("No API key. Set XAI_API_KEY or paste a key in Settings → Harness.");
+  const apiDef = OPENAI_API_DEFAULTS[h.provider] || OPENAI_API_DEFAULTS.custom;
+  const baseUrl = (h.baseUrl && String(h.baseUrl).trim()) || apiDef.baseUrl;
+  const apiKey =
+    (h.apiKey && h.apiKey.trim()) ||
+    process.env[h.apiKeyEnv || ""] ||
+    (h.provider === "spacexai" ? process.env.XAI_API_KEY : "") ||
+    (h.provider === "openai" ? process.env.OPENAI_API_KEY : "") ||
+    (h.provider === "openrouter" ? process.env.OPENROUTER_API_KEY : "");
+  if (!apiKey) throw new Error("No API key. Paste one in Settings → Harness, or set it on the API setup screen.");
+  const headers =
+    h.provider === "openrouter"
+      ? { "HTTP-Referer": "https://sub8.bot", "X-Title": "Sub8" }
+      : undefined;
   return {
     kind: "openai",
-    model: h.model || "grok-4.6",
-    provider: h.provider || "spacexai",
-    baseUrl: h.baseUrl || "https://api.x.ai/v1",
-    client: new OpenAI({ apiKey: key, baseURL: h.baseUrl || "https://api.x.ai/v1" }),
+    model: h.model || apiDef.model,
+    provider: h.provider || "custom",
+    baseUrl,
+    client: new OpenAI({ apiKey, baseURL: baseUrl.replace(/\/+$/, ""), defaultHeaders: headers }),
   };
 }
 

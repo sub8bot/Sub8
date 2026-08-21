@@ -127,15 +127,33 @@ function looksLocalModel(model) {
 }
 
 function normalizeHarness(h = {}) {
-  const allowed = new Set(["grok-build", "hermes", "claude", "codex", "ollama", "lmstudio", "spacexai", "custom"]);
+  const allowed = new Set([
+    "grok-build",
+    "hermes",
+    "claude",
+    "codex",
+    "ollama",
+    "lmstudio",
+    "spacexai",
+    "openrouter",
+    "openai",
+    "custom",
+  ]);
   const provider = allowed.has(h.provider) ? h.provider : "grok-build";
   const localBase = provider === "ollama" ? "http://127.0.0.1:11434/v1" : provider === "lmstudio" ? "http://127.0.0.1:1234/v1" : "";
+  const apiDefault =
+    provider === "openrouter"
+      ? { baseUrl: "https://openrouter.ai/api/v1", model: "openai/gpt-4.1-mini" }
+      : provider === "openai"
+        ? { baseUrl: "https://api.openai.com/v1", model: "gpt-4.1-mini" }
+        : { baseUrl: "https://api.x.ai/v1", model: "grok-4.6" };
   let model = typeof h.model === "string" ? h.model : "";
   let baseUrl = typeof h.baseUrl === "string" ? h.baseUrl : "";
   if (provider === "ollama" || provider === "lmstudio") {
     baseUrl = localBase;
-  } else if (provider === "custom") {
-    baseUrl = baseUrl || "https://api.x.ai/v1";
+  } else if (provider === "custom" || provider === "openrouter" || provider === "openai") {
+    baseUrl = baseUrl || apiDefault.baseUrl;
+    if (!model) model = apiDefault.model;
   } else {
     if (!baseUrl || /127\.0\.0\.1:(11434|1234)/.test(baseUrl)) baseUrl = "https://api.x.ai/v1";
     if (provider === "claude" || provider === "codex" || provider === "hermes") {
@@ -150,8 +168,10 @@ function normalizeHarness(h = {}) {
     provider,
     model,
     baseUrl,
-    apiKeyEnv: h.apiKeyEnv || "XAI_API_KEY",
+    apiKeyEnv: h.apiKeyEnv || (provider === "spacexai" ? "XAI_API_KEY" : ""),
     grokBuildCommand: h.grokBuildCommand || "grok",
+    setupComplete: Boolean(h.setupComplete),
+    setupSkipped: Boolean(h.setupSkipped),
   };
 }
 

@@ -3,6 +3,7 @@ import { AVATAR_COLORS } from "./palette.js";
 import { applyHealthPort, CONNECTING_AFTER_MS, frameKey, healthIframeIsCurrent, shouldShowConnecting } from "./stream-bind.mjs";
 import { listModelsForProvider, modelFieldKind, pickListedModel } from "./harness-models.mjs";
 import { formatChatText } from "./markdown.js";
+import { HARNESS_INSTALL, apiPreset, brainSetupHtml, needsBrainSetup } from "./brain-setup.mjs";
 
 const $ = (sel, el = document) => el.querySelector(sel);
 
@@ -36,6 +37,7 @@ const state = {
   ctx: null,
   hasGrokAuth: null,
   grokAuthAsk: false,
+  brainSetup: null,
   docker: null,
   dockerGateDismissed: false,
   update: null,
@@ -3751,6 +3753,11 @@ function paintHarnessBanner() {
   }
   const bot = state.bots.find((b) => b.id === state.selected);
   const { provider } = resolvedHarness(bot);
+  if (state.brainSetup) {
+    host.innerHTML = "";
+    host.hidden = true;
+    return;
+  }
   if (state.harnessBannerDismissed[provider]) {
     host.innerHTML = "";
     host.hidden = true;
@@ -3839,8 +3846,12 @@ function harnessHtml(h) {
             : ""
         }
         ${
-          tab === "spacexai"
-            ? `<div class="row"><div><div class="lbl">API key</div><div class="sub">Leave blank to use XAI_API_KEY.</div></div>
+          tab === "spacexai" || tab === "openrouter" || tab === "openai" || tab === "custom"
+            ? `<div class="row"><div><div class="lbl">Base URL</div><div class="sub">OpenAI-compatible /v1.</div></div>
+          <input class="field" data-harness-text="baseUrl" value="${escapeHtml(tab === def ? h.baseUrl || "" : apiPreset(tab).baseUrl)}" /></div>
+        <div class="row"><div><div class="lbl">API key</div><div class="sub">${
+          tab === "spacexai" ? "Leave blank to use XAI_API_KEY." : "Required for this endpoint."
+        }</div></div>
           <input class="field" style="max-width:220px" type="password" data-harness-text="apiKey" placeholder="••••" /></div>`
             : ""
         }
@@ -5343,6 +5354,11 @@ function bindDelegated() {
       } else if (provider === "claude" || provider === "codex" || provider === "hermes") {
         harness.model = "";
         harness.baseUrl = "https://api.x.ai/v1";
+      } else if (provider === "openrouter" || provider === "openai" || provider === "custom") {
+        const preset = apiPreset(provider);
+        harness.model = pickModelForProvider(provider, preset.model);
+        harness.baseUrl = preset.baseUrl;
+        harness.apiKeyEnv = "";
       } else {
         harness.model = pickModelForProvider(provider, "grok-4.6");
         harness.baseUrl = "https://api.x.ai/v1";
@@ -5406,6 +5422,47 @@ function bindDelegated() {
       state.grokAuthAsk = "pending";
       paintGrokAuth();
       startGrokOAuth();
+      return;
+    }
+    if (act === "brain-tab") {
+      if (state.brainSetup) {
+        if (state.brainSetup.tab === "api") readBrainApiForm();
+        state.brainSetup.tab = el.dataset.id === "api" ? "api" : "harness";
+      }
+      paintBrainSetup();
+      return;
+    }
+    if (act === "brain-preset") {
+      const preset = apiPreset(el.dataset.id);
+      if (state.brainSetup) {
+        state.brainSetup.api = { preset: preset.id, baseUrl: preset.baseUrl, model: preset.model, apiKey: state.brainSetup.api?.apiKey || "" };
+      }
+      paintBrainSetup();
+      return;
+    }
+    if (act === "brain-install") {
+      const pack = HARNESS_INSTALL[el.dataset.id];
+      if (pack?.url) openExternal(pack.url);
+      return;
+    }
+    if (act === "brain-signin") {
+      if (el.dataset.id === "grok-build") startGrokOAuth();
+      else {
+        const pack = HARNESS_INSTALL[el.dataset.id];
+        if (pack?.url) openExternal(pack.url);
+      }
+      return;
+    }
+    if (act === "brain-use") {
+      useHarnessFromSetup(el.dataset.id);
+      return;
+    }
+    if (act === "brain-api-save") {
+      saveApiFromSetup();
+      return;
+    }
+    if (act === "brain-later") {
+      skipBrainSetup();
       return;
     }
     render();
@@ -5568,9 +5625,19 @@ async function testHarness(provider) {
   if (state.modal === "settings" && state.section === "harness") paintModal();
 }
 
+function setupQuery() {
+  try {
+    return new URLSearchParams(location.search);
+  } catch {
+    return new URLSearchParams();
+  }
+}
+
 async function loadHarnessStatus() {
   try {
-    state.harnessStatus = await api("/api/harness/status");
+    const sim = setupQuery().get("simulate") || (setupQuery().get("setup") === "1" ? "none" : "");
+    const url = sim ? `/api/harness/status?simulate=${encodeURIComponent(sim)}` : "/api/harness/status";
+    state.harnessStatus = await api(url);
     if (state.harnessStatus?.local) state.localHarness = { ...state.localHarness, ...state.harnessStatus.local };
     paintHarnessBanner();
     return state.harnessStatus;
@@ -6804,6 +6871,10 @@ function paintGrokAuth() {
     host.innerHTML = "";
     return;
   }
+  if (state.brainSetup) {
+    host.innerHTML = "";
+    return;
+  }
   // null = unknown; never prompt until the server said we are signed out
   const need = wantsGrokBuild() && state.hasGrokAuth === false && state.grokAuthAsk && state.grokAuthAsk !== "later";
   if (!need) {
@@ -6828,6 +6899,159 @@ function paintGrokAuth() {
       </div>
     </div>
   </div>`;
+}
+
+let brainPoll = null;
+
+function readBrainApiForm() {
+  const api = { ...(state.brainSetup?.api || {}) };
+  const url = document.querySelector("[data-brain-api=baseUrl]")?.value;
+  const key = document.querySelector("[data-brain-api=apiKey]")?.value;
+  const model = document.querySelector("[data-brain-api=model]")?.value;
+  if (url != null) api.baseUrl = url;
+  if (key != null) api.apiKey = key;
+  if (model != null) api.model = model;
+  if (state.brainSetup) state.brainSetup.api = api;
+  return api;
+}
+
+function paintBrainSetup() {
+  let host = $("#brain-setup-host");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "brain-setup-host";
+    document.body.appendChild(host);
+  }
+  if (!state.brainSetup) {
+    host.innerHTML = "";
+    if (brainPoll) {
+      clearInterval(brainPoll);
+      brainPoll = null;
+    }
+    return;
+  }
+  const catalog = (state.harnessStatus?.catalog || []).filter((row) =>
+    ["grok-build", "hermes", "claude", "codex", "ollama", "lmstudio"].includes(row.id),
+  );
+  host.innerHTML = brainSetupHtml({
+    tab: state.brainSetup.tab || "harness",
+    harnesses: state.harnessStatus?.harnesses || {},
+    catalog,
+    api: state.brainSetup.api || { preset: "spacexai" },
+    busy: Boolean(state.brainSetup.busy),
+    error: state.brainSetup.error || "",
+    polling: true,
+  });
+}
+
+function startBrainPoll() {
+  if (brainPoll) clearInterval(brainPoll);
+  brainPoll = setInterval(async () => {
+    if (!state.brainSetup) return;
+    await loadHarnessStatus();
+    paintBrainSetup();
+  }, 3000);
+}
+
+function openBrainSetup() {
+  const preset = apiPreset("spacexai");
+  state.brainSetup = {
+    tab: "harness",
+    api: { preset: preset.id, baseUrl: preset.baseUrl, model: preset.model, apiKey: "" },
+    busy: false,
+    error: "",
+  };
+  paintBrainSetup();
+  startBrainPoll();
+}
+
+function closeBrainSetup() {
+  state.brainSetup = null;
+  paintBrainSetup();
+}
+
+async function patchHarness(partial) {
+  const harness = { ...(state.settings?.harness || {}), ...partial };
+  state.settings = { ...(state.settings || {}), harness };
+  await api("/api/settings", { method: "PUT", body: { harness } });
+  await refreshSettings();
+  await loadHarnessStatus();
+}
+
+async function useHarnessFromSetup(id) {
+  if (!id) return;
+  state.brainSetup = { ...(state.brainSetup || {}), busy: true, error: "" };
+  paintBrainSetup();
+  try {
+    const preset = apiPreset(id);
+    const harness = { provider: id, setupComplete: true, setupSkipped: false };
+    if (id === "ollama") {
+      harness.baseUrl = "http://127.0.0.1:11434/v1";
+      harness.model = pickModelForProvider("ollama", "");
+    } else if (id === "lmstudio") {
+      harness.baseUrl = "http://127.0.0.1:1234/v1";
+      harness.model = pickModelForProvider("lmstudio", "");
+    } else if (id === "claude" || id === "codex" || id === "hermes") {
+      harness.model = "";
+    } else if (id === "grok-build") {
+      harness.model = pickModelForProvider("grok-build", "grok-4.6");
+      harness.baseUrl = "https://api.x.ai/v1";
+    } else {
+      harness.baseUrl = preset.baseUrl;
+      harness.model = preset.model;
+    }
+    await patchHarness(harness);
+    closeBrainSetup();
+    render();
+  } catch (err) {
+    state.brainSetup = { ...(state.brainSetup || {}), busy: false, error: err.message || "Could not save." };
+    paintBrainSetup();
+  }
+}
+
+async function saveApiFromSetup() {
+  const api = readBrainApiForm();
+  const preset = apiPreset(api.preset || "spacexai");
+  const baseUrl = String(api.baseUrl || preset.baseUrl || "").trim();
+  const apiKey = String(api.apiKey || "").trim();
+  const model = String(api.model || preset.model || "").trim();
+  if (!apiKey) {
+    state.brainSetup = { ...(state.brainSetup || {}), error: "Paste an API key." };
+    paintBrainSetup();
+    return;
+  }
+  if (!/^https?:\/\//i.test(baseUrl)) {
+    state.brainSetup = { ...(state.brainSetup || {}), error: "Base URL must start with http:// or https://." };
+    paintBrainSetup();
+    return;
+  }
+  state.brainSetup = { ...(state.brainSetup || {}), busy: true, error: "", api };
+  paintBrainSetup();
+  try {
+    await patchHarness({
+      provider: preset.id,
+      baseUrl,
+      apiKey,
+      model,
+      apiKeyEnv: preset.id === "spacexai" ? "XAI_API_KEY" : "",
+      setupComplete: true,
+      setupSkipped: false,
+    });
+    closeBrainSetup();
+    render();
+  } catch (err) {
+    state.brainSetup = { ...(state.brainSetup || {}), busy: false, error: err.message || "Could not save." };
+    paintBrainSetup();
+  }
+}
+
+async function skipBrainSetup() {
+  try {
+    await patchHarness({ setupSkipped: true });
+  } catch {
+    /* still close */
+  }
+  closeBrainSetup();
 }
 
 function applyTheme() {
@@ -7222,14 +7446,11 @@ function watchStream() {
   }
   document.documentElement.dataset.appReady = "1";
   checkForUpdate({ silent: true }).catch(() => {});
-  if (wantsGrokBuild()) {
-    if (state.hasGrokAuth) {
-      state.grokAuthAsk = false;
-    } else {
-      state.grokAuthAsk = true;
-      paintGrokAuth();
-    }
-    startGrokOAuth();
+  await loadHarnessStatus();
+  if (setupQuery().get("setup") === "1" || needsBrainSetup(state.settings, state.harnessStatus)) {
+    openBrainSetup();
+  } else if (wantsGrokBuild() && state.hasGrokAuth === false) {
+    state.grokAuthAsk = false;
   }
   const bot = state.bots.find((b) => b.id === state.selected);
   if (bot && bot.vm?.container && bot.vm.status !== "running") {
