@@ -6,7 +6,7 @@ const OWNER = "sub8bot";
 const REPO = "Sub8";
 const LATEST = `https://api.github.com/repos/${OWNER}/${REPO}/releases/latest`;
 const RELEASES_PAGE = `https://github.com/${OWNER}/${REPO}/releases`;
-export const SITE_URL = "https://sub8.grok.me";
+export const SITE_URL = "https://sub8.bot";
 
 export function appVersion() {
   try {

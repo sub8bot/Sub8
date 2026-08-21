@@ -416,7 +416,14 @@ function dockerMissingHtml() {
   return dockerPaneHtml();
 }
 
-const OFFICIAL_SITE = "https://sub8.grok.me";
+function dockerInstallUrl() {
+  const ua = navigator.userAgent || "";
+  if (/Windows/i.test(ua)) return "https://docs.docker.com/desktop/setup/install/windows-install/";
+  if (/Linux/i.test(ua) && !/Android/i.test(ua)) return "https://docs.docker.com/desktop/setup/install/linux/";
+  return "https://docs.docker.com/desktop/setup/install/mac-install/";
+}
+
+const OFFICIAL_SITE = "https://sub8.bot";
 
 function releasePageUrl() {
   return state.update?.releaseUrl || "https://github.com/sub8bot/Sub8/releases";
@@ -457,7 +464,7 @@ function paintUpdateBanner() {
     <span>Sub8 ${escapeHtml(u.latestVersion || "")} is available
     <span class="muted">(you have ${escapeHtml(u.currentVersion || "")})</span></span>
     ${file ? `<a class="update-link" href="${escapeHtml(file)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>` : ""}
-    <a class="update-link" href="${escapeHtml(siteUrl())}" target="_blank" rel="noopener">sub8.grok.me</a>
+    <a class="update-link" href="${escapeHtml(siteUrl())}" target="_blank" rel="noopener">sub8.bot</a>
     <button type="button" class="update-x" data-act="dismiss-update" title="Dismiss">×</button>
   </div>`;
 }
@@ -3969,7 +3976,7 @@ function aboutHtml() {
       </div>
       <div class="about-grid">
         ${credit("open-url", "https://github.com/daniel-farina", iconPerson(), "Daniel Farina", "Created by")}
-        ${credit("open-url", "https://sub8.grok.me", iconGlobe(), "sub8.grok.me", "Website")}
+        ${credit("open-url", "https://sub8.bot", iconGlobe(), "sub8.bot", "Website")}
         ${credit("open-url", "https://github.com/sub8bot/Sub8", iconGitHub(), "GitHub", "github.com/sub8bot/Sub8")}
         ${credit("open-url", "https://github.com/sub8bot/Sub8/blob/master/LICENSE", iconLicense(), "Business Source License 1.1", "© 2026 Daniel Farina")}
       </div>
@@ -4040,9 +4047,9 @@ function settingsHtml() {
                 <button class="pill" data-act="check-update">${state.updateBusy ? "Checking…" : "Check for updates"}</button></div>
               ${
                 state.update?.updateAvailable
-                  ? `<div class="row"><div><div class="lbl">Install</div><div class="sub">Direct download for this computer, or the site at sub8.grok.me.</div></div>
+                  ? `<div class="row"><div><div class="lbl">Install</div><div class="sub">Direct download for this computer, or the site at sub8.bot.</div></div>
                 <div class="row" style="gap:8px;justify-content:flex-end">
-                  <button class="pill" data-act="open-site">sub8.grok.me</button>
+                  <button class="pill" data-act="open-site">sub8.bot</button>
                   <button class="pill primary" data-act="install-update">${
                     state.update.downloadName ? `Download ${escapeHtml(state.update.downloadName)}` : "Download"
                   }</button>
@@ -4556,7 +4563,7 @@ function bindDelegated() {
       return;
     }
     if (act === "install-docker") {
-      openExternal("https://docs.docker.com/desktop/setup/install/mac-install/");
+      openExternal(dockerInstallUrl());
       return;
     }
     if (act === "chat-more") {

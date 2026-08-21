@@ -2,7 +2,7 @@ export const HARNESS_SETUP_IDS = ["grok-build", "hermes", "claude", "codex", "ol
 
 export const HARNESS_INSTALL = {
   "grok-build": {
-    url: "https://docs.x.ai/docs/build/overview",
+    url: "https://x.ai/cli",
     cmd: "curl -fsSL https://x.ai/cli/install.sh | bash",
     signIn: "Sign in once in the browser after install.",
   },

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   API_PRESETS,
+  HARNESS_INSTALL,
   HARNESS_SETUP_IDS,
   applySimulate,
   brainSetupHtml,
@@ -76,5 +77,9 @@ for (const p of API_PRESETS) assert.match(htmlApi, new RegExp(p.label));
 const htmlCustom = brainSetupHtml({ tab: "api", api: { preset: "custom", baseUrl: "https://my.llm/v1", model: "foo" } });
 assert.match(htmlCustom, /https:\/\/my\.llm\/v1/);
 assert.match(htmlCustom, /value="foo"/);
+
+assert.equal(HARNESS_INSTALL["grok-build"].url, "https://x.ai/cli");
+assert.match(HARNESS_INSTALL["grok-build"].cmd, /x\.ai\/cli\/install\.sh/);
+assert.doesNotMatch(HARNESS_INSTALL["grok-build"].url, /docs\.x\.ai\/docs\//);
 
 console.log("ok brain-setup");

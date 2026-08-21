@@ -38,7 +38,7 @@ test("picks the platform installer", () => {
 });
 
 test("official site", () => {
-  assert(SITE_URL === "https://sub8.grok.me");
+  assert(SITE_URL === "https://sub8.bot");
 });
 
 if (failed) process.exit(1);

@@ -9,7 +9,7 @@ import { hostHasGrokAuth } from "./vm.mjs";
 import { applyAuthAlert, parseClaudeAuthStatus } from "./harness-auth.mjs";
 
 export const HARNESS_CATALOG = [
-  { id: "grok-build", label: "Grok Build", kind: "cli-host", installUrl: "https://docs.x.ai/docs/build/overview" },
+  { id: "grok-build", label: "Grok Build", kind: "cli-host", installUrl: "https://x.ai/cli" },
   { id: "hermes", label: "Hermes", kind: "cli-host", installUrl: "https://hermes-agent.nousresearch.com" },
   { id: "claude", label: "Claude", kind: "cli-host", installUrl: "https://code.claude.com/docs/en/setup" },
   { id: "codex", label: "Codex", kind: "cli-host", installUrl: "https://github.com/openai/codex" },
