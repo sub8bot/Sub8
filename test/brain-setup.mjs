@@ -6,6 +6,7 @@ import {
   applySimulate,
   brainSetupHtml,
   harnessAction,
+  harnessSetupBannerHtml,
   needsBrainSetup,
 } from "../web/brain-setup.mjs";
 
@@ -77,6 +78,17 @@ for (const p of API_PRESETS) assert.match(htmlApi, new RegExp(p.label));
 const htmlCustom = brainSetupHtml({ tab: "api", api: { preset: "custom", baseUrl: "https://my.llm/v1", model: "foo" } });
 assert.match(htmlCustom, /https:\/\/my\.llm\/v1/);
 assert.match(htmlCustom, /value="foo"/);
+
+const bannerMissing = harnessSetupBannerHtml({ id: "grok-build", label: "Grok Build", installed: false, signedIn: false, detail: "Grok Build is not installed." });
+assert.match(bannerMissing, /Grok Build is not installed/);
+assert.match(bannerMissing, /data-act="open-brain-setup"/);
+assert.match(bannerMissing, /class="pill accent"/);
+assert.doesNotMatch(bannerMissing, /Open Settings/);
+assert.doesNotMatch(bannerMissing, /update-strip/);
+
+const bannerSign = harnessSetupBannerHtml({ id: "grok-build", label: "Grok Build", installed: true, signedIn: false, detail: "Needs login" });
+assert.match(bannerSign, /needs a sign-in/);
+assert.match(bannerSign, />Sign in</);
 
 assert.equal(HARNESS_INSTALL["grok-build"].url, "https://x.ai/cli");
 assert.match(HARNESS_INSTALL["grok-build"].cmd, /x\.ai\/cli\/install\.sh/);

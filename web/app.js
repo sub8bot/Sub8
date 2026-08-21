@@ -3,7 +3,7 @@ import { AVATAR_COLORS } from "./palette.js";
 import { applyHealthPort, CONNECTING_AFTER_MS, frameKey, healthIframeIsCurrent, shouldShowConnecting } from "./stream-bind.mjs";
 import { listModelsForProvider, modelFieldKind, pickListedModel } from "./harness-models.mjs";
 import { formatChatText } from "./markdown.js";
-import { HARNESS_INSTALL, apiPreset, brainSetupHtml, needsBrainSetup } from "./brain-setup.mjs";
+import { HARNESS_INSTALL, apiPreset, brainSetupHtml, harnessSetupBannerHtml, needsBrainSetup } from "./brain-setup.mjs";
 
 const $ = (sel, el = document) => el.querySelector(sel);
 
@@ -3777,12 +3777,7 @@ function paintHarnessBanner() {
     return;
   }
   host.hidden = false;
-  host.innerHTML = `<div class="update-strip harness-strip">
-    <span><strong>${escapeHtml(info.label || provider)}</strong> is not ready.
-    <span class="muted">${escapeHtml(info.detail || "Not signed in.")}</span></span>
-    <button type="button" class="update-link" data-act="open-harness" data-id="${escapeHtml(provider)}">Open Settings</button>
-    <button type="button" class="update-x" data-act="dismiss-harness-banner" data-id="${escapeHtml(provider)}" title="Dismiss">×</button>
-  </div>`;
+  host.innerHTML = harnessSetupBannerHtml({ ...info, id: info.id || provider });
 }
 
 function harnessHtml(h) {
@@ -5335,12 +5330,9 @@ function bindDelegated() {
       });
       return;
     }
-    if (act === "open-harness") {
-      state.modal = "settings";
-      state.section = "harness";
-      state.harnessTab = el.dataset.id || state.harnessTab;
-      render();
-      loadHarnessStatus().then(() => paintModal());
+    if (act === "open-harness" || act === "open-brain-setup") {
+      openBrainSetup();
+      paintHarnessBanner();
       return;
     }
     if (act === "dismiss-harness-banner") {
@@ -5380,12 +5372,9 @@ function bindDelegated() {
         paintModal();
         render();
         paintHarnessBanner();
-        if (provider === "grok-build") {
-          if (state.hasGrokAuth === false) {
-            state.grokAuthAsk = true;
-            paintGrokAuth();
-          }
-          startGrokOAuth();
+        if (provider === "grok-build" && !harnessInfo("grok-build")?.ready) {
+          openBrainSetup();
+          paintHarnessBanner();
         }
       });
       return;
@@ -5584,7 +5573,8 @@ async function startGrokOAuth() {
       paintGrokAuth();
     }
     if (r.needHostLogin && !state.hasGrokAuth) {
-      state.grokAuthAsk = true;
+      state.grokAuthAsk = false;
+      if (!state.brainSetup) openBrainSetup();
       paintGrokAuth();
       const end = Date.now() + 180_000;
       const poll = async () => {
@@ -6882,44 +6872,8 @@ function paintAccountGate() {
 }
 
 function paintGrokAuth() {
-  let host = $("#grok-auth-host");
-  if (!host) {
-    host = document.createElement("div");
-    host.id = "grok-auth-host";
-    document.body.appendChild(host);
-  }
-  if (state.account && (!state.account.ready || (state.account.needsCloudPrompt && !state.cloudPromptLater))) {
-    host.innerHTML = "";
-    return;
-  }
-  if (state.brainSetup) {
-    host.innerHTML = "";
-    return;
-  }
-  // null = unknown; never prompt until the server said we are signed out
-  const need = wantsGrokBuild() && state.hasGrokAuth === false && state.grokAuthAsk && state.grokAuthAsk !== "later";
-  if (!need) {
-    host.innerHTML = "";
-    return;
-  }
-  const pending = state.grokAuthAsk === "pending";
-  host.innerHTML = `<div class="overlay grok-auth-overlay" data-act="grok-auth-later">
-    <div class="modal grok-auth-modal">
-      <div class="sbody" style="width:100%">
-        <button type="button" class="close" data-act="grok-auth-later" title="Close">${iconClose()}</button>
-        <h2>Sign in to Grok</h2>
-        <p class="muted">${
-          pending
-            ? "Finish sign-in in your Mac browser. This sheet closes when Grok is ready."
-            : "Grok Build needs a login on this Mac. Sign in once in your browser."
-        }</p>
-        <div class="routine-editor-foot">
-          <button type="button" class="pill" data-act="grok-auth-later">Later</button>
-          <button type="button" class="pill primary" data-act="grok-auth-now">${pending ? "Open login again" : "Sign in with Grok"}</button>
-        </div>
-      </div>
-    </div>
-  </div>`;
+  const host = $("#grok-auth-host");
+  if (host) host.innerHTML = "";
 }
 
 let brainPoll = null;

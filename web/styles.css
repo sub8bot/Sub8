@@ -2048,7 +2048,28 @@ h2.md-h { font-size: 16px; }
   white-space: pre-wrap;
   word-break: break-word;
 }
-.harness-strip { background: color-mix(in srgb, #d97706 18%, var(--on)); }
+#harness-banner {
+  flex: 0 0 auto;
+  -webkit-app-region: no-drag;
+}
+#harness-banner[hidden] { display: none !important; }
+.harness-strip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  background: var(--card);
+  color: var(--text);
+  font-size: 13px;
+  border-bottom: 1px solid var(--line);
+  -webkit-app-region: no-drag;
+}
+.harness-strip,
+.harness-strip * { -webkit-app-region: no-drag !important; }
+.harness-strip .muted { color: var(--muted); }
+.harness-strip .pill { min-height: 32px; }
 .computer-btn { position: relative; }
 .computer-badge {
   position: absolute;
@@ -2487,8 +2508,8 @@ textarea.field { min-height: 88px; resize: vertical; }
   gap: 10px;
   flex-wrap: wrap;
   padding: 8px 16px;
-  background: var(--on);
-  color: var(--on-fg);
+  background: var(--card);
+  color: var(--text);
   font-size: 13px;
   border-bottom: 1px solid var(--line);
   -webkit-app-region: no-drag;
@@ -2497,16 +2518,16 @@ textarea.field { min-height: 88px; resize: vertical; }
 .update-strip * {
   -webkit-app-region: no-drag !important;
 }
-.update-strip .muted { color: color-mix(in srgb, var(--on-fg) 62%, transparent); }
+.update-strip .muted { color: var(--muted); }
 .update-link {
-  color: inherit;
+  color: var(--accent);
   font-weight: 600;
   text-underline-offset: 2px;
 }
 .update-x {
   border: 0;
   background: transparent;
-  color: inherit;
+  color: var(--muted);
   width: 28px;
   height: 28px;
   border-radius: 8px;
@@ -2514,7 +2535,13 @@ textarea.field { min-height: 88px; resize: vertical; }
   font-size: 18px;
   line-height: 1;
 }
-.update-x:hover { background: color-mix(in srgb, var(--on-fg) 12%, transparent); }
+.update-x:hover { background: var(--hover); color: var(--text); }
+.pill.accent {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: none;
+}
+.pill.accent:hover { filter: brightness(1.06); background: var(--accent); }
 .danger { background: #e11d48; color: #fff; border: 0; border-radius: 10px; padding: 8px 14px; cursor: pointer; }
 .plus-menu {
   position: absolute;

@@ -163,6 +163,21 @@ export function brainSetupHtml({
   </div>`;
 }
 
+export function harnessSetupBannerHtml(info) {
+  const id = info?.id || "";
+  const label = esc(info?.label || "This brain");
+  const installed = Boolean(info?.installed);
+  const signedIn = Boolean(info?.signedIn);
+  const title = !installed ? `${label} is not installed` : !signedIn ? `${label} needs a sign-in` : `${label} is not ready`;
+  const detail = esc(info?.detail || (!installed ? "Install a harness on this Mac to chat." : "Finish setup to chat."));
+  const cta = !installed ? "Set up" : !signedIn ? "Sign in" : "Set up";
+  return `<div class="harness-strip">
+    <span><strong>${title}.</strong> <span class="muted">${detail}</span></span>
+    <button type="button" class="pill accent" data-act="open-brain-setup">${esc(cta)}</button>
+    <button type="button" class="update-x" data-act="dismiss-harness-banner" data-id="${esc(id)}" title="Dismiss">×</button>
+  </div>`;
+}
+
 export function applySimulate(status, simulate) {
   if (!status?.harnesses || !simulate) return status;
   const next = { ...status, harnesses: { ...status.harnesses } };
