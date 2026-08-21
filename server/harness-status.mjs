@@ -6,6 +6,7 @@ import path from "node:path";
 import { claudeBin, codexBin, hermesBin, hostEnv, whichCmd } from "./host-cli.mjs";
 import { detectLocalHarnesses } from "./local-llm.mjs";
 import { hostHasGrokAuth } from "./vm.mjs";
+import { applyAuthAlert, parseClaudeAuthStatus } from "./harness-auth.mjs";
 
 export const HARNESS_CATALOG = [
   { id: "grok-build", label: "Grok Build", kind: "cli-host" },
@@ -117,7 +118,7 @@ export async function listCodexModels() {
 async function grokStatus() {
   const bin = resolveBin("grok", whichCmd("grok", [path.join(os.homedir(), ".grok", "bin", "grok")]));
   const signedIn = await hostHasGrokAuth();
-  return {
+  return applyAuthAlert({
     id: "grok-build",
     label: "Grok Build",
     kind: "cli-host",
@@ -131,7 +132,8 @@ async function grokStatus() {
       ? "Grok CLI on this Mac. It drives the Bot computer through Sub8 tools."
       : "Not signed in on this Mac. Grok Build needs a browser login once.",
     hint: signedIn ? "" : "Sign in with Grok in Settings, or run grok login --oauth.",
-  };
+    liveAuth: signedIn,
+  });
 }
 
 async function hermesStatus() {
@@ -160,7 +162,7 @@ async function hermesStatus() {
   else if (localOk) detail = `Using ${provider}${model ? ` · ${model}` : ""}${baseUrl ? ` · ${baseUrl}` : ""}. Not signed in to Nous Portal.`;
   else if (hasKey) detail = `API key configured${provider ? ` for ${provider}` : ""}${model ? ` · ${model}` : ""}.`;
   else detail = "Installed, but no provider login or API key yet. Run hermes setup or hermes model.";
-  return {
+  return applyAuthAlert({
     id: "hermes",
     label: "Hermes",
     kind: "cli-host",
@@ -173,27 +175,29 @@ async function hermesStatus() {
     extra: { hermesProvider: provider, hermesBaseUrl: baseUrl, portal, keys: pool },
     detail,
     hint: ready ? "" : "Install Hermes, then run hermes setup --portal or hermes model.",
-  };
+    liveAuth: portal,
+  });
 }
 
 async function claudeStatus() {
   const bin = resolveBin("claude", claudeBin());
   let signedIn = false;
   let email = "";
+  let expired = false;
   let version = "";
   if (bin) {
-    const auth = await run(bin, ["auth", "status"], { timeout: 10_000 });
-    try {
-      const j = JSON.parse(auth.out.replace(/^[\s\S]*?(\{)/, "{"));
-      signedIn = Boolean(j.loggedIn);
-      email = j.email || "";
-    } catch {
-      signedIn = /loggedIn["']?\s*:\s*true/i.test(auth.out);
-    }
+    const [auth, text] = await Promise.all([
+      run(bin, ["auth", "status"], { timeout: 10_000 }),
+      run(bin, ["auth", "status", "--text"], { timeout: 10_000 }),
+    ]);
+    const parsed = parseClaudeAuthStatus(`${auth.out}\n${text.out}`);
+    signedIn = parsed.signedIn;
+    email = parsed.email;
+    expired = parsed.expired;
     const v = await run(bin, ["--version"], { timeout: 6_000 });
     version = (v.out.split("\n")[0] || "").slice(0, 80);
   }
-  return {
+  return applyAuthAlert({
     id: "claude",
     label: "Claude",
     kind: "cli-host",
@@ -202,15 +206,19 @@ async function claudeStatus() {
     version,
     signedIn,
     ready: Boolean(bin) && signedIn,
+    expired,
     model: "",
     extra: { email },
+    liveAuth: signedIn,
     detail: !bin
       ? "Claude Code is not installed on this Mac."
       : signedIn
         ? `Signed in${email ? ` as ${email}` : ""} with Claude Code.`
-        : "Claude Code is installed but not signed in.",
-    hint: signedIn ? "" : "In a terminal: claude  (then /login)",
-  };
+        : expired && email
+          ? `Session expired. Sign in again (last account: ${email}).`
+          : "Claude Code is installed but not signed in.",
+    hint: signedIn ? "" : "Open Settings → Harness → Claude, or in a terminal: claude auth login",
+  });
 }
 
 async function codexStatus() {
@@ -224,7 +232,7 @@ async function codexStatus() {
     version = (v.out.split("\n")[0] || "").slice(0, 80);
   }
   const models = await listCodexModels();
-  return {
+  return applyAuthAlert({
     id: "codex",
     label: "Codex",
     kind: "cli-host",
@@ -241,12 +249,12 @@ async function codexStatus() {
         ? "Signed in. Codex uses this Mac’s login and only drives the Bot computer."
         : "Codex is installed but has no auth.json login.",
     hint: signedIn ? "" : "In a terminal: codex login",
-  };
+  });
 }
 
 async function localStatus(id, label, detected) {
   const d = detected || { ok: false, models: [], baseUrl: "", error: "" };
-  return {
+  return applyAuthAlert({
     id,
     label,
     kind: "openai-local",
@@ -261,12 +269,13 @@ async function localStatus(id, label, detected) {
       ? `Running at ${d.baseUrl} · ${(d.models || []).length} model${(d.models || []).length === 1 ? "" : "s"}.`
       : d.error || `${label} is not running.`,
     hint: d.ok ? "" : `Start ${label}, then Refresh.`,
-  };
+    liveAuth: Boolean(d.ok),
+  });
 }
 
 async function spacexStatus(settings) {
   const key = Boolean((settings?.harness?.apiKey && settings.harness.apiKey !== "••••") || process.env.XAI_API_KEY);
-  return {
+  return applyAuthAlert({
     id: "spacexai",
     label: "SpaceXAI",
     kind: "openai",
@@ -278,7 +287,8 @@ async function spacexStatus(settings) {
     model: settings?.harness?.model || "grok-4.6",
     detail: key ? "API key is set (Settings or XAI_API_KEY)." : "No API key. Paste one here or set XAI_API_KEY.",
     hint: key ? "" : "Add an xAI key in this tab.",
-  };
+    liveAuth: key,
+  });
 }
 
 export async function collectHarnessStatus(settings = {}) {

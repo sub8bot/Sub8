@@ -10,6 +10,7 @@ import * as routines from "./routines.mjs";
 import { runTurn, publicBot, pingHarness, webSearch, orchestratorReply, isChatQuestion, HARNESS_PROVIDERS, harnessFor, setTeamDispatch, setTeamReply, setStopBot } from "./agent.mjs";
 import { detectLocalHarnesses } from "./local-llm.mjs";
 import { collectHarnessStatus } from "./harness-status.mjs";
+import { looksLikeAuthFailure, rewriteHarnessOutput } from "./harness-auth.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { setHumanControl, isHumanControl } from "./control.mjs";
 import { appRoot, dataDir } from "./paths.mjs";
@@ -1779,6 +1780,9 @@ async function runUserTurn(botId, text, hidden, images = [], opts = {}) {
       pullNudges: () => bag.nudges.splice(0),
       emit: (event, data) => {
         broadcast(event, { botId, ...data });
+        if (event === "harness-auth") {
+          store.loadSettings().then((s) => collectHarnessStatus(s)).then((status) => broadcast("harness-status", status)).catch(() => {});
+        }
         if (event === "routine" || event === "message") return store.upsertBot(bot);
       },
     });
@@ -1812,7 +1816,9 @@ async function runUserTurn(botId, text, hidden, images = [], opts = {}) {
         b.messages.push({
           id: `e${Date.now()}`,
           role: "assistant",
-          content: `That failed: ${err.message}`,
+          content: looksLikeAuthFailure(err.message)
+            ? rewriteHarnessOutput(b.harness?.provider || "claude", err.message)
+            : `That failed: ${err.message}`,
           ts: Date.now(),
         });
         await store.upsertBot(b);

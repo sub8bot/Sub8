@@ -3573,6 +3573,7 @@ function statusTone(info) {
 
 function statusLabel(info) {
   if (!info) return "Checking…";
+  if (info.expired) return "Session expired";
   if (info.ready && info.signedIn) return "Signed in";
   if (info.ready) return "Ready";
   if (!info.installed) return "Not installed";
@@ -3657,7 +3658,7 @@ function harnessHtml(h) {
         ${info?.version ? `<div class="row"><div class="lbl">Version</div><span class="muted">${escapeHtml(info.version)}</span></div>` : ""}
         ${
           info?.extra?.email
-            ? `<div class="row"><div class="lbl">Account</div><span class="muted">${escapeHtml(info.extra.email)}</span></div>`
+            ? `<div class="row"><div class="lbl">${info.signedIn ? "Account" : "Last account"}</div><span class="muted">${escapeHtml(info.extra.email)}</span></div>`
             : ""
         }
         ${
@@ -6359,6 +6360,19 @@ function listen() {
         refreshAvatars();
         if (bot.id === selected.id && (state.showComputer || state.deskSize === "full")) attachLiveFrame(selected);
       } else render();
+    });
+    es.addEventListener("harness-status", (e) => {
+      try {
+        const status = JSON.parse(e.data);
+        if (status?.harnesses) {
+          state.harnessStatus = status;
+          if (status.local) state.localHarness = { ...state.localHarness, ...status.local };
+        }
+      } catch {
+        /* keep */
+      }
+      paintHarnessBanner();
+      if (state.modal === "settings" && state.section === "harness") paintModal();
     });
     es.addEventListener("control", (e) => {
       const { botId, on } = JSON.parse(e.data);

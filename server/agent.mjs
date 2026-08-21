@@ -12,6 +12,7 @@ import * as ctx from "./context.mjs";
 import * as memory from "./memory.mjs";
 import * as teams from "./teams.mjs";
 import * as store from "./store.mjs";
+import { looksLikeAuthFailure, rewriteHarnessOutput } from "./harness-auth.mjs";
 
 let dispatchTeammate = null;
 let deliverReply = null;
@@ -520,6 +521,17 @@ export async function pingHarness(settings, bot, providerOverride) {
   const provider = harness.provider || forced.harness?.provider || "spacexai";
   if (harness.kind === "cli-host") {
     const r = await hostCli.pingHostCli(harness.provider);
+    const blob = r.error || r.log || r.sample || "";
+    if (!r.ok && looksLikeAuthFailure(blob)) {
+      return {
+        ...r,
+        provider: harness.provider,
+        kind: "cli-host",
+        model: harness.model,
+        error: rewriteHarnessOutput(harness.provider, blob),
+        log: rewriteHarnessOutput(harness.provider, blob),
+      };
+    }
     return { ...r, provider: harness.provider, kind: "cli-host", model: harness.model };
   }
   if (harness.kind === "grok-build") {
@@ -754,6 +766,7 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
       port: settings.__port,
     });
     const msg = { id: `a${Date.now()}`, role: "assistant", content: text, ts: Date.now() };
+    if (/signed out|sign in, then send/i.test(text)) emit("harness-auth", { provider: harness.provider });
     bot.messages.push(msg);
     emit("message", msg);
     return bot;
@@ -1987,7 +2000,8 @@ function runGrokBuild(harness, userText, signal, bot, emit, { settings, hidden =
     }
     const signed = await vm.grokSignedIn(box);
     if (!signed.ok) {
-      return "Grok Build is not signed in on this computer. Open Settings → Harness → Grok Build and sign in on this Mac. That session is copied into the Bot computer.";
+      emit?.("harness-auth", { provider: "grok-build" });
+      return "Grok Build is signed out. Open Settings → Harness → Grok Build and sign in, then send this again.";
     }
     const extra = await ctx.agentsExtra({ bot, settings, hidden });
     await vm.installAgentsMd(box, extra);

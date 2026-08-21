@@ -7,6 +7,7 @@ import { appRoot, dataDir } from "./paths.mjs";
 import * as vault from "./vault.mjs";
 import * as ctx from "./context.mjs";
 import * as memory from "./memory.mjs";
+import { rewriteHarnessOutput } from "./harness-auth.mjs";
 
 export function extraPath() {
   const home = process.env.HOME || os.homedir() || "";
@@ -694,6 +695,7 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
         .replace(/Reading additional input from stdin\.\.\./gi, "")
         .replace(/\n{3,}/g, "\n\n")
         .trim();
+      out = rewriteHarnessOutput(provider, out);
       try {
         out = vault.redactSecrets(out, await vault.listSecrets());
       } catch {
