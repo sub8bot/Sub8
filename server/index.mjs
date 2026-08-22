@@ -18,6 +18,7 @@ import { appRoot, dataDir } from "./paths.mjs";
 import * as appUpdate from "./update.mjs";
 import * as vault from "./vault.mjs";
 import * as computers from "./computers.mjs";
+import { resolveComputerBackend } from "./computer-backends/index.mjs";
 import * as hostCli from "./host-cli.mjs";
 import { resolveZone } from "./context.mjs";
 import * as teams from "./teams.mjs";
@@ -173,6 +174,8 @@ async function wakeDesksAfterDocker() {
   const rows = await computers.listComputers();
   const list = await vm.listLocalbotStates({ force: true });
   for (const row of rows) {
+    const backend = resolveComputerBackend(row);
+    if (backend.name !== computers.DEFAULT_COMPUTER_BACKEND) continue;
     const st = list.states.get(row.container);
     if (st && (st.status === "exited" || st.status === "created") && row.status !== "exited" && row.status !== "stopped") {
       await vm.startExistingContainer(row.container);
@@ -564,9 +567,10 @@ app.post("/api/computers/previews", async (_req, res) => {
   try {
     const rows = await computers.listComputers();
     const out = [];
+    const withBackends = rows.map((row) => ({ row, backend: resolveComputerBackend(row) }));
     await Promise.all(
-      rows.map(async (row) => {
-        const st = await vm.inspectState(row.container);
+      withBackends.map(async ({ row, backend }) => {
+        const st = await backend.inspect(row);
         if (st.status !== "running") return;
         const dest = vm.computerPreviewPath(row.id);
         const shot = await vm.screenshotContainer(row.container, dest);
@@ -592,7 +596,8 @@ app.get("/api/computers", async (_req, res) => {
 app.get("/api/computers/stats", async (_req, res) => {
   try {
     const rows = await computers.listComputers();
-    const stats = await vm.containerStats(rows.map((c) => c.container));
+    const local = rows.filter((row) => resolveComputerBackend(row).name === computers.DEFAULT_COMPUTER_BACKEND);
+    const stats = await vm.containerStats(local.map((c) => c.container));
     res.json({ stats });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -618,8 +623,10 @@ app.post("/api/computers/:id/:action", async (req, res) => {
   if (!row) return res.status(404).json({ error: "not found" });
   const bot = await computerBot(row);
   try {
+    for (const computer of await computers.listComputers()) resolveComputerBackend(computer);
+    const backend = resolveComputerBackend(row);
     if (action === "pause") {
-      const r = await vm.pauseContainer(row.container);
+      const r = await backend.pause(row);
       if (!r.ok) return res.status(400).json(r);
       await computers.saveComputer({ ...row, status: "paused", pausedByQuit: false });
       if (bot) {
@@ -628,16 +635,16 @@ app.post("/api/computers/:id/:action", async (req, res) => {
         broadcast("bot", toClient(bot));
       }
     } else if (action === "resume") {
-      const st = await vm.inspectState(row.container);
+      const st = await backend.inspect(row);
       if (!st.exists) {
         if (!bot) return res.status(400).json({ error: "Attach this computer to a Bot, then Start." });
-        const info = await vm.startVm(bot, (m) => broadcast("log", { botId: bot.id, m }));
+        const info = await backend.start(row, bot, (m) => broadcast("log", { botId: bot.id, m }));
         bot.vm = { ...bot.vm, ...info, computerId: row.id, error: null };
         await store.upsertBot(bot);
         await computers.saveComputer({ ...row, status: "running", pausedByQuit: false, novncPort: info.novncPort });
         broadcast("bot", toClient(bot));
       } else {
-        const r = await vm.resumeContainer(row.container);
+        const r = await backend.resume(row);
         if (!r.ok) return res.status(400).json(r);
         await computers.saveComputer({ ...row, status: "running", pausedByQuit: false });
         if (bot) {
@@ -647,7 +654,7 @@ app.post("/api/computers/:id/:action", async (req, res) => {
         }
       }
     } else if (action === "reboot") {
-      const r = await vm.rebootContainer(row.container);
+      const r = await backend.reboot(row);
       if (!r.ok) return res.status(400).json(r);
       await computers.saveComputer({ ...row, status: "running", pausedByQuit: false, novncPort: r.novncPort || row.novncPort });
       if (bot) {
@@ -659,7 +666,7 @@ app.post("/api/computers/:id/:action", async (req, res) => {
       const owner = bot || (req.body?.botId ? await store.getBot(req.body.botId) : null);
       if (!owner) return res.status(400).json({ error: "Attach this computer to a Bot first." });
       owner.vm = { ...owner.vm, computerId: row.id, container: row.container, volume: row.volume };
-      const info = await vm.startVm(owner, (m) => broadcast("log", { botId: owner.id, m }));
+      const info = await backend.start(row, owner, (m) => broadcast("log", { botId: owner.id, m }));
       owner.vm = { ...owner.vm, ...info, computerId: row.id, error: null };
       await store.upsertBot(owner);
       await computers.saveComputer({
@@ -671,7 +678,7 @@ app.post("/api/computers/:id/:action", async (req, res) => {
       });
       broadcast("bot", toClient(owner));
     } else if (action === "stop") {
-      await vm.stopContainer(row.container);
+      await backend.stop(row);
       await computers.saveComputer({ ...row, status: "exited", pausedByQuit: false });
       if (bot) {
         bot.vm = { ...bot.vm, status: "exited" };
@@ -679,7 +686,7 @@ app.post("/api/computers/:id/:action", async (req, res) => {
         broadcast("bot", toClient(bot));
       }
     } else if (action === "destroy") {
-      await vm.stopVm({ vm: { container: row.container, volume: row.volume } }, { wipe: true });
+      await backend.destroy(row);
       await computers.removeComputer(row.id);
       if (bot) {
         bot.vm = {
@@ -760,12 +767,14 @@ app.post("/api/computers/:id/:action", async (req, res) => {
 
 app.post("/api/computers/pause-all", async (_req, res) => {
   const rows = await computers.listComputers();
+  for (const row of rows) resolveComputerBackend(row);
   const results = [];
   for (const row of rows) {
-    const st = await vm.inspectState(row.container);
+    const backend = resolveComputerBackend(row);
+    const st = await backend.inspect(row);
     if (!st.running || st.paused) continue;
     const r = await Promise.race([
-      vm.pauseContainer(row.container),
+      backend.pause(row),
       new Promise((resolve) => setTimeout(() => resolve({ ok: false, error: "timeout" }), 4000)),
     ]);
     if (r.ok) {
@@ -993,18 +1002,17 @@ app.delete("/api/teams/:id", async (req, res) => {
   const bots = await store.loadBots();
   const members = teams.membersOf(team, bots);
   const computerId = team.computerId || members[0]?.vm?.computerId || null;
+  const row = wipe && computerId ? await computers.getComputer(computerId) : null;
+  const backend = row ? resolveComputerBackend(row) : null;
   for (const m of members) {
     stopTurn(m.id);
     deletedIds.add(m.id);
     await store.deleteBot(m.id);
   }
   await teams.removeTeam(team.id);
-  if (wipe && computerId) {
-    const row = await computers.getComputer(computerId);
-    if (row) {
-      await vm.stopVm({ vm: { container: row.container, volume: row.volume } }, { wipe: true }).catch(() => {});
-      await computers.removeComputer(row.id);
-    }
+  if (row) {
+    await backend.destroy(row).catch(() => {});
+    await computers.removeComputer(row.id);
   }
   sweepFromRegistry().catch((err) => console.error("sweep", err));
   broadcast("bots", (await store.loadBots()).map(toClient));
@@ -1252,12 +1260,12 @@ async function staleComputers(docker) {
 }
 
 async function liveComputers() {
-  const [rows, bots, settings, list] = await Promise.all([
+  const [rows, bots, settings] = await Promise.all([
     computers.listComputers(),
     store.loadBots(),
     store.loadSettings(),
-    vm.listLocalbotStates(),
   ]);
+  const backends = new Map(rows.map((row) => [row.id, resolveComputerBackend(row)]));
   const byId = new Map(bots.map((b) => [b.id, b]));
   const attached = new Map();
   for (const b of bots) {
@@ -1266,11 +1274,12 @@ async function liveComputers() {
   }
   const out = [];
   for (const row of rows) {
-    if (list.stuck) {
+    const backend = backends.get(row.id);
+    const st = await backend.inspect(row);
+    if (st.stuck) {
       out.push(decorateComputer(row, bots, settings, { byId, attached, fields: { stale: true, stuck: true, exists: row.status !== "missing" } }));
       continue;
     }
-    const st = list.states.get(row.container) || { status: "missing", exists: false, running: false, paused: false };
     // Docker's current mapping wins: a port we remembered can belong to a
     // container that has since been restarted onto a different one.
     let novncPort = st.novncPort || row.novncPort || attached.get(row.id)?.vm?.novncPort || null;
@@ -1311,10 +1320,15 @@ app.delete("/api/bots/:id", async (req, res) => {
     if (keepComputer) {
       if (row) await computers.saveComputer({ ...row, lastBotId: bot.id, pausedByQuit: false });
     } else {
-      await vm.stopVm(bot, { wipe: true });
+      const computer = row || { container: bot.vm?.container, volume: bot.vm?.volume };
+      await resolveComputerBackend(computer).destroy(computer, bot);
       if (row) await computers.removeComputer(row.id);
     }
-  } catch {
+  } catch (err) {
+    if (/^Unknown computer backend:/.test(err.message || "")) {
+      deletedIds.delete(bot.id);
+      return res.status(500).json({ error: err.message });
+    }
     /* already gone */
   }
   if (bot.teamId) {
@@ -1376,13 +1390,15 @@ app.post("/api/bots/:id/vm", async (req, res) => {
   const bot = await store.getBot(req.params.id);
   if (!bot) return res.status(404).json({ error: "not found" });
   try {
+    let row = bot.vm?.computerId ? await computers.getComputer(bot.vm.computerId) : null;
+    if (!row) row = await computers.ensureComputerForBot(bot);
+    const backend = resolveComputerBackend(row);
     if (action === "reboot") {
-      const row = bot.vm?.container ? { container: bot.vm.container, id: bot.vm.computerId, novncPort: bot.vm.novncPort } : await computers.ensureComputerForBot(bot);
       if (!row?.container) throw new Error("No computer to reboot.");
       bot.vm = { ...bot.vm, status: "starting", hint: "Rebooting the computer…", error: null };
       await store.upsertBot(bot);
       broadcast("bot", toClient(bot));
-      const r = await vm.rebootContainer(row.container);
+      const r = await backend.reboot(row);
       if (!r.ok) throw new Error(r.error || "reboot failed");
       bot.vm = {
         ...bot.vm,
@@ -1402,10 +1418,10 @@ app.post("/api/bots/:id/vm", async (req, res) => {
       broadcast("computers", { dirty: true });
       return res.json(toClient(bot));
     }
-    if (action === "reset") await vm.stopVm(bot, { wipe: false });
-    const row = await computers.ensureComputerForBot(bot);
+    if (action === "reset") await backend.resetRuntime(row, bot);
     bot.vm = { ...bot.vm, computerId: row.id, container: row.container, volume: row.volume, detached: false };
-    const info = await vm.startVm(
+    const info = await backend.start(
+      row,
       bot,
       (m) => broadcast("log", { botId: bot.id, m }),
       async () => deletedIds.has(bot.id) || !(await store.getBot(bot.id)),
@@ -1938,6 +1954,8 @@ async function runUserTurn(botId, text, hidden, images = [], opts = {}) {
       bot.vm = { ...bot.vm, novncPort: port };
       await store.upsertBot(bot);
     }
+    const computer = bot.vm?.computerId ? await computers.getComputer(bot.vm.computerId) : null;
+    const backend = resolveComputerBackend(computer || {});
     broadcast("bot", toClient(bot));
     const box = bot.vm?.container;
     const chromeOk = box ? await vm.chromeReady(box) : false;
@@ -1959,7 +1977,7 @@ async function runUserTurn(botId, text, hidden, images = [], opts = {}) {
       broadcast("message", { botId, ...waitMsg });
       broadcast("bot", toClient(bot));
     }
-    const ready = await vm.waitForDesktop(bot, {
+    const ready = await backend.waitForDesktop(computer || {}, bot, {
       timeoutMs: 480_000,
       onLog: (m) => noteVm(botId, m),
       shouldAbort: async () => ac.signal.aborted || deletedIds.has(botId),
@@ -2192,6 +2210,7 @@ async function provision(id) {
   broadcast("bot", toClient(bot));
   try {
     const row = await computers.ensureComputerForBot(bot);
+    const backend = resolveComputerBackend(row);
     const ready = await store.patchBot(id, (b) => {
       b.vm = { ...b.vm, computerId: row.id, container: row.container, volume: row.volume, detached: false };
     });
@@ -2199,7 +2218,8 @@ async function provision(id) {
       Object.assign(bot.vm, ready.vm);
       broadcast("bot", toClient(ready));
     }
-    const info = await vm.startVm(
+    const info = await backend.start(
+      row,
       bot,
       (m) => noteVm(id, m),
       async () => deletedIds.has(id) || !(await store.getBot(id)),
@@ -2255,10 +2275,11 @@ app.get("/", (_req, res) => {
 
 async function resumePausedByQuit() {
   const rows = await computers.listComputers();
+  const backends = new Map(rows.map((row) => [row.id, resolveComputerBackend(row)]));
   let n = 0;
   for (const row of rows) {
     if (!row.pausedByQuit) continue;
-    const r = await vm.resumeContainer(row.container);
+    const r = await backends.get(row.id).resume(row);
     if (r.ok) {
       await computers.saveComputer({ ...row, status: "running", pausedByQuit: false });
       n += 1;
@@ -2270,8 +2291,14 @@ async function resumePausedByQuit() {
 async function ensureDesktops() {
   const dock = await vm.dockerStatus();
   if (!dock.ok) return dock;
-  const [bots, list] = await Promise.all([store.loadBots(), vm.listLocalbotStates()]);
-  if (list.stuck) return dock;
+  const [bots, rows] = await Promise.all([store.loadBots(), computers.listComputers()]);
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const states = new Map();
+  for (const row of rows) {
+    const state = await resolveComputerBackend(row).inspect(row);
+    if (state.stuck) return dock;
+    states.set(row.id, state);
+  }
   for (const bot of bots) {
     if (deletedIds.has(bot.id) || isHumanControl(bot.id) || provisioning.has(bot.id)) continue;
     if (!bot.vm?.computerId) {
@@ -2281,7 +2308,8 @@ async function ensureDesktops() {
     }
     const st = bot.vm?.status;
     const name = bot.vm?.container;
-    const liveBox = name ? list.states.get(name) : null;
+    const row = bot.vm?.computerId ? byId.get(bot.vm.computerId) : null;
+    const liveBox = row ? states.get(row.id) : null;
     if (name && (st === "running" || st === "starting") && liveBox && !liveBox.running && !liveBox.paused && liveBox.exists) {
       provision(bot.id).catch((err) => console.error("ensure desktop", bot.id, err));
       continue;

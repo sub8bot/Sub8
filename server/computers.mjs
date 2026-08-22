@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { dataDir } from "./paths.mjs";
 
 export const computersPath = path.join(dataDir, "computers.json");
+export const DEFAULT_COMPUTER_BACKEND = "local-docker";
 
 let writeChain = Promise.resolve();
 function withFile(fn) {
@@ -38,10 +39,15 @@ export function volumeForId(id) {
   return `localbot-config-${String(id || "bot").slice(0, 8)}`;
 }
 
-export function newComputer({ name, container, volume, novncPort, lastBotId } = {}) {
+export function computerBackendName(computer) {
+  return computer?.backend === undefined ? DEFAULT_COMPUTER_BACKEND : computer.backend;
+}
+
+export function newComputer({ name, container, volume, novncPort, lastBotId, backend = DEFAULT_COMPUTER_BACKEND } = {}) {
   const id = randomUUID();
   return {
     id,
+    backend,
     name: name || "Computer",
     container: container || containerForId(id),
     volume: volume || volumeForId(id),
@@ -139,9 +145,10 @@ export async function migrateFromBots(bots, { containerName, configVolume }) {
 }
 
 export function keepSets(computers) {
+  const local = computers.filter((computer) => computerBackendName(computer) === DEFAULT_COMPUTER_BACKEND);
   return {
-    keepNames: computers.map((c) => c.container).filter(Boolean),
-    keepVolumes: computers.map((c) => c.volume).filter(Boolean),
+    keepNames: local.map((c) => c.container).filter(Boolean),
+    keepVolumes: local.map((c) => c.volume).filter(Boolean),
   };
 }
 
