@@ -174,8 +174,7 @@ async function wakeDesksAfterDocker() {
   const rows = await computers.listComputers();
   const list = await vm.listLocalbotStates({ force: true });
   for (const row of rows) {
-    const backend = resolveComputerBackend(row);
-    if (backend.name !== computers.DEFAULT_COMPUTER_BACKEND) continue;
+    if (computers.computerBackendName(row) !== computers.DEFAULT_COMPUTER_BACKEND) continue;
     const st = list.states.get(row.container);
     if (st && (st.status === "exited" || st.status === "created") && row.status !== "exited" && row.status !== "stopped") {
       await vm.startExistingContainer(row.container);
@@ -567,10 +566,10 @@ app.post("/api/computers/previews", async (_req, res) => {
   try {
     const rows = await computers.listComputers();
     const out = [];
-    const withBackends = rows.map((row) => ({ row, backend: resolveComputerBackend(row) }));
+    const local = rows.filter((row) => computers.computerBackendName(row) === computers.DEFAULT_COMPUTER_BACKEND);
     await Promise.all(
-      withBackends.map(async ({ row, backend }) => {
-        const st = await backend.inspect(row);
+      local.map(async (row) => {
+        const st = await vm.inspectState(row.container);
         if (st.status !== "running") return;
         const dest = vm.computerPreviewPath(row.id);
         const shot = await vm.screenshotContainer(row.container, dest);
@@ -596,7 +595,7 @@ app.get("/api/computers", async (_req, res) => {
 app.get("/api/computers/stats", async (_req, res) => {
   try {
     const rows = await computers.listComputers();
-    const local = rows.filter((row) => resolveComputerBackend(row).name === computers.DEFAULT_COMPUTER_BACKEND);
+    const local = rows.filter((row) => computers.computerBackendName(row) === computers.DEFAULT_COMPUTER_BACKEND);
     const stats = await vm.containerStats(local.map((c) => c.container));
     res.json({ stats });
   } catch (err) {
@@ -623,8 +622,9 @@ app.post("/api/computers/:id/:action", async (req, res) => {
   if (!row) return res.status(404).json({ error: "not found" });
   const bot = await computerBot(row);
   try {
-    for (const computer of await computers.listComputers()) resolveComputerBackend(computer);
-    const backend = resolveComputerBackend(row);
+    const backend = ["pause", "resume", "reboot", "start", "stop", "destroy"].includes(action)
+      ? resolveComputerBackend(row)
+      : null;
     if (action === "pause") {
       const r = await backend.pause(row);
       if (!r.ok) return res.status(400).json(r);
@@ -759,7 +759,7 @@ app.post("/api/computers/:id/:action", async (req, res) => {
       return res.status(404).json({ error: "unknown action" });
     }
     broadcast("computers", { dirty: true });
-    res.json({ computers: await liveComputers() });
+    res.json({ computers: await liveComputers({ skipUnsupported: action === "attach" || action === "detach" }) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1259,13 +1259,17 @@ async function staleComputers(docker) {
   );
 }
 
-async function liveComputers() {
+async function liveComputers({ skipUnsupported = false } = {}) {
   const [rows, bots, settings] = await Promise.all([
     computers.listComputers(),
     store.loadBots(),
     store.loadSettings(),
   ]);
-  const backends = new Map(rows.map((row) => [row.id, resolveComputerBackend(row)]));
+  const backends = new Map(
+    rows
+      .filter((row) => !skipUnsupported || computers.computerBackendName(row) === computers.DEFAULT_COMPUTER_BACKEND)
+      .map((row) => [row.id, resolveComputerBackend(row)]),
+  );
   const byId = new Map(bots.map((b) => [b.id, b]));
   const attached = new Map();
   for (const b of bots) {
@@ -1275,6 +1279,16 @@ async function liveComputers() {
   const out = [];
   for (const row of rows) {
     const backend = backends.get(row.id);
+    if (!backend) {
+      out.push(
+        decorateComputer(row, bots, settings, {
+          byId,
+          attached,
+          fields: { status: row.status, exists: row.status !== "missing", stale: true, stuck: false },
+        }),
+      );
+      continue;
+    }
     const st = await backend.inspect(row);
     if (st.stuck) {
       out.push(decorateComputer(row, bots, settings, { byId, attached, fields: { stale: true, stuck: true, exists: row.status !== "missing" } }));
