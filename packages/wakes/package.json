@@ -1,0 +1,28 @@
+{
+  "name": "@sub8/wakes",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The durable per-Bot wake queue and the SendMessage turn reminders.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3"
+  }
+}

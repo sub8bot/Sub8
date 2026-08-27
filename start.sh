@@ -1,0 +1,64 @@
+#!/bin/zsh
+set -e
+export DOCKER_HOST="${DOCKER_HOST:-unix://$HOME/.colima/default/docker.sock}"
+if ! docker info >/dev/null 2>&1; then
+  mem_gb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 / 1024 / 1024 ))
+  if (( mem_gb >= 32 )); then cpus=4; ram=8
+  else cpus=2; ram=4
+  fi
+  echo "Starting Colima (${cpus} CPU, ${ram} GiB) for a ${mem_gb} GiB Mac…"
+  colima start --cpu "$cpus" --memory "$ram" --save-config
+fi
+cd "$(dirname "$0")"
+if [ -f .env ]; then
+  set -a
+  source .env
+  set +a
+fi
+if [ -z "${XAI_API_KEY:-}" ]; then
+  echo "note: XAI_API_KEY is empty — only needed for SpaceXAI, not Grok Build"
+fi
+SERVER=""
+if curl -sf -m 2 http://127.0.0.1:8787/api/health | grep -q '"ok":true'; then
+  echo "Server already running on http://127.0.0.1:8787"
+else
+  node server/index.mjs &
+  SERVER=$!
+  trap 'kill $SERVER 2>/dev/null || true' EXIT
+  sleep 0.8
+fi
+zsh "$PWD/scripts/macos-dev-app.sh" >/dev/null
+APP_BUNDLE="$PWD/.app/Sub8.app"
+APP_ELECTRON="$APP_BUNDLE/Contents/MacOS/Electron"
+STOCK_ELECTRON="$PWD/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
+has_main=0
+has_window=0
+# Read ps in-shell so grep/pgrep -f cannot self-match this check.
+while IFS= read -r pid cmd; do
+  case "$cmd" in
+    "$APP_ELECTRON"*|"$STOCK_ELECTRON"*) has_main=1 ;;
+    *"Helper (Renderer)"*"--app-path=$PWD"*|*"--app-path=$PWD"*"Helper (Renderer)"*) has_window=1 ;;
+  esac
+done < <(ps -ax -o pid=,command=)
+if [ "$has_main" = 1 ] && [ "$has_window" = 1 ]; then
+  echo "Sub8 window already running — focusing"
+  open -a "$APP_BUNDLE" --args "$PWD"
+  if [ -n "$SERVER" ]; then
+    wait "$SERVER"
+  fi
+  exit 0
+fi
+if [ "$has_main" = 1 ]; then
+  echo "Sub8 has no window — relaunching"
+  while IFS= read -r pid cmd; do
+    case "$cmd" in
+      "$APP_ELECTRON"*|"$STOCK_ELECTRON"*) kill "$pid" 2>/dev/null || true ;;
+    esac
+  done < <(ps -ax -o pid=,command=)
+  sleep 0.4
+fi
+open -n -a "$APP_BUNDLE" --args "$PWD"
+# keep start.sh alive while the window exists if we spawned the server
+if [ -n "$SERVER" ]; then
+  wait "$SERVER"
+fi

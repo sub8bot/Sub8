@@ -1,0 +1,33 @@
+// Solution file. `tsc -b` (npm run typecheck) typechecks every TypeScript
+// package in the repo; libraries also emit their dist/ as a side effect.
+//
+// Adding a package: create packages/<name>/tsconfig.json extending
+// tsconfig.base.json with "composite": true, then add one line below.
+//
+// The last three are not packages: they are the app's own TypeScript -- the
+// Node server, the Electron main process and the browser tree. All three emit
+// their JS in place -- the desktop app boots electron/main.mjs, tests import
+// server/*.mjs, and app.js imports web/*.mjs over plain URLs -- so `tsc -b` IS
+// the build step those paths depend on.
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "files": [],
+  "references": [
+    { "path": "./packages/orchestration" },
+    { "path": "./packages/harness-protocol" },
+    { "path": "./packages/constants" },
+    { "path": "./packages/automations" },
+    { "path": "./packages/wakes" },
+    { "path": "./packages/skills" },
+    { "path": "./packages/choice" },
+    { "path": "./packages/shell-exec" },
+    { "path": "./packages/harness-auth" },
+    { "path": "./packages/control" },
+    { "path": "./packages/store" },
+    { "path": "./packages/web-fetch" },
+    { "path": "./packages/desk-ports" },
+    { "path": "./tsconfig.server.json" },
+    { "path": "./tsconfig.electron.json" },
+    { "path": "./tsconfig.web.json" }
+  ]
+}

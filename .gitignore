@@ -1,0 +1,104 @@
+node_modules
+.app
+scripts/.cache
+**/__pycache__/
+/undefined/
+
+# Private control plane + iOS. Lives on disk as a local checkout; not this repo.
+/cloud/
+.gitmodules
+
+# Operator notes and live app data — including conversation backups.
+/resume.md
+/RESUME.md
+/RESUME2.md
+/docs/monorepo.md
+/docs/workspace.md
+/tools/test-dashboard.mjs
+/tools/test-dashboard.html
+/data/
+.env
+.env.*
+*.p8
+**/AuthKey*.p8
+dist
+dist-mac
+dist-win
+dist-linux
+release
+.DS_Store
+*.log
+tmp
+build/icon.iconset
+*.dmg
+*.AppImage
+/plan/
+DEVELOPMENT.md
+
+# Local planning notes, not product docs
+plan/
+
+# Emitted in place by `tsc -b` (npm run build) from the .mts/.ts sources next to
+# them. They have to sit at these exact paths — Electron boots
+# electron/main.mjs, app.js imports web/*.mjs over plain URLs, and the server
+# still reads web/palette.js — but the source is what belongs in git, the same
+# rule packages/*/dist follows. `tsc -b` is wired into prepare, so a fresh
+# clone has them after `npm install`, and into pretest/prestart/preapp/
+# preelectron/predist*/prerelease so no path can run against missing output.
+/electron/main.mjs
+/web/api-client.mjs
+/web/app.js
+/web/avatar.js
+/web/brain-setup.mjs
+/web/chat-merge.mjs
+/web/cloud-place.mjs
+/web/grok-bot.js
+/web/harness-models.mjs
+/web/icons.mjs
+/web/markdown.js
+/web/palette.js
+/web/stream-bind.mjs
+/web/tool.js
+
+# server/: same rule as electron/ and web/ above. Sources are .mts, tsc
+# emits these .mjs in place, and every importer in test/, testing/,
+# electron/ and tools/ keeps its existing specifier. Listed explicitly
+# rather than as server/**/*.mjs so a file that has NOT been converted
+# yet can never be silently hidden from git.
+/server/account.mjs
+/server/agent.mjs
+/server/channel-desk.mjs
+/server/cloud/draft.mjs
+/server/cloud/dummy.mjs
+/server/cloud/env.mjs
+/server/cloud/http.mjs
+/server/cloud/index.mjs
+/server/cloud/turn.mjs
+/server/code-agent.mjs
+/server/computers.mjs
+/server/context.mjs
+/server/delivery.mjs
+/server/desk-client.mjs
+/server/desk-harness/harness.mjs
+/server/desk-harness/local.mjs
+/server/desk-harness/mcp-cloud.mjs
+/server/desk-harness/server.mjs
+/server/harness-status.mjs
+/server/hermes-acp.mjs
+/server/host-cli.mjs
+/server/index.mjs
+/server/isolation.mjs
+/server/local-llm.mjs
+/server/mcp-desk.mjs
+/server/mcp-sub8.mjs
+/server/memory.mjs
+/server/paths.mjs
+/server/read-file.mjs
+/server/subagents.mjs
+/server/teammate.mjs
+/server/teams.mjs
+/server/tools-catalog.mjs
+/server/update-state.mjs
+/server/update.mjs
+/server/vault.mjs
+/server/vm.mjs

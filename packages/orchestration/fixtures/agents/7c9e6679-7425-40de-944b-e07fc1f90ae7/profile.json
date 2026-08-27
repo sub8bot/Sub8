@@ -1,0 +1,8 @@
+{
+  "name": "Lead",
+  "description": "Coordinates teammates on the shared computer.",
+  "title": "Chief",
+  "avatarShape": "circle",
+  "avatarColor": "#3b82f6",
+  "namedBy": "user"
+}

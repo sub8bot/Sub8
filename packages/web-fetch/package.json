@@ -1,0 +1,33 @@
+{
+  "name": "@sub8/web-fetch",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Outbound HTTP from the host: the public-URL guard, web_fetch, and user-added remote MCP servers.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./mcp-remote": {
+      "types": "./dist/mcp-remote.d.ts",
+      "import": "./dist/mcp-remote.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@sub8/choice": "*",
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3"
+  }
+}

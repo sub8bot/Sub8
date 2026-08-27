@@ -1,0 +1,15 @@
+{
+  "name": "sub8-desk-harness",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Phase-1 prototype: hosts the REAL grok-build harness (grok CLI, unforked) on a Sub8 desk droplet, driving mcp-sub8 against the local desk and exposing the executor /turn NDJSON contract. Flag-gated by DESK_HARNESS=1. Runs from THIS repo checkout (imports ../host-cli.mjs, ../mcp-sub8.mjs) — not a standalone npm package.",
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "selftest": "node server.mjs --selftest"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

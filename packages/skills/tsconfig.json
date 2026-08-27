@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "composite": true,
+    "tsBuildInfoFile": "../../node_modules/.cache/sub8-tsbuildinfo/skills.tsbuildinfo"
+  },
+  "include": ["src/**/*.ts"]
+}

@@ -1,0 +1,26 @@
+{
+  "botId": "cloud-9f1b2c3d",
+  "content": "open my inbox",
+  "history": [],
+  "system": "You are Sub8 on this Bot Linux desktop.",
+  "display": 1,
+  "provider": "claude",
+  "claudeAuth": {
+    "claudeAiOauth": {
+      "accessToken": "sk-ant-oat-…",
+      "refreshToken": "sk-ant-ort-…",
+      "expiresAt": 1790000000000
+    }
+  },
+  "model": {
+    "provider": "claude",
+    "id": "claude-sonnet-4-5",
+    "apiKey": "",
+    "baseUrl": ""
+  },
+  "callback": {
+    "url": "https://sub8.bot/api/brain/executor-tool",
+    "computerId": "9f1b2c3d",
+    "botId": "cloud-9f1b2c3d"
+  }
+}

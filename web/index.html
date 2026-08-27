@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sub8</title>
+    <link rel="stylesheet" href="/styles.css?v=sub887" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "/vendor/three/build/three.module.js",
+          "three/addons/": "/vendor/three/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script>
+      window.addEventListener("error", (event) => {
+        if (document.documentElement.dataset.appReady) return;
+        const app = document.getElementById("app");
+        if (!app || app.querySelector("#shell-root") || document.getElementById("boot-error")) return;
+        const msg = String(event.message || "script error").replace(/[<>&]/g, "");
+        app.innerHTML =
+          '<div id="boot-error" style="padding:28px;font:14px/1.45 system-ui,sans-serif"><h2 style="margin:0 0 8px">Sub8 failed to load</h2><p style="margin:0">' +
+          msg +
+          "</p><p style=\"margin:12px 0 0;opacity:.7\">Reload the window. If it stays blank, open Developer Tools from the View menu.</p></div>";
+      });
+    </script>
+    <script type="module" src="/app.js?v=sub887"></script>
+  </body>
+</html>

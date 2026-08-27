@@ -1,0 +1,42 @@
+{
+  "botId": "cloud-9f1b2c3d",
+  "content": "find me the cheapest flight to DC — tomorrow",
+  "history": [
+    {
+      "role": "user",
+      "content": "hi",
+      "ts": 1756000000000
+    },
+    {
+      "role": "assistant",
+      "content": "Hey — what do you need?",
+      "ts": 1756000001000
+    }
+  ],
+  "system": "You are Sub8 on this Bot Linux desktop.",
+  "display": 1,
+  "provider": "grok-oauth",
+  "auth": {
+    "https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828": {
+      "auth_mode": "oidc",
+      "key": "xai-oauth-access-token",
+      "refresh_token": "xai-refresh",
+      "expires_at": "2026-08-25T12:00:00.000Z",
+      "oidc_issuer": "https://auth.x.ai",
+      "oidc_client_id": "b1a00492-073a-47ea-816f-4c329264a828",
+      "user_id": "00000000-0000-4000-8000-000000000001",
+      "create_time": "2026-08-25T11:00:00.000Z"
+    }
+  },
+  "model": {
+    "provider": "grok-oauth",
+    "id": "grok-4.6",
+    "apiKey": "",
+    "baseUrl": ""
+  },
+  "callback": {
+    "url": "https://sub8.bot/api/brain/executor-tool",
+    "computerId": "9f1b2c3d",
+    "botId": "cloud-9f1b2c3d"
+  }
+}

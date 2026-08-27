@@ -1,0 +1,32 @@
+// The Node server: the local backend the desktop app boots and the tests import.
+//
+// Same rule as tsconfig.electron.json — sources are .mts next to their output,
+// and tsc emits the .mjs that everything already imports. Emitting in place is
+// what lets `server/index.mts` keep `./vm.mjs`, `../web/palette.js` and every
+// other relative specifier byte-identical between source and output, so not one
+// of the ~19k lines of call sites in test/, testing/, electron/ or tools/ has to
+// move.
+//
+// server/ has subdirectories (cloud/, desk-harness/); rootDir/outDir cover them.
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "server",
+    "outDir": "server",
+    "composite": true,
+    // The server is imported by tests over .mjs URLs, never by type. The .d.mts
+    // is build bookkeeping composite requires; keep it out of the shipped tree.
+    "declarationDir": "node_modules/.cache/sub8-dts/server",
+    "tsBuildInfoFile": "node_modules/.cache/sub8-tsbuildinfo/server.tsbuildinfo"
+  },
+  // server/index.mts is the one file that reaches across trees: it imports
+  // `applySimulate` from ../web/brain-setup.mjs. Without this reference tsc pulls
+  // web/brain-setup.mts into THIS program, which is outside rootDir (TS6059) and
+  // not in its file list (TS6307), and emits a stray web/brain-setup.d.mts as it
+  // goes. The reference makes tsc read the web project's declaration instead.
+  "references": [{ "path": "./tsconfig.web.json" }],
+  "include": ["server/**/*.mts", "server/**/*.ts"],
+  // outDir == rootDir, so the default exclude would swallow every input.
+  "exclude": ["node_modules"]
+}

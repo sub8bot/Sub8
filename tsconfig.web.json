@@ -1,0 +1,25 @@
+// The browser tree. Same strict bar as packages/*, different runtime: DOM in,
+// @types/node out. `"types": []` is load-bearing — without it every module
+// here would silently typecheck against Node globals it will never have.
+//
+// Sources are .mts/.ts next to their output; tsc emits the .mjs/.js that
+// index.html and app.js already import over plain URLs, so no specifier in
+// the browser changes and there is no bundler.
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "types": [],
+    "rootDir": "web",
+    "outDir": "web",
+    "composite": true,
+    // Browser modules are consumed as JS over a URL; their .d.ts is build
+    // bookkeeping composite requires. Keep it out of the shipped tree.
+    "declarationDir": "node_modules/.cache/sub8-dts/web",
+    "tsBuildInfoFile": "node_modules/.cache/sub8-tsbuildinfo/web.tsbuildinfo"
+  },
+  "include": ["web/**/*.mts", "web/**/*.ts"],
+  // outDir == rootDir, so the default exclude would swallow every input.
+  "exclude": ["node_modules"]
+}

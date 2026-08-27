@@ -1,0 +1,27 @@
+// Shared strict base for every package under packages/*.
+// New packages extend this and add only rootDir/outDir/noEmit + include.
+// See packages/README.md for the conventions.
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    "target": "ES2024",
+    "lib": ["ES2024"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+
+    // Strictness. These are the non-negotiables for packages/*.
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+
+    // Keep emitted JS a 1:1 shape of the source (node runs it directly).
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+
+    // Libraries emit .d.ts; app packages override with "noEmit": true.
+    "declaration": true
+  }
+}

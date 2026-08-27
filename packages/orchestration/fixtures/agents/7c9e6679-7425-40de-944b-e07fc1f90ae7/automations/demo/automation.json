@@ -1,0 +1,8 @@
+{
+  "name": "Demo",
+  "prompt": "Check the desk and report anything that needs attention.",
+  "schedule": "0 9 * * 1-5",
+  "enabled": true,
+  "createdAt": 0,
+  "lastRunAt": null
+}

@@ -1,0 +1,22 @@
+// The Electron main process: Node + Electron, no DOM.
+//
+// Sources are .mts next to their output, and tsc emits the .mjs the app
+// actually boots (`"main": "electron/main.mjs"` in package.json). Emitting in
+// place is what lets `electron/main.mts` keep `./preload.cjs` and every other
+// relative specifier byte-identical between source and output.
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "electron",
+    "outDir": "electron",
+    "composite": true,
+    // Nothing imports the main process, so the .d.mts is build bookkeeping
+    // that composite requires. Keep it out of the shipped tree.
+    "declarationDir": "node_modules/.cache/sub8-dts/electron",
+    "tsBuildInfoFile": "node_modules/.cache/sub8-tsbuildinfo/electron.tsbuildinfo"
+  },
+  "include": ["electron/**/*.mts", "electron/**/*.ts"],
+  // outDir == rootDir, so the default exclude would swallow every input.
+  "exclude": ["node_modules"]
+}

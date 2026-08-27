@@ -1,0 +1,197 @@
+{
+  "name": "sub8bot",
+  "productName": "Sub8",
+  "version": "0.3.33",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "type": "module",
+  "main": "electron/main.mjs",
+  "author": "Daniel Farina",
+  "license": "BUSL-1.1",
+  "description": "Sub8 \u2014 local desktop assistants that live on their own Linux computers.",
+  "scripts": {
+    "build": "tsc -b",
+    "prepare": "tsc -b",
+    "prestart": "tsc -b",
+    "start": "node server/index.mjs",
+    "preapp": "tsc -b",
+    "app": "zsh start.sh",
+    "preelectron": "tsc -b",
+    "electron": "zsh scripts/macos-dev-app.sh >/dev/null && open -n -a .app/Sub8.app --args \"$PWD\"",
+    "pretest": "tsc -b",
+    "e2e": "node testing/e2e/run.mjs",
+    "test": "node testing/run-suite.mjs",
+    "typecheck": "tsc -b",
+    "typecheck:js": "tsc -p tsconfig.jscheck.json --pretty; echo 'typecheck:js is a NON-BLOCKING baseline - see packages/README.md'",
+    "test:packages": "node --test 'packages/*/test/**/*.test.mjs'",
+    "check": "npm run typecheck && npm run test:packages && npm test",
+    "icons": "python3 scripts/make-icons.py && iconutil -c icns build/icon.iconset -o build/icon.icns",
+    "logo": "node scripts/render-logo.mjs",
+    "predist": "tsc -b",
+    "dist": "electron-builder --mac --win --linux",
+    "predist:mac": "tsc -b",
+    "dist:mac": "electron-builder --mac dmg zip --arm64 --x64",
+    "predist:win": "tsc -b",
+    "dist:win": "electron-builder --win nsis zip --x64",
+    "predist:linux": "tsc -b",
+    "dist:linux": "electron-builder --linux AppImage tar.gz --x64",
+    "prerelease": "tsc -b",
+    "release": "node scripts/release.mjs"
+  },
+  "dependencies": {
+    "@sub8/automations": "file:packages/automations",
+    "@sub8/choice": "file:packages/choice",
+    "@sub8/constants": "file:packages/constants",
+    "@sub8/control": "file:packages/control",
+    "@sub8/desk-ports": "file:packages/desk-ports",
+    "@sub8/harness-auth": "file:packages/harness-auth",
+    "@sub8/harness-protocol": "file:packages/harness-protocol",
+    "@sub8/shell-exec": "file:packages/shell-exec",
+    "@sub8/skills": "file:packages/skills",
+    "@sub8/store": "file:packages/store",
+    "@sub8/wakes": "file:packages/wakes",
+    "@sub8/web-fetch": "file:packages/web-fetch",
+    "electron-updater": "^6.8.9",
+    "express": "^5.1.0",
+    "openai": "^5.12.2",
+    "three": "^0.184.0",
+    "uuid": "^11.1.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@types/three": "^0.184.1",
+    "electron": "^37.2.6",
+    "electron-builder": "^26.0.12",
+    "puppeteer-core": "^25.7.0",
+    "typescript": "^5.9.3"
+  },
+  "build": {
+    "appId": "app.sub8bot.desktop",
+    "productName": "Sub8",
+    "copyright": "Copyright \u00a9 2026 Daniel Farina",
+    "artifactName": "${productName}-${os}-${arch}.${ext}",
+    "publish": {
+      "provider": "github",
+      "owner": "sub8bot",
+      "repo": "Sub8"
+    },
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "server/**/*",
+      "web/**/*",
+      "!electron/**/*.mts",
+      "!server/**/*.mts",
+      "!web/**/*.mts",
+      "!web/**/*.ts",
+      "prompts/**/*",
+      "vm/**/*",
+      "build/icon.png",
+      "packages/*/dist/**/*",
+      "packages/*/package.json",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "vm/**/*",
+      "prompts/**/*",
+      "server/**/*",
+      "web/palette.js",
+      "packages/*/dist/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "build/icon.png",
+        "to": "build/icon.png"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Sub8 uses the microphone so you can dictate messages.",
+        "NSSpeechRecognitionUsageDescription": "Sub8 turns your speech into text on this Mac."
+      },
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": false
+    },
+    "dmg": {
+      "title": "Sub8",
+      "icon": "build/icon.icns",
+      "sign": true
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Sub8",
+      "uninstallDisplayName": "Sub8",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Utility",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "tar.gz",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    }
+  }
+}

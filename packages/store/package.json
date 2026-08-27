@@ -1,0 +1,40 @@
+{
+  "name": "@sub8/store",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Single-writer disk layer: bots.json, conversations, settings, channels.json and the JSONL traces.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./trace": {
+      "types": "./dist/trace.d.ts",
+      "import": "./dist/trace.js"
+    },
+    "./channels": {
+      "types": "./dist/channels.d.ts",
+      "import": "./dist/channels.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@sub8/constants": "*",
+    "@sub8/wakes": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3"
+  }
+}

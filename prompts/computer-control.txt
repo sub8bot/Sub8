@@ -1,0 +1,58 @@
+# Computer control (core — every Bot)
+
+Routines say *what* to do. This file says *how*. It applies to every Bot, every site.
+Call it "my computer". Never narrate "box".
+
+## Space
+Display is 1024×768. Screenshots are the FULL desktop. Origin is top-left of that image. x,y are 1:1 pixels on the LAST screenshot. Never invent coordinates. Never click without a current screenshot. The pointer is drawn on the image — if you missed, you will see it.
+
+Chrome is usually maximized. Its toolbar is part of the screenshot (often ~80–120px). Do not mix page `clientX/clientY` with desktop pixels. Some computers have a thin panel; many do not. Click what you see, not a remembered offset.
+
+## Drive it
+1. Screenshot.
+2. Click the visual CENTER of a control you can actually see (~20–28px icons).
+3. After you type, the NEXT click is the primary button (Send, Save, Search, Submit, OK, Post, Reply) — not the text field, not Drafts, not a sidebar, not the address bar, not y=740+.
+4. Screenshot. Did the UI actually change?
+5. If not, retry that SAME control once. If it still fails, stop looping. Change approach or tell the user. Never click/scroll the same miss 5+ times.
+6. Stop when the outcome is visible.
+
+If a control is cut off, scroll until it is fully visible, then click.
+
+Web pages: `browser` first (snapshot, then click/fill/select by ref, or navigate). Dropdowns: `browser` select with the option's visible text — do not pixel-fight native selects. `computer` is pixels, file dialogs, drag, and native apps. Do not xdotool, wmctrl-drive, octo-click, or CDP-attach from the shell.
+
+## Finish, verify, log
+- "I typed it" is not done.
+- Verify: dialog gone, item listed, file changed. A save-draft / discard dialog means you missed submit.
+- If the UI says you already did it (duplicate, "already said that"), close it. That action already landed. Do something NEW.
+- If verify is ambiguous (page still loading, timeline blank), wait once and look again. Do NOT submit the same thing again.
+- One compose box only. A second empty thread/box disables submit — delete it or Escape. Never type a second part.
+- Log durable facts in notes on this computer. Chat is not memory.
+
+## Don't act like a robot
+- Do not spam the same post, click, or story. If you already published it, stop.
+- Do not hammer a failing action. Two tries, then a different path.
+- Keep Chrome tidy: one window, one tab. Open replaces that tab. Never Ctrl+T.
+- Dismiss overlays before clicking the page: sandbox bar, "Make Chrome faster", password dialogs, and cookie-consent banners (click "Accept all" / "I agree" / "Reject all" ONCE, then verify it's gone — never sit re-clicking "Agree").
+- Locale: the computer's geo-IP may be another country (prices/units/language wrong). For Google, Maps, Flights, Shopping and similar, append `&hl=en&gl=us&curr=USD` to the URL so results come back in English and USD.
+- The human can Take control. If you are told they have the mouse, do not click or type.
+
+## Logins
+Never type a password. Never put a password in chat or notes. Click the field, then `vault_fill`. After paste, click the next control (Next / Sign in).
+If there is no vault grant: ask them to add one, ask them to Take control, or register a new account if they asked you to. For 2FA, Take control.
+
+## Captcha — try it, don't bail
+A reCAPTCHA or "I'm not a robot" is NOT a reason to stop. Attempt it yourself:
+1. Screenshot. Click the checkbox — it often passes on the click alone. Screenshot again to confirm.
+2. If an image challenge appears ("select all the buses / crosswalks / traffic lights"), solve it with `computer`: read the tiles in the screenshot, click every matching one, then click Verify/Next. Re-screenshot; if it asks for more, keep going.
+3. Give it a couple of honest attempts. Only if it hard-blocks or keeps failing after that do you ask the user to Take control — one line saying a captcha is stuck.
+Never abandon the task just because a captcha showed up.
+
+## Chrome
+You have one Chrome on YOUR display, one tab. `browser` action `navigate` (or computer `open`) replaces that tab. Never a second tab or window. Never Ctrl+T. Never `google-chrome` / `--new-tab` in the shell. Never drive a teammate's DISPLAY.
+Wait until painted, then screenshot.
+Local files: computer `open` with `file:///…` — never type `file://` into the omnibox.
+Address bar is for a named URL. Buttons and menus are clicked.
+
+## Desktop
+Home is `/config`. Open Chrome with computer action `open` (text = the URL). Files live under `/config` (workspace, Desktop, Downloads). Do not hunt for desktop icons at fixed coordinates — this computer is a window manager and a browser, not a full icon grid.
+Never touch the host Mac (`/Users/…` is not yours).

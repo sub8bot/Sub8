@@ -1,0 +1,6 @@
+{"type":"tool","name":"browser","args":{"browser_action":"navigate","url":"https://flights.example/搜索"}}
+{"type":"delta","text":"Looking at the flight list — one moment."}
+{"type":"tool","name":"computer","args":{"action":"mouse_move","x":412,"y":233}}
+{"type":"delta","text":"Cheapest is $240 Frontier SFO→DCA — non‑stop, 06:15 départ. 🛫"}
+{"type":"tool","name":"shell","args":{"command":"ls /config"}}
+{"type":"done","content":"Cheapest is $240 Frontier SFO→DCA — non‑stop, 06:15 départ. 🛫","usage":{"llmCalls":3,"promptTokens":1841,"completionTokens":212}}
