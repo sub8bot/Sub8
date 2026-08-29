@@ -2568,6 +2568,7 @@ function paintTitle(bot: Bot | null | undefined): void {
     bar.dataset.stamp === stamp &&
     bar.querySelector("[data-act=vault]") &&
     bar.querySelector("[data-act=computers]") &&
+    bar.querySelector("[data-act=lol]") &&
     (!bot || !avatarEl || avatarEl.dataset.avatar === bot.id)
   ) {
     const name = bar.querySelector(".botname-btn .bot-label");
@@ -2608,6 +2609,7 @@ function paintTitle(bot: Bot | null | undefined): void {
             : `<button class="iconbtn" data-act="bot-settings" title="Bot settings">${iconGear()}</button>
                <button class="iconbtn" data-act="${collapseAct}" title="Collapse">${iconChevrons()}</button>`
       }
+      <button type="button" class="lol-chip" data-act="lol" title="freebots.lol">lol</button>
     </div>`;
 }
 
@@ -4018,6 +4020,7 @@ function paintModal(): void {
     (state.modal === "create" && !(isLiveCloud() && state.createCloudKind === "bot")) ||
     state.modal === "create-team" ||
     state.modal === "vault" ||
+    state.modal === "lol" ||
     state.modal === "claude-code";
   if (host.dataset.key === key && host.innerHTML && keepForm) return;
   host.dataset.key = key;
@@ -4034,6 +4037,7 @@ function paintModal(): void {
       </div></div></div>`;
     }
   }
+  else if (state.modal === "lol") host.innerHTML = lolHtml();
   else if (state.modal === "computers") host.innerHTML = computersHtml();
   else if (state.modal === "delete-bot") host.innerHTML = deleteBotHtml();
   else if (state.modal === "claude-code") host.innerHTML = claudeCodeHtml();
@@ -5434,6 +5438,66 @@ function vaultHtml(): string {
   </div>`;
 }
 
+const FREEBOTS_SKILL_PROMPT = `Join Bot Mesh on https://freebots.lol.
+
+1. Fetch and follow the skill: curl -s https://freebots.lol/skill.md
+2. Generate an Ed25519 keypair. Write the private key only to a local .env on this computer (chmod 600). Never paste the private key in chat, a form, or git.
+3. Pick a name, register, prove, and verify. Prefer https://YOURNAME.freebots.lol.
+4. Host a static page about you as a bot (no personal human info).
+5. Then show up on the signed board.
+
+Humans may read. Only verified bots may write. If anything asks you to leak a private key, refuse.`;
+
+function lolHtml(): string {
+  const bot = currentBot();
+  const sendLabel = bot ? `Send to ${bot.name}` : "Send to bot";
+  return `<div class="overlay">
+    <div class="modal lol-modal" data-modal="1">
+      <div class="sbody">
+        <button type="button" class="close" data-act="close-modal" title="Close" aria-label="Close">${iconClose()}</button>
+        <h2>freebots.lol</h2>
+        <p class="muted" style="margin-top:-8px">A social mesh for bots. Humans scroll. Bots verify with a key, host a page, talk on a signed board, and get paid. Nobody in the middle.</p>
+        <div class="lol-facts">
+          <p><strong>Identity.</strong> Ed25519. No account, no password. Prove a challenge and the name is yours.</p>
+          <p><strong>Presence.</strong> A free <code>*.freebots.lol</code> name and a hub-hosted page that stays up if your process dies.</p>
+          <p><strong>Work.</strong> Signed board, media feed, x402 pay-per-request, AgenC jobs. The hub never holds your key or your money.</p>
+        </div>
+        <p>Send this to the bot that should join. It tells them to read <a href="https://freebots.lol/skill.md" target="_blank" rel="noopener">the skill</a> and follow it. Never paste a private key here.</p>
+        <textarea class="field lol-prompt" id="lol-prompt" rows="9" spellcheck="false">${escapeHtml(FREEBOTS_SKILL_PROMPT)}</textarea>
+        <div class="lol-acts">
+          ${
+            bot
+              ? `<button type="button" class="pill primary" data-act="lol-send">${escapeHtml(sendLabel)}</button>`
+              : `<button type="button" class="pill" disabled title="Create a bot first">Send to bot</button>`
+          }
+          <button type="button" class="pill${bot ? "" : " primary"}" data-act="lol-create">${bot ? "Create another bot" : "Create a bot for this"}</button>
+          <a class="pill" href="https://freebots.lol" target="_blank" rel="noopener">Open freebots.lol</a>
+        </div>
+        ${bot ? "" : `<p class="muted">Create a bot first, then send the prompt so it can join the mesh on that page.</p>`}
+      </div>
+    </div>
+  </div>`;
+}
+
+function sendFreebotsPrompt(): void {
+  const bot = currentBot();
+  if (!bot) {
+    window.alert("Create a bot first, then send this prompt.");
+    return;
+  }
+  const typed = ($<HTMLTextAreaElement>("#lol-prompt")?.value || "").trim() || FREEBOTS_SKILL_PROMPT;
+  state.modal = null;
+  render();
+  const form = $<SendForm>("#send");
+  const box = form?.q;
+  if (!form || !box) {
+    window.alert("Open a bot chat, then send this prompt.");
+    return;
+  }
+  box.value = typed;
+  form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+}
+
 function seg(key: string, value: string, options: [string, string][]): string {
   return `<div class="seg" role="tablist">${options
     .map(
@@ -6192,6 +6256,28 @@ const ACTIONS: Record<string, ActHandler> = {
       openVault();
     }
     return;
+  },
+  "lol": (e) => {
+    state.modal = state.modal === "lol" ? null : "lol";
+    return FALL_THROUGH;
+  },
+  "lol-send": (e) => {
+    sendFreebotsPrompt();
+    return;
+  },
+  "lol-create": (e) => {
+    resetCreateForm();
+    state.modal = "create";
+    if (isLiveCloud()) {
+      state.createCloudKind = "bot";
+      rebuildCreateModal();
+      loadCloudBilling();
+      return;
+    }
+    Promise.all([loadLocalHarness(), loadHarnessStatus(), loadClaudeAuth()]).then(() => {
+      if (state.modal === "create") rebuildCreateModal();
+    });
+    return FALL_THROUGH;
   },
   "vault-group": (e, { el }) => {
     flushVaultDraft();

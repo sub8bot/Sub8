@@ -3193,6 +3193,49 @@ select.pill { appearance: none; padding-right: 24px; }
   cursor: pointer;
 }
 .account-chip:hover { background: var(--hover); }
+.lol-chip {
+  border: 0;
+  background: var(--chip);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 5px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.lol-chip:hover { background: var(--hover); }
+.lol-chip:active { scale: 0.96; }
+.lol-modal {
+  width: min(560px, 94vw);
+  height: auto;
+  max-height: 88vh;
+}
+.lol-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 16px;
+}
+.lol-facts p { margin: 0; font-size: 14px; line-height: 1.45; }
+.lol-prompt {
+  width: 100%;
+  min-height: 168px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.lol-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 12px;
+}
+.lol-acts a.pill { text-decoration: none; color: inherit; }
 .overlay.account-gate { z-index: 70; background: rgba(17,17,17,.45); }
 .modal.account-gate-modal {
   width: min(520px, 92%);

@@ -1,7 +1,7 @@
 {
   "name": "sub8bot",
   "productName": "Sub8",
-  "version": "0.3.34",
+  "version": "0.3.35",
   "private": true,
   "workspaces": [
     "packages/*"

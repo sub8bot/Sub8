@@ -119,6 +119,9 @@ const HANDLED = [
   "install-docker",
   "install-update",
   "identity-add",
+  "lol",
+  "lol-create",
+  "lol-send",
   "mention",
   "open-brain-setup",
   "open-computer-bot",
@@ -234,9 +237,9 @@ assert.deepEqual(extra, [], "data-act values handled that were not before: " + e
 assert.deepEqual(covered, expected);
 
 // Guard the guard: an empty pin would make every assertion above vacuous.
-// 164 -> 166: vault-export / vault-import.
-assert.equal(HANDLED.length, 166);
-assert.equal(covered.length, 166);
+// 166 -> 169: lol / lol-send / lol-create.
+assert.equal(HANDLED.length, 169);
+assert.equal(covered.length, 169);
 
 console.log(
   "ok delegated-acts (" + keys.length + " in ACTIONS, " + new Set(chain).size +
