@@ -3,7 +3,19 @@ import { readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { harvestAuthFile, shareAuthFile, claudeModelArgs, MCP_DRIVE_TOOLS, hostCliTurnFailed, hermesHomeDir, writeHermesHome } from "../server/host-cli.mjs";
+import {
+  harvestAuthFile,
+  shareAuthFile,
+  claudeModelArgs,
+  MCP_DRIVE_TOOLS,
+  hostCliTurnFailed,
+  hermesHomeDir,
+  writeHermesHome,
+  shouldRotateHarnessSession,
+  recapConversation,
+  continuePrompt,
+  cliSessionId,
+} from "../server/host-cli.mjs";
 import { rewriteHarnessOutput, hasAuthFailure, looksLikeAuthFailure } from "@sub8/harness-auth";
 
 const dir = await fs.mkdtemp(path.join(os.tmpdir(), "sub8-auth-"));
@@ -27,11 +39,12 @@ assert.equal(JSON.parse(await fs.readFile(src, "utf8")).tokens.refresh_token, "v
 
 await fs.rm(dir, { recursive: true, force: true });
 
-assert.deepEqual(claudeModelArgs(""), ["--fallback-model", "sonnet"]);
-assert.deepEqual(claudeModelArgs("default"), ["--fallback-model", "sonnet"]);
-assert.deepEqual(claudeModelArgs("auto"), ["--fallback-model", "sonnet"]);
-assert.deepEqual(claudeModelArgs("sonnet"), ["--model", "sonnet", "--fallback-model", "sonnet"]);
-assert.deepEqual(claudeModelArgs("fable"), ["--model", "fable", "--fallback-model", "sonnet"]);
+assert.deepEqual(claudeModelArgs(""), ["--model", "haiku", "--fallback-model", "haiku"]);
+assert.deepEqual(claudeModelArgs("default"), ["--model", "haiku", "--fallback-model", "haiku"]);
+assert.deepEqual(claudeModelArgs("auto"), ["--model", "haiku", "--fallback-model", "haiku"]);
+assert.deepEqual(claudeModelArgs("sonnet"), ["--model", "haiku", "--fallback-model", "haiku"]);
+assert.deepEqual(claudeModelArgs("claude-sonnet-5"), ["--model", "haiku", "--fallback-model", "haiku"]);
+assert.deepEqual(claudeModelArgs("fable"), ["--model", "fable", "--fallback-model", "haiku"]);
 
 assert.match(MCP_DRIVE_TOOLS, /\btask\b/);
 assert.match(MCP_DRIVE_TOOLS, /\bread\b/);
@@ -108,5 +121,30 @@ assert.equal(hostCliTurnFailed(null, "answer"), true, "a null exit code is not a
 }
 
 assert.match(hermesHomeDir(), /hermes-host$/);
+
+assert.equal(shouldRotateHarnessSession("claude", "grok-build"), true);
+assert.equal(shouldRotateHarnessSession("claude", "claude"), false);
+assert.equal(shouldRotateHarnessSession("default", "default"), false);
+assert.equal(shouldRotateHarnessSession("", "default"), false);
+assert.equal(shouldRotateHarnessSession("claude", ""), false);
+assert.equal(shouldRotateHarnessSession("", "grok-build"), true);
+assert.equal(shouldRotateHarnessSession("default", "claude"), true);
+
+const recap = recapConversation([
+  { role: "user", content: "hi there" },
+  { role: "assistant", content: "hello" },
+  { role: "assistant", kind: "tool", content: "clicked" },
+  { role: "user", hidden: true, content: "secret" },
+  { role: "assistant", kind: "think", content: "hmm" },
+]);
+assert.match(recap, /User: hi there/);
+assert.match(recap, /Assistant: hello/);
+assert.doesNotMatch(recap, /clicked|secret|hmm/);
+assert.equal(continuePrompt("next turn", ""), "next turn");
+assert.match(continuePrompt("next turn", recap), /Prior conversation/);
+assert.match(continuePrompt("next turn", recap), /User:\nnext turn/);
+assert.equal(cliSessionId({ harnessSessionId: "a", grokSessionId: "b", id: "c" }), "a");
+assert.equal(cliSessionId({ grokSessionId: "b", id: "c" }), "b");
+assert.equal(cliSessionId({ id: "c" }), "c");
 
 console.log("ok host-cli-auth");

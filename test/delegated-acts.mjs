@@ -51,6 +51,8 @@ const HANDLED = [
   "close-teach",
   "claude-login",
   "claude-logout",
+  "claude-code-submit",
+  "claude-login-cancel",
   "cloud-brain-grok",
   "cloud-brain-key-save",
   "cloud-harness-grok",
@@ -101,6 +103,7 @@ const HANDLED = [
   "dismiss-choice",
   "dismiss-docker-gate",
   "dismiss-harness-banner",
+  "dismiss-job",
   "dismiss-update",
   "docker-desktop-docs",
   "drop-attach",
@@ -115,6 +118,7 @@ const HANDLED = [
   "hide-team-brief",
   "install-docker",
   "install-update",
+  "identity-add",
   "mention",
   "open-brain-setup",
   "open-computer-bot",
@@ -175,7 +179,9 @@ const HANDLED = [
   "vault-cancel",
   "vault-delete",
   "vault-edit",
+  "vault-export",
   "vault-group",
+  "vault-import",
   "vault-reveal",
   "vault-save",
   "vault-share-bot",
@@ -228,10 +234,9 @@ assert.deepEqual(extra, [], "data-act values handled that were not before: " + e
 assert.deepEqual(covered, expected);
 
 // Guard the guard: an empty pin would make every assertion above vacuous.
-// 158 -> 160: claude-login / claude-logout, the desktop twin of the iOS Claude
-// desk sign-in. Bump deliberately when you add an action, never to green a test.
-assert.equal(HANDLED.length, 160);
-assert.equal(covered.length, 160);
+// 164 -> 166: vault-export / vault-import.
+assert.equal(HANDLED.length, 166);
+assert.equal(covered.length, 166);
 
 console.log(
   "ok delegated-acts (" + keys.length + " in ACTIONS, " + new Set(chain).size +

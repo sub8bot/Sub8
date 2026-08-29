@@ -4,9 +4,14 @@ export type HarnessId =
   | "hermes"
   | "claude"
   | "codex"
+  | "cursor"
   | "ollama"
   | "lmstudio"
-  | "spacexai";
+  | "spacexai"
+  | "openrouter"
+  | "openai"
+  | "custom"
+  | "sub8";
 
 /** What `claude auth status` says, once the JSON and the prose agree. */
 export interface ClaudeAuthStatus {

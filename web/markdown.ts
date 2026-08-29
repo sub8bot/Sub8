@@ -24,13 +24,33 @@ function isSepRow(line: string | undefined): boolean {
   return cells.length > 0 && cells.every((c) => /^:?-{3,}:?$/.test(c.replace(/\s/g, "")));
 }
 
+function autolinkUrls(s: string): string {
+  // Do this AFTER **bold** / *italic*. The old order let `[^\s<]+` swallow the
+  // closing `**` on a line like `**Live on https://example.com/path:**`, then
+  // the bold replace put `</strong>` inside the href and left <strong> open —
+  // so the rest of the bubble (and, via one innerHTML write, later bubbles)
+  // rendered bold.
+  return s.replace(/(^|[\s(>])(https?:\/\/[^\s<*]+)/g, (full, pre: string, url: string, offset: number, src: string) => {
+    const before = src.slice(0, offset + pre.length);
+    const opened = before.toLowerCase().lastIndexOf("<a ");
+    const closed = before.toLowerCase().lastIndexOf("</a>");
+    if (opened !== -1 && opened > closed) return full;
+    let rest = "";
+    const core = url.replace(/[.,;:!?]+$/, (m) => {
+      rest = m;
+      return "";
+    });
+    if (!/^https?:\/\/\S+$/i.test(core)) return full;
+    return `${pre}<a href="${core}" target="_blank" rel="noreferrer">${core}</a>${rest}`;
+  });
+}
+
 function renderInline(s: string): string {
   s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
   s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, `<a href="$2" target="_blank" rel="noreferrer">$1</a>`);
-  s = s.replace(/(^|[\s(])(https?:\/\/[^\s<]+)(?=$|[\s)])/g, `$1<a href="$2" target="_blank" rel="noreferrer">$2</a>`);
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^\w*])\*([^*\n]+)\*(?=$|[^\w*])/g, "$1<em>$2</em>");
-  return s;
+  return autolinkUrls(s);
 }
 
 function tableHtml(header: string[], rows: string[][]): string {

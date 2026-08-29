@@ -24,6 +24,9 @@ const talked = await draft.addMessage(bot.id, "hello from draft");
 assert.equal(talked.messages.at(-2).role, "user");
 assert.equal(talked.messages.at(-1).role, "assistant");
 
+const identified = await draft.patchBot(bot.id, { identityId: "cloud-claude" });
+assert.equal(identified.identityId, "cloud-claude");
+
 const signed = await draft.patchComputer(desk.id, { harness: { signedIn: true, provider: "grok-build" } });
 assert.equal(signed.harness.signedIn, true);
 

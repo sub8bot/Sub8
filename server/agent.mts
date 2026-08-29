@@ -171,6 +171,8 @@ type AgentBot = {
   messages: AgentMessage[];
   routines?: AgentRoutine[];
   grokSessionId?: string;
+  harnessSessionId?: string;
+  harnessSessionFresh?: boolean;
   awaitingUserSelection?: boolean;
   backgroundShells?: bgShell.ShellView[];
   [key: string]: unknown;
@@ -2483,11 +2485,7 @@ function collectCitations(json: SearchResponse): string[] {
 }
 
 function recapForGrok(bot: AgentBot): string {
-  return (bot.messages || [])
-    .filter((m) => !m.hidden && (m.role === "user" || m.role === "assistant") && m.kind !== "think" && m.kind !== "tool")
-    .slice(-16)
-    .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${String(m.content || "").slice(0, 800)}`)
-    .join("\n");
+  return hostCli.recapConversation(bot.messages);
 }
 
 async function grokSessionOnDisk(box: string, sessionId: string): Promise<boolean> {
@@ -2588,8 +2586,9 @@ function runGrokBuild(
       "Grok Build only runs inside a bot computer. Start the computer first.",
     );
   }
-  const sessionId = bot.grokSessionId || bot.id;
+  const sessionId = hostCli.cliSessionId(bot) || bot.id;
   bot.grokSessionId = sessionId;
+  bot.harnessSessionId = sessionId;
   return (async () => {
     try {
       await vm.pushHostGrokAuth(box);
@@ -2605,13 +2604,10 @@ function runGrokBuild(
     await vm.installAgentsMd(box, extra);
     const caps = await ctx.readPrompt("capabilities.txt");
     const rules = `${await fs.readFile(path.join(appRoot, "prompts", "grok-build-vm.txt"), "utf8")}\n${caps}\n${extra}\n`;
-    const exists = await grokSessionOnDisk(box, sessionId);
-    const recap = recapForGrok(bot);
-    const prompt = exists
-      ? userText
-      : recap
-        ? `Continuing this Bot's conversation on my computer.\nPrior conversation:\n${recap}\n\nUser:\n${userText}`
-        : userText;
+    const exists = !bot.harnessSessionFresh && (await grokSessionOnDisk(box, sessionId));
+    if (bot.harnessSessionFresh) bot.harnessSessionFresh = false;
+    const recap = exists ? "" : recapForGrok(bot);
+    const prompt = hostCli.continuePrompt(userText, recap);
     const promptFile = "/tmp/sub8-grok-prompt.txt";
     await vm.writeFileToContainer(box, promptFile, prompt);
     const grokArgs = ["-m", harness.model || "grok-4.6"];
@@ -2625,8 +2621,6 @@ function runGrokBuild(
       "--permission-mode",
       "bypassPermissions",
       "--always-approve",
-      "--max-turns",
-      "48",
       "--effort",
       "low",
       "--no-alt-screen",

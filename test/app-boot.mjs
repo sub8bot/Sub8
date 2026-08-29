@@ -76,6 +76,8 @@ for (const page of pages) {
 assert.ok(taggedAssets >= 3, `expected cache-busted assets in web/, found ${taggedAssets}`);
 assert.match(html, /app\.js\?v=/);
 assert.match(html, /styles\.css\?v=/);
+assert.match(src, /state\.modal === "claude-code"/);
+assert.match(src, /awaitingCode: true/);
 assert.match(app, /data-act="send-choice"/);
 // A behaviour claim, not a formatting one: the open card is held only while it
 // is still pending. It reads that way in the emit; the source spells the same

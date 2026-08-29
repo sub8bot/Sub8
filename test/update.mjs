@@ -1,4 +1,4 @@
-import { isNewer, pickAsset, parseLatestTag, parseAtomLatestTag, assetsForTag, SITE_URL } from "../server/update.mjs";
+import { isNewer, pickAsset, parseLatestTag, parseAtomLatestTag, assetsForTag, latestManifest, releaseFromManifest, SITE_URL, latestJsonUrl } from "../server/update.mjs";
 
 let failed = 0;
 function test(name, fn) {
@@ -63,11 +63,23 @@ test("atom feed yields the latest tag without the API", () => {
   assert(parseAtomLatestTag("") === "");
 });
 
-test("official site", () => {
-  assert(SITE_URL === "https://sub8.bot");
+test("site latest.json round-trips into a picker row", () => {
+  const body = latestManifest("0.3.33");
+  assert(body.tag === "v0.3.33");
+  assert(body.version === "0.3.33");
+  assert(body.siteUrl === SITE_URL);
+  assert(body.downloads.some((d) => d.name === "Sub8-mac-arm64.dmg" && d.url.includes("/v0.3.33/Sub8-mac-arm64.dmg")));
+  const rel = releaseFromManifest(body);
+  assert(rel.tag_name === "v0.3.33");
+  assert(pickAsset(rel.assets, "darwin", "arm64").name === "Sub8-mac-arm64.dmg");
+  assert(pickAsset(rel.assets, "win32", "x64").name === "Sub8-win-x64.exe");
+  assert(!releaseFromManifest({}));
 });
 
-if (failed) process.exit(1);
+test("official site", () => {
+  assert(SITE_URL === "https://sub8.bot");
+  assert(latestJsonUrl() === "https://sub8.bot/latest.json");
+});
 
 test("a prerelease is older than the release it precedes", () => {
   // release.mjs advertises `0.3.32-test`, and it used to be published without
@@ -85,3 +97,5 @@ test("a prerelease is older than the release it precedes", () => {
   // A prerelease of a HIGHER version still beats a lower release.
   assert(isNewer("0.4.0-test", "0.3.32") === true, "a higher prerelease still wins");
 });
+
+if (failed) process.exit(1);

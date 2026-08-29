@@ -6,6 +6,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { migrateUserData } from "@sub8/store";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 let PORT = process.env.PORT || "8787";
@@ -88,19 +89,7 @@ app.commandLine.appendSwitch("disable-http-cache");
 
 function migrateLegacyUserData() {
   const dest = path.join(app.getPath("userData"), "data");
-  if (fs.existsSync(path.join(dest, "bots.json"))) return;
-  const home = os.homedir();
-  const candidates = [
-    path.join(home, "Library", "Application Support", "Sub8Bot", "data"),
-    path.join(home, "Library", "Application Support", "OctoBot", "data"),
-    path.join(home, "Library", "Application Support", "octobot", "data"),
-  ];
-  for (const src of candidates) {
-    if (!fs.existsSync(path.join(src, "bots.json"))) continue;
-    fs.mkdirSync(dest, { recursive: true });
-    fs.cpSync(src, dest, { recursive: true });
-    return;
-  }
+  migrateUserData(dest, { extraSources: [path.join(unpackRoot(), "data")] });
 }
 
 function packagedRoot() {

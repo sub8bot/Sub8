@@ -291,6 +291,16 @@ export function membersOf<T extends { id: string }>(
   return (bots || []).filter((b) => ids.has(b.id));
 }
 
+/** A leftover chief-only team is not a group — rail and title treat it as a solo bot. */
+export function isSoloTeam(team: TeamView | null | undefined, bots?: readonly { id: string }[] | null): boolean {
+  if (!team) return true;
+  const live = bots ? membersOf(team, bots) : null;
+  if (live) return live.length < 2;
+  const ids = (team.memberIds || []).filter(Boolean);
+  if (ids.length < 2) return true;
+  return Boolean(team.chiefId && ids.every((id) => id === team.chiefId));
+}
+
 /** One option on the card a fresh bot is offered when it has no job yet. */
 export interface BotJobChoice {
   id: string;
@@ -533,11 +543,40 @@ export async function removeMembers(
   // promote-the-first-member branch that could never be reached once the chief
   // became unremovable. Kept explicit so it is not re-added as if it ran.
   const chiefId = team.chiefId;
-  if (!memberIds.length) {
+  const leftover = memberIds.filter(Boolean);
+  const solo = leftover.length < 2 || Boolean(chiefId && leftover.every((id) => id === chiefId));
+  if (!leftover.length || solo) {
     await removeTeam(team.id);
+    const bots = await store.loadBots();
+    for (const b of bots) {
+      if (b.teamId === team.id) {
+        await store.patchBot(b.id, (row) => {
+          row.teamId = "";
+          row.teamRole = "";
+        });
+      }
+    }
     return null;
   }
   return saveTeam({ ...team, memberIds, chiefId });
+}
+
+/** Drop chief-only leftovers so Local does not show a group plus a solo twin. */
+export async function pruneSoloTeams(): Promise<void> {
+  const [rows, bots] = await Promise.all([listTeams(), store.loadBots()]);
+  for (const t of rows) {
+    if (isSoloTeam(t, bots)) {
+      await removeTeam(t.id);
+      for (const b of bots) {
+        if (b.teamId === t.id) {
+          await store.patchBot(b.id, (row) => {
+            row.teamId = "";
+            row.teamRole = "";
+          });
+        }
+      }
+    }
+  }
 }
 
 export function mentionedMemberIds(text: unknown, members: readonly TeamMember[] | null | undefined): string[] {
@@ -951,6 +990,13 @@ export async function setTeamJob(teamId: string, spec: JobSeed): Promise<(Team &
   const saved = await saveTeam({ ...team, job });
   const renamed = await syncJobWorkerNames(saved);
   return { ...saved, renamed };
+}
+
+/** Drop a finished (or abandoned) job so the bar can close. The next team message seeds a new one. */
+export async function clearTeamJob(teamId: string): Promise<Team | null> {
+  const team = await getTeam(teamId);
+  if (!team) return null;
+  return saveTeam({ ...team, job: null });
 }
 
 /** What `patchTeamStep` moved: the saved team, its job, the step, any rename. */

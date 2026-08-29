@@ -44,8 +44,9 @@ const LATEST_PAGE = `${GH}/releases/latest`;
 const LATEST_ATOM = `${GH}/releases.atom`;
 const RELEASES_PAGE = `${GH}/releases`;
 export const SITE_URL = "https://sub8.bot";
+export const LATEST_JSON_URL = `${SITE_URL}/latest.json`;
 const LOOKUP_MS = 6_000;
-const UNREACHABLE = "Could not reach GitHub Releases. Try sub8.bot.";
+const UNREACHABLE = "Could not check for updates. Try sub8.bot.";
 
 /**
  * electron-builder `artifactName` is `${productName}-${os}-${arch}.${ext}` —
@@ -88,6 +89,66 @@ export function assetsForTag(tag: string): ReleaseAsset[] {
     name,
     browser_download_url: downloadUrlFor(tag, name),
   }));
+}
+
+/** Public JSON the desktop and landing page read from sub8.bot. */
+export interface LatestDownload {
+  name: string;
+  url: string;
+}
+
+export interface LatestManifest {
+  name: string;
+  version: string;
+  tag: string;
+  publishedAt: string;
+  releaseUrl: string;
+  siteUrl: string;
+  downloads: LatestDownload[];
+}
+
+export function latestJsonUrl(): string {
+  return String(process.env.SUB8_LATEST_URL || LATEST_JSON_URL).trim() || LATEST_JSON_URL;
+}
+
+/** Body `scripts/release.mjs` PUTs to sub8.bot after GitHub publish. */
+export function latestManifest(version: string, extra: { publishedAt?: string } = {}): LatestManifest {
+  const raw = String(version || "").trim().replace(/^v/i, "");
+  const tag = raw ? `v${raw}` : "";
+  return {
+    name: `Sub8 ${raw}`,
+    version: raw,
+    tag,
+    publishedAt: extra.publishedAt || new Date().toISOString(),
+    releaseUrl: tag ? `${GH}/releases/tag/${tag}` : `${GH}/releases`,
+    siteUrl: SITE_URL,
+    downloads: tag
+      ? STABLE_INSTALLERS.map((name) => ({ name, url: downloadUrlFor(tag, name) }))
+      : [],
+  };
+}
+
+export function releaseFromManifest(raw: unknown): GithubRelease | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const version = String(o.version || "").trim().replace(/^v/i, "");
+  const tag = String(o.tag || "").trim() || (version ? `v${version}` : "");
+  if (!tag) return null;
+  const downloads = Array.isArray(o.downloads) ? o.downloads : [];
+  const assets: ReleaseAsset[] = [];
+  for (const item of downloads) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const name = String(row.name || "").trim();
+    const url = String(row.url || "").trim();
+    if (!name || !url) continue;
+    assets.push({ name, browser_download_url: url });
+  }
+  return releaseFromTag(tag, {
+    name: String(o.name || tag),
+    html_url: String(o.releaseUrl || "") || `${GH}/releases/tag/${tag}`,
+    assets,
+  });
 }
 
 export function appVersion(): string {
@@ -213,6 +274,21 @@ function releaseFromTag(tag: string, extra: Partial<GithubRelease> = {}): Github
   };
 }
 
+async function fetchLatestFromSite(current: string): Promise<GithubRelease | null> {
+  try {
+    const res = await fetch(latestJsonUrl(), {
+      headers: { "User-Agent": `Sub8/${current}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(LOOKUP_MS),
+    });
+    if (!res.ok) return null;
+    const type = String(res.headers.get("content-type") || "");
+    if (type && !type.includes("json")) return null;
+    return releaseFromManifest(await res.json());
+  } catch {
+    return null;
+  }
+}
+
 async function fetchLatestFromApi(current: string): Promise<GithubRelease | null> {
   try {
     const res = await fetch(LATEST_API, {
@@ -303,18 +379,23 @@ export async function checkForAppUpdate({
     error: null as string | null,
   };
   try {
-    const data = await firstHit([
-      fetchLatestFromApi(current),
-      fetchLatestFromAtom(current),
-      fetchLatestFromPage(current),
-    ]);
+    const fromSite = await fetchLatestFromSite(current);
+    const data =
+      fromSite ||
+      (await firstHit([
+        fetchLatestFromApi(current),
+        fetchLatestFromAtom(current),
+        fetchLatestFromPage(current),
+      ]));
     if (!data?.tag_name) return { ...empty, error: UNREACHABLE };
     const tag = data.tag_name;
     const latest = normalizeVersion(tag);
     const asset = pickAsset(data.assets?.length ? data.assets : assetsForTag(tag), platform, arch);
     const newer = Boolean(latest && isNewer(latest, current));
     let ready = Boolean(asset?.url);
-    if (ready && asset?.url) ready = await installerReady(asset.url, current);
+    // Site JSON is the source of truth after a release. Don't HEAD GitHub —
+    // that's the path that 403s/times out and hid updates from users.
+    if (ready && asset?.url && !fromSite) ready = await installerReady(asset.url, current);
     return {
       currentVersion: normalizeVersion(current) || current,
       latestVersion: latest || null,

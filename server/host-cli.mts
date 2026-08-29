@@ -8,6 +8,7 @@ import * as vault from "./vault.mjs";
 import * as ctx from "./context.mjs";
 import * as memory from "./memory.mjs";
 import { rewriteHarnessOutput } from "@sub8/harness-auth";
+import * as identities from "./identities.mjs";
 
 import type { ContextBot, ContextSettings } from "./context.mjs";
 
@@ -88,7 +89,13 @@ interface GrokStreamEvent {
  * — already live there, and reusing it keeps the record runHostCli is handed
  * acceptable to ctx.agentsExtra and memory.ensureLayout without a cast.
  */
-export type HostCliBot = ContextBot;
+export type HostCliBot = ContextBot & {
+  messages?: Array<{ role?: string; content?: unknown; hidden?: boolean; kind?: string }> | undefined;
+  identityId?: string | undefined;
+  harnessSessionId?: string | undefined;
+  grokSessionId?: string | undefined;
+  harnessSessionFresh?: boolean | undefined;
+};
 
 /** The settings runHostCli reads, plus the two internal fields index.mjs hangs off them. */
 export interface HostCliSettings extends ContextSettings {
@@ -152,13 +159,28 @@ export function claudeBin(): string {
   return whichCmd("claude");
 }
 
-/** Claude Code flags. "default"/"auto"/empty = don't pin a model (CLI settings.json
- *  often hardcodes fable). Always fall back to sonnet when that model is out of quota. */
-export function claudeModelArgs(model: unknown): string[] {
+/**
+ * Desk-safe Claude id. Claude Code 2.1.197 aliases `sonnet` to `claude-sonnet-5`
+ * and this login's harness turns 404 `model_not_found` on Sonnet 5 and 4.6
+ * (plain `-p` still works). Haiku is the id that completes a desk turn.
+ */
+export const CLAUDE_SAFE_SONNET = "haiku";
+
+/** Map UI/API aliases onto a Claude Code CLI id this login can run. */
+export function resolveClaudeCliModel(model: unknown): string {
   const m = String(model || "").trim();
-  const args = ["--fallback-model", "sonnet"];
-  if (m && m !== "default" && m !== "auto") args.unshift("--model", m);
-  return args;
+  if (!m || m === "default" || m === "auto" || m === "sonnet") return CLAUDE_SAFE_SONNET;
+  if (/^claude-sonnet-5($|-|\[)/i.test(m) || m === "sonnet-5") return CLAUDE_SAFE_SONNET;
+  if (/^claude-sonnet-4-6/i.test(m) || m === "sonnet-4-6" || m === "sonnet-4.6") return CLAUDE_SAFE_SONNET;
+  if (/^claude-sonnet-4-5/i.test(m) || m === "sonnet-4-5" || m === "sonnet-4.5") return CLAUDE_SAFE_SONNET;
+  if (/^grok/i.test(m)) return CLAUDE_SAFE_SONNET;
+  return m;
+}
+
+/** Claude Code flags. Always pin --model so 2.1.197 cannot default to Sonnet 5. */
+export function claudeModelArgs(model: unknown): string[] {
+  const m = resolveClaudeCliModel(model);
+  return ["--model", m, "--fallback-model", CLAUDE_SAFE_SONNET];
 }
 
 export function codexBin(): string {
@@ -779,11 +801,11 @@ export async function writeHermesHome(
   return home;
 }
 
-export async function writeGrokHome(botId: unknown, mcpEnv: McpEnv): Promise<string> {
-  const home = path.join(dataDir, "grok-host", String(botId || "bot"));
+export async function writeGrokHome(botId: unknown, mcpEnv: McpEnv, homeOverride?: string, { copyHostAuth = true } = {}): Promise<string> {
+  const home = homeOverride || path.join(dataDir, "grok-host", String(botId || "bot"));
   await fs.mkdir(home, { recursive: true });
   const srcAuth = path.join(os.homedir(), ".grok", "auth.json");
-  if (fsSync.existsSync(srcAuth)) {
+  if (copyHostAuth && fsSync.existsSync(srcAuth)) {
     await fs.copyFile(srcAuth, path.join(home, "auth.json"));
   }
   const envLines = Object.entries(mcpEnv)
@@ -809,6 +831,42 @@ ${envLines}
   // SUB8_INTERNAL_TOKEN (and SUB8_DESK_TOKEN on the desk) into mcpEnv.
   await fs.writeFile(path.join(home, "config.toml"), toml, { mode: 0o600 });
   return home;
+}
+
+/** Changing Claude ↔ Grok (etc.) must not resume the other harness's CLI session. */
+export function shouldRotateHarnessSession(prev: unknown, next: unknown): boolean {
+  const norm = (value: unknown) => {
+    const p = String(value || "").trim();
+    return !p || p === "default" ? "default" : p;
+  };
+  const b = String(next || "").trim();
+  if (!b) return false;
+  return norm(prev) !== norm(next);
+}
+
+export function recapConversation(
+  messages: ReadonlyArray<{ role?: string; content?: unknown; hidden?: boolean; kind?: string }> | null | undefined,
+  { limit = 60, each = 500 }: { limit?: number; each?: number } = {},
+): string {
+  return (messages || [])
+    .filter((m) => !m.hidden && (m.role === "user" || m.role === "assistant") && m.kind !== "think" && m.kind !== "tool")
+    .slice(-limit)
+    .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${String(m.content || "").replace(/\s+/g, " ").slice(0, each)}`)
+    .join("\n");
+}
+
+export function continuePrompt(userText: string, recap: string): string {
+  if (!recap) return userText;
+  return (
+    `Continuing this Bot's conversation. The Sub8 transcript is the source of truth; earlier turns may have used a different harness.\n\n` +
+    `Prior conversation:\n${recap}\n\nUser:\n${userText}`
+  );
+}
+
+export function cliSessionId(
+  bot: { harnessSessionId?: string | undefined; grokSessionId?: string | undefined; id?: string | undefined } | null | undefined,
+): string {
+  return String(bot?.harnessSessionId || bot?.grokSessionId || bot?.id || "").trim();
 }
 
 function grokSessionExists(home: string, id: string): boolean {
@@ -861,6 +919,11 @@ async function writeCursorWorkspace(work: string, mcpEnv: McpEnv): Promise<void>
 export async function runHostCli({ provider, model, userText, signal, bot, settings, hidden = false, emit, internalToken, port }: RunHostCliOptions): Promise<string> {
   const box = bot?.vm?.container;
   if (!box) return "This harness only runs after the Bot computer is up.";
+  const attach = await identities.attachForBot(bot as import("@sub8/identities").AttachBot).catch(() => null);
+  const isolatedHome = attach
+    ? identities.identityRuntimeDir({ id: attach.identityId, runtimeRef: attach.runtimeRef, provider: attach.provider || provider })
+    : "";
+  if (isolatedHome) await fs.mkdir(isolatedHome, { recursive: true });
   const work = await fs.mkdtemp(path.join(os.tmpdir(), `sub8-${provider}-`));
   const extra = await ctx.agentsExtra({ bot, settings, hidden });
   await memory.ensureLayout(bot).catch(() => {});
@@ -900,7 +963,16 @@ To sign in: vault_fill. Never print a password.
 Talk to teammates with message_teammate (one short line; pass their bot id from list_teammates). Each Bot has its own Chrome tab on its display. Workers: update_task then one-line the chief — do not send a long report. Chief: set_job with a step per user-requested piece (including any you keep). list_tasks, send_message a short compiled list of EVERY non-Summary step including yours, update_task Summary done. Do not invent extra files. Do not print a user-visible sentence between every click — tools until done, then one result. Google URLs: &hl=en&gl=us&curr=USD. If you need a yes/no, a pick, or confirmation from the user, call send_message type=widget (ask_user is an alias) and stop — do not guess.
 Do not drive Chrome with xdotool, wmctrl, octo-click, CDP, or host Bash. Call the sub8 tools. If the desktop is sick, shell desk-doctor. Do not announce tools are missing unless a tool call returned an error.
 `;
-  const prompt = `${userText}
+  const sessionId = cliSessionId(bot) || bot.id;
+  const fresh = Boolean(bot.harnessSessionFresh);
+  if (fresh) bot.harnessSessionFresh = false;
+  const grokHomeHint = isolatedHome || path.join(dataDir, "grok-host", String(bot.id || "bot"));
+  const recap =
+    fresh || (provider === "grok-build" && !grokSessionExists(grokHomeHint, sessionId))
+      ? recapConversation(bot.messages)
+      : "";
+  const continued = continuePrompt(userText, recap);
+  const prompt = `${continued}
 
 You have an MCP server named "sub8". Use computer action=open to go to a URL. Do not only send a plan.`;
   const mcpEnv = {
@@ -923,6 +995,7 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
   let args: string[];
   const spawnEnv = hostEnv();
   if (provider === "claude") {
+    if (isolatedHome) spawnEnv.CLAUDE_CONFIG_DIR = isolatedHome;
     bin = claudeBin();
     args = [
       "-p",
@@ -939,11 +1012,11 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
       "--append-system-prompt",
       rules,
       "--session-id",
-      bot.id,
+      sessionId,
       ...claudeModelArgs(model),
     ];
   } else if (provider === "grok-build") {
-    const home = await writeGrokHome(bot.id, mcpEnv);
+    const home = await writeGrokHome(bot.id, mcpEnv, isolatedHome || undefined, { copyHostAuth: !isolatedHome });
     spawnEnv.GROK_HOME = home;
     spawnEnv.GROK_CONFIG = JSON.stringify({ models: { default_reasoning_effort: "low" } });
     bin = grokBin();
@@ -956,8 +1029,6 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
       "bypassPermissions",
       "--always-approve",
       "--no-alt-screen",
-      "--max-turns",
-      "48",
       "--effort",
       "low",
       "--rules",
@@ -966,8 +1037,8 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
       work,
     ];
     if (model) args.push("-m", model);
-    if (grokSessionExists(home, bot.id)) args.push("--resume", bot.id);
-    else args.push("--session-id", bot.id);
+    if (!fresh && grokSessionExists(home, sessionId)) args.push("--resume", sessionId);
+    else args.push("--session-id", sessionId);
   } else if (provider === "hermes") {
     const { hermesAcpPrompt } = await import("./hermes-acp.mjs");
     const home = await writeHermesHome(hermesHomeDir(), mcpEnv);

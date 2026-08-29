@@ -1,4 +1,5 @@
 export type { ClaudeAuthStatus, HarnessId, HarnessRow } from "./types.js";
+export type { IdentityProbeStatus } from "./harness-auth.js";
 
 export {
   HARNESS_LABELS,
@@ -11,4 +12,5 @@ export {
   noteAuthFailure,
   parseClaudeAuthStatus,
   rewriteHarnessOutput,
+  statusForIdentity,
 } from "./harness-auth.js";

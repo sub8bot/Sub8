@@ -70,6 +70,7 @@ interface BotHarness {
 /** Where this conversation's files live on disk, for the Advanced sheet. */
 interface BotStorage {
   sessionId?: string;
+  harnessSessionId?: string;
   conversationFile?: string;
   botsFile?: string;
   screensFile?: string;
@@ -214,6 +215,7 @@ interface Bot {
   instructions?: string;
   avatar?: Partial<Avatar>;
   harness?: BotHarness;
+  identityId?: string;
   brain?: BotBrain;
   messages?: Message[];
   messagesTruncated?: boolean;
@@ -235,6 +237,7 @@ interface Bot {
   createdAt?: number;
   updatedAt?: number;
   grokSessionId?: string;
+  harnessSessionId?: string;
   _loadingOlder?: boolean;
 }
 
@@ -287,7 +290,7 @@ interface Team {
   memberIds?: string[];
   section?: string;
   pinned?: boolean;
-  job?: TeamJob;
+  job?: TeamJob | undefined;
   messages?: Message[];
   members?: { id: string; role?: string }[];
 }
@@ -338,6 +341,18 @@ interface Settings {
   sidebarSections?: SidebarSection[];
   themePreference?: string;
   [key: string]: unknown;
+}
+
+interface IdentityRow {
+  id: string;
+  label: string;
+  place: "local" | "cloud";
+  provider: string;
+  kind?: string;
+  subject?: string;
+  runtimeRef?: string;
+  model?: string;
+  status?: string;
 }
 
 /** One harness as /api/harness/status reports it, plus the extras this file reads. */
@@ -683,6 +698,8 @@ interface AppState {
   vaultQuery: string;
   localHarness: LocalHarness;
   harnessStatus: HarnessStatusFull | null;
+  identities: IdentityRow[];
+  identityCatalog: { id: string; label: string }[];
   harnessTab: string | undefined;
   /** Claude desk-login status for the selected cloud desk (iOS parity). */
   claudeAuth: {
@@ -690,6 +707,10 @@ interface AppState {
     email?: string | undefined;
     authMethod?: string | undefined;
     busy?: boolean | undefined;
+    /** Browser OAuth opened; waiting for user to paste the code (Electron has no prompt()). */
+    awaitingCode?: boolean | undefined;
+    signInUrl?: string | undefined;
+    error?: string | undefined;
   } | null;
   harnessTests: Record<string, HarnessTest>;
   harnessBannerDismissed: Record<string, boolean>;
@@ -715,6 +736,7 @@ interface AppState {
   chatFollow: boolean;
   chatFollowBot: string | null;
   chatExtra: number;
+  activityOpen: Record<string, boolean>;
   teamBriefHidden: Record<string, boolean>;
 }
 
@@ -825,6 +847,8 @@ const state: AppState = {
     grok: { ok: true, models: ["grok-4.6", "grok-4.5", "grok-4.3", "grok-build-0.1"] },
   },
   harnessStatus: null,
+  identities: [],
+  identityCatalog: [],
   harnessTab: "grok-build",
   claudeAuth: null,
   harnessTests: {},
@@ -863,6 +887,7 @@ const state: AppState = {
   chatFollow: true,
   chatFollowBot: null,
   chatExtra: 0,
+  activityOpen: {},
   teamBriefHidden: (() => {
     try {
       return JSON.parse(localStorage.getItem("sub8.teamBriefHidden") || "{}") || {};
@@ -2127,6 +2152,7 @@ function paintChat(bot: Bot | null | undefined): void {
       return;
     }
   }
+  bindActivityFold(thread);
   if (!Array.isArray(bot.messages)) bot.messages = [];
   if (state.chatFollowBot !== bot.id) {
     state.chatFollowBot = bot.id;
@@ -2148,6 +2174,7 @@ function paintChat(bot: Bot | null | undefined): void {
     html.push(`<button type="button" class="chat-more" data-act="chat-more">Load earlier messages</button>`);
   }
   const pendingChoices: Message[] = [];
+  let liveActivity = false;
   // Every rows[i] below sits under the i < rows.length guard of this loop.
   for (let i = 0; i < rows.length; ) {
     const m = rows[i]!;
@@ -2173,11 +2200,13 @@ function paintChat(bot: Bot | null | undefined): void {
       while (i < rows.length && (rows[i]!.kind === "think" || rows[i]!.kind === "tool" || rows[i]!.role === "activity")) {
         const next = rows[i]!;
         const gap = (Number(next.ts) || 0) - (Number(batch.at(-1)?.ts) || Number(next.ts) || 0);
-        if (batch.length && (gap > 45_000 || batch.length >= 24)) break;
+        if (batch.length && (gap > 45_000 || batch.length >= 80)) break;
         batch.push(next);
         i += 1;
       }
-      html.push(renderActivity(batch, Boolean(bot.busy && i >= rows.length)));
+      const live = Boolean(bot.busy && i >= rows.length);
+      liveActivity = live;
+      html.push(renderActivity(batch, live));
       continue;
     }
     if (String(m.content || "").trim()) {
@@ -2185,7 +2214,7 @@ function paintChat(bot: Bot | null | undefined): void {
     }
     i += 1;
   }
-  if (bot.busy) {
+  if (bot.busy && !liveActivity) {
     html.push(
       `<div class="working" role="status" aria-live="polite"><span class="working-dot" aria-hidden="true"></span>Working…</div>`,
     );
@@ -2207,23 +2236,54 @@ function activityKey(m: Message): string {
   return act || m.summary || "work";
 }
 
+function activityFoldKey(batch: Message[]): string {
+  return String(batch[0]?.id || batch.map((m) => m.id).filter(Boolean).join(",") || "activity");
+}
+
+function activitySummary(tools: Message[], partCount: number): string {
+  const n = tools.length;
+  if (!n) return "Thought";
+  if (partCount <= 1) {
+    const first = tools[0]!;
+    const label = first.summary || first.action || first.name || "Working";
+    return n > 1 ? `${label} ×${n}` : label;
+  }
+  return `${n} steps`;
+}
+
+function bindActivityFold(thread: HTMLElement | null): void {
+  if (!thread || thread.dataset.foldBound) return;
+  thread.dataset.foldBound = "1";
+  thread.addEventListener(
+    "toggle",
+    (e) => {
+      const el = e.target;
+      if (!(el instanceof HTMLDetailsElement) || !el.classList.contains("tool-fold")) return;
+      const key = el.dataset.fold;
+      if (key) state.activityOpen[key] = el.open;
+    },
+    true,
+  );
+}
+
 function renderActivity(batch: Message[], openLast: boolean): string {
   const thoughts = batch.filter((m) => m.kind === "think");
   const tools = batch.filter((m) => m.kind !== "think");
-  const order = [];
-  const byKey = new Map();
+  const order: string[] = [];
+  const byKey = new Map<string, Message[]>();
   for (const m of tools) {
     const key = activityKey(m);
     if (!byKey.has(key)) {
       byKey.set(key, []);
       order.push(key);
     }
-    byKey.get(key).push(m);
+    byKey.get(key)!.push(m);
   }
-  const parts = [];
+  const parts: string[] = [];
   for (const key of order) {
-    const items = byKey.get(key);
+    const items = byKey.get(key) || [];
     const first = items[0];
+    if (!first) continue;
     const n = items.length;
     const label = first.summary || first.action || first.name || "Working";
     const text = n > 1 ? `${label} ×${n}` : label;
@@ -2237,7 +2297,20 @@ function renderActivity(batch: Message[], openLast: boolean): string {
     </details>`);
   }
   const mids = batch.map((m) => m.id).filter(Boolean).join(",");
-  return `<div class="tool-list" data-mids="${escapeHtml(mids)}">${parts.join("")}</div>`;
+  const fold = parts.length > 1 || (thoughts.length > 0 && tools.length > 0);
+  if (!fold) {
+    return `<div class="tool-list" data-mids="${escapeHtml(mids)}">${parts.join("")}</div>`;
+  }
+  const key = activityFoldKey(batch);
+  const open = state.activityOpen[key] === true;
+  const label = activitySummary(tools, order.length);
+  const mark = openLast
+    ? `<span class="working-dot" aria-hidden="true"></span>`
+    : toolIcon("computer");
+  return `<details class="tool-fold${openLast ? " is-live" : ""}"${open ? " open" : ""} data-fold="${escapeHtml(key)}" data-mids="${escapeHtml(mids)}">
+    <summary class="tool-fold-sum"${openLast ? ` role="status" aria-live="polite"` : ""}>${mark}<span>${escapeHtml(label)}</span></summary>
+    <div class="tool-list">${parts.join("")}</div>
+  </details>`;
 }
 
 function toolIcon(action: string | undefined): string {
@@ -2472,7 +2545,9 @@ function resolvedHarness(bot: Bot | null | undefined): { provider: string; model
 function titleName(bot: Bot | null | undefined): string {
   if (!bot) return "Sub8";
   if (isCloudPlace()) return bot.name;
-  return teamOf(bot)?.name || bot.name;
+  const team = teamOf(bot);
+  if (team && teamBots(team).length >= 2) return team.name || bot.name;
+  return bot.name;
 }
 
 function titleChip(bot: Bot | null | undefined): string {
@@ -2638,14 +2713,17 @@ function railLayout(): { pinned: Bot[]; pinnedTeams: RailTeam[]; groups: RailGro
     if (!byId.has(b.teamId)) byId.set(b.teamId, { id: b.teamId, name: teamNameFor(b.teamId, vis.filter((x) => x.teamId === b.teamId)), bots: [] });
     // The line above guarantees the key is present.
     byId.get(b.teamId)!.bots.push(b);
-    teamed.add(b.id);
   }
   const teamGroups = [...byId.values()]
-    .filter((t) => t.bots.length)
+    .filter((t) => t.bots.length >= 2)
     .map((t) => {
       const rec: Partial<Team> = teams.find((row) => row.id === t.id) || {};
       return { ...t, name: rec.name || t.name, section: rec.section || "", pinned: Boolean(rec.pinned) };
     });
+  // A one-bot leftover team is not a group — those bots sit in the rail as themselves.
+  for (const t of teamGroups) {
+    for (const b of t.bots) teamed.add(b.id);
+  }
   const pinned = vis.filter((b) => b.pinned && !teamed.has(b.id));
   const rest = vis.filter((b) => !b.pinned && !teamed.has(b.id));
   const sections = sidebarSections();
@@ -2776,20 +2854,35 @@ function paintRail(bot: Bot | null | undefined): void {
   };
   const addTeam = (t: RailTeam) => {
     if (!t?.bots?.length) return;
+    if (t.bots.length < 2) {
+      for (const b of t.bots) addBot(b);
+      return;
+    }
     const cluster = teamNodes.get(t.id) || ensureRailTeamNode(t);
     paintTeamCluster(cluster, t, bot);
     host.appendChild(cluster);
   };
   if (pinned.length || pinnedTeams.length) {
-    host.appendChild(sectionTag("pinned", "Pinned"));
-    for (const t of pinnedTeams) addTeam(t);
-    for (const b of pinned) addBot(b);
+    const pinnedMulti = pinnedTeams.filter((t) => t.bots.length >= 2);
+    const pinnedSolo = [
+      ...pinned,
+      ...pinnedTeams.filter((t) => t.bots.length === 1).flatMap((t) => t.bots),
+    ];
+    if (pinnedMulti.length + pinnedSolo.length >= 2) host.appendChild(sectionTag("pinned", "Pinned"));
+    for (const t of pinnedMulti) addTeam(t);
+    for (const b of pinnedSolo) addBot(b);
   }
   for (const g of groups) {
-    if (!g.bots.length && !g.teams.length) continue;
-    if (g.name) host.appendChild(sectionTag(g.id, g.name));
-    for (const t of g.teams) addTeam(t);
-    for (const b of g.bots) addBot(b);
+    const multi = g.teams.filter((t) => t.bots.length >= 2);
+    const bots = [
+      ...g.bots,
+      ...g.teams.filter((t) => t.bots.length === 1).flatMap((t) => t.bots),
+    ];
+    if (!multi.length && !bots.length) continue;
+    // A named section keeps its label. "Unassigned" is only a group when it holds more than one thing.
+    if (g.name && (g.id || multi.length + bots.length >= 2)) host.appendChild(sectionTag(g.id, g.name));
+    for (const t of multi) addTeam(t);
+    for (const b of bots) addBot(b);
   }
   bindRailHover(host);
   bindRailDnD(host);
@@ -3130,21 +3223,25 @@ function paintJobBar(bot: Bot | null | undefined): void {
   if (!job || !steps.length) {
     host.hidden = true;
     host.innerHTML = "";
+    host.classList.remove("is-complete");
     return;
   }
   const done = steps.filter((s) => s.status === "done").length;
   const blocked = steps.filter((s) => s.status === "blocked").length;
   const looping = steps.filter((s) => s.status === "looping" || (s.loopCount || 0) >= 2).length;
   const resolved = done + blocked;
+  const complete = resolved === steps.length;
   const pct = Math.round((resolved / steps.length) * 100);
   const bits = [`${done}/${steps.length}`];
   if (blocked) bits.push(`${blocked} blocked`);
   if (looping) bits.push(`${looping} looping`);
   host.hidden = false;
+  host.classList.toggle("is-complete", complete);
   host.innerHTML = `
     <div class="job-progress-head">
       <span class="job-progress-title">${escapeHtml(job.title || "Job")}</span>
       <span class="job-progress-count">${bits.join(" · ")}</span>
+      <button type="button" class="job-progress-x" data-act="dismiss-job" data-id="${escapeHtml(team.id)}" title="Dismiss">${complete ? "Close" : "×"}</button>
     </div>
     <div class="job-progress-track${looping ? " is-looping" : ""}"><i style="width:${pct}%"></i></div>
     <div class="job-progress-steps">
@@ -3196,6 +3293,7 @@ function paintTeamTabs(bot: Bot): void {
   if (!team || members.length < 2) {
     host.hidden = true;
     host.innerHTML = "";
+    host.removeAttribute("style");
     host.closest(".chat-head")?.classList.remove("has-tabs");
     paintTeamBrief(bot);
     return;
@@ -3762,12 +3860,33 @@ function paintBotEditor(bot: Bot): void {
     </div>
     <label class="muted">Instructions</label>
     <textarea class="field" id="bi" placeholder="Standing rules this Bot always follows">${escapeHtml(bot.instructions || "")}</textarea>
+    ${(() => {
+      const cloudEdit = isCloudPlace();
+      const identity = resolveBotIdentity(bot);
+      const harness = harnessFromIdentity(identity, bot);
+      if (cloudEdit) {
+        return `
+    <label class="muted">Identity</label>
+    <select class="field" id="bid">
+      ${identityOptions(identity?.id || bot.identityId, bot.harness?.provider, bot)}
+    </select>
+    <label class="muted">Harness</label>
+    <div class="field field-static">${escapeHtml(`${harnessDisplayName(harness.provider)} · ${harness.model}`)}</div>
+    <input type="hidden" id="bh" value="${escapeHtml(harness.provider)}" />
+    <input type="hidden" id="bm" value="${escapeHtml(harness.model)}" />`;
+      }
+      return `
+    <label class="muted">Identity</label>
+    <select class="field" id="bid">
+      ${identityOptions(bot.identityId, bot.harness?.provider, bot)}
+    </select>
     <label class="muted">Harness</label>
     <select class="field" id="bh">
       ${harnessProviderOptions(bot.harness?.provider || "default")}
     </select>
     <label class="muted">Model</label>
-    ${modelPickerHtml(bot.harness?.provider || "default", bot.harness?.model || "", { id: "bm" })}
+    ${modelPickerHtml(bot.harness?.provider || "default", bot.harness?.model || "", { id: "bm" })}`;
+    })()}
     <label class="muted">Color</label>
     <div class="muted" style="margin:0 0 6px">Light colors use dark eyes and mouth.</div>
     <div class="swatches">
@@ -3883,7 +4002,7 @@ function paintModal(): void {
   const host = $("#modal-host");
   if (!host) return;
   const bot = currentBot();
-  const key = `${state.modal || ""}|${state.section}|${state.editingRoutineId || ""}|${activeBotId() || ""}|${state.account?.view || ""}|${state.vaultGroup || ""}|${state.vaultEditId || ""}|${state.vaultNaming ? "1" : "0"}|${state.computerId || ""}|${state.computerAttach ? "1" : "0"}|${state.deleteBotId || ""}|${state.computerView}|${state.computerSort}|${state.createSku || ""}|${state.createCloudKind || ""}|${state.createCloudPay ? "1" : "0"}`;
+  const key = `${state.modal || ""}|${state.section}|${state.editingRoutineId || ""}|${activeBotId() || ""}|${state.account?.view || ""}|${state.vaultGroup || ""}|${state.vaultEditId || ""}|${state.vaultNaming ? "1" : "0"}|${state.computerId || ""}|${state.computerAttach ? "1" : "0"}|${state.deleteBotId || ""}|${state.computerView}|${state.computerSort}|${state.createSku || ""}|${state.createCloudKind || ""}|${state.createCloudPay ? "1" : "0"}|${state.claudeAuth?.awaitingCode ? "code" : ""}|${state.claudeAuth?.busy ? "busy" : ""}`;
   if (!state.modal) {
     host.innerHTML = "";
     delete host.dataset.key;
@@ -3898,7 +4017,8 @@ function paintModal(): void {
     state.modal === "routine" ||
     (state.modal === "create" && !(isLiveCloud() && state.createCloudKind === "bot")) ||
     state.modal === "create-team" ||
-    state.modal === "vault";
+    state.modal === "vault" ||
+    state.modal === "claude-code";
   if (host.dataset.key === key && host.innerHTML && keepForm) return;
   host.dataset.key = key;
   if (state.modal === "create") host.innerHTML = createBotHtml();
@@ -3916,11 +4036,15 @@ function paintModal(): void {
   }
   else if (state.modal === "computers") host.innerHTML = computersHtml();
   else if (state.modal === "delete-bot") host.innerHTML = deleteBotHtml();
+  else if (state.modal === "claude-code") host.innerHTML = claudeCodeHtml();
   else if (state.modal === "settings") host.innerHTML = settingsHtml();
   else if (state.modal === "advanced" && bot) host.innerHTML = advancedHtml(bot);
   else if (state.modal === "routine" && bot) {
     host.innerHTML = routineEditorHtml(bot);
   } else host.innerHTML = "";
+  if (state.modal === "claude-code" && state.claudeAuth?.awaitingCode) {
+    requestAnimationFrame(() => $<HTMLInputElement>("#claude-auth-code")?.focus());
+  }
 }
 
 function advancedHtml(bot: Bot): string {
@@ -3972,12 +4096,8 @@ function advancedHtml(bot: Bot): string {
         <h2>Advanced</h2>
         <p class="muted" style="margin-top:-10px">This conversation’s storage and session.</p>
         <div class="adv-card">
-          ${row("Session ID", s.sessionId || bot.id)}
-          ${
-            h.provider === "grok-build"
-              ? row("Grok Build session", bot.grokSessionId || bot.id)
-              : ""
-          }
+          ${row("Conversation", s.sessionId || bot.id)}
+          ${row("Harness session", s.harnessSessionId || bot.harnessSessionId || bot.grokSessionId || bot.id)}
           ${row("Bot", bot.name)}
           ${row("Model", h.model || "—")}
           ${row("Harness", h.provider || "—")}
@@ -4360,21 +4480,154 @@ function harnessDisplayName(id: string | undefined): string {
   );
 }
 
+function identityStatusLabel(status: string | undefined): string {
+  if (status === "signed_in") return "Signed in";
+  if (status === "expired") return "Session expired";
+  if (status === "not_running") return "Not running";
+  if (status === "not_installed") return "Not installed";
+  return "Not signed in";
+}
+
+function cloudIdentityRows(): IdentityRow[] {
+  return (state.identities || []).filter((row) => row.place === "cloud");
+}
+
+/** Worker team rows use shorter ids (`cloud-grok`); the desktop pool uses `cloud-grok-brain`, etc. */
+function workerCloudIdentityId(localId: string): string {
+  if (!localId) return "";
+  if (localId === "cloud-grok-brain" || localId.startsWith("cloud-grok")) return "cloud-grok";
+  if (localId.startsWith("cloud-claude")) return "cloud-claude";
+  if (localId.startsWith("cloud-api-")) return "cloud-key";
+  return localId;
+}
+
+function localCloudIdentityId(workerId: string, computerId?: string): string {
+  const desk = String(computerId || "").replace(/^cloud[:-]/, "").trim();
+  if (workerId === "cloud-grok") return "cloud-grok-brain";
+  if (workerId === "cloud-claude") return desk ? `cloud-claude-${desk}` : "cloud-claude";
+  if (workerId === "cloud-key") {
+    const api = cloudIdentityRows().find((row) => row.id.startsWith("cloud-api-"));
+    return api?.id || "cloud-api-spacexai";
+  }
+  return workerId;
+}
+
+function identityById(id: string | undefined): IdentityRow | undefined {
+  if (!id) return undefined;
+  const rows = state.identities || [];
+  return (
+    rows.find((row) => row.id === id) ||
+    rows.find((row) => workerCloudIdentityId(row.id) === id) ||
+    rows.find((row) => row.id === localCloudIdentityId(id))
+  );
+}
+
+function defaultModelForProvider(provider: string): string {
+  if (provider === "grok-build" || provider === "grok-oauth") return "grok-4.6";
+  if (provider === "claude") return "haiku";
+  if (isCliHost(provider)) return "default";
+  return provider;
+}
+
+function modelForIdentityProvider(provider: string, model: string | undefined): string {
+  const p = provider === "grok-oauth" ? "grok-build" : provider;
+  const m = String(model || "").trim();
+  if (p === "grok-build") return /^grok/i.test(m) ? m : "grok-4.6";
+  if (p === "claude") return !m || /^grok/i.test(m) ? "haiku" : m;
+  return m || defaultModelForProvider(p);
+}
+
+function harnessFromIdentity(identity: IdentityRow | undefined, bot?: Bot): { provider: string; model: string } {
+  if (identity) {
+    const provider = identity.provider === "grok-oauth" ? "grok-build" : identity.provider;
+    return { provider, model: modelForIdentityProvider(provider, identity.model) };
+  }
+  const provider = bot?.harness?.provider === "grok-oauth" ? "grok-build" : bot?.harness?.provider || "grok-build";
+  return { provider, model: modelForIdentityProvider(provider, bot?.harness?.model) };
+}
+
+function resolveBotIdentity(bot: Bot): IdentityRow | undefined {
+  const cloudRows = cloudIdentityRows();
+  const want = String(bot.identityId || "").trim();
+  if (want) {
+    const hit = identityById(want);
+    if (hit?.place === "cloud") return hit;
+  }
+  if (!isCloudPlace()) return want ? identityById(want) : undefined;
+  const provider = bot.harness?.provider;
+  if (provider === "grok-oauth" || provider === "grok-build") {
+    return cloudRows.find((row) => row.provider === "grok-build");
+  }
+  if (provider) return cloudRows.find((row) => row.provider === provider);
+  return cloudRows[0];
+}
+
+function editorHarnessFromIdentity(bot?: Bot): { provider: string; model: string; identityId: string } {
+  const picked = identityById($<ValueEl>("#bid")?.value) || (bot ? resolveBotIdentity(bot) : undefined);
+  const harness = harnessFromIdentity(picked, bot);
+  return { ...harness, identityId: picked?.id || "" };
+}
+
+function identityOptions(selected: string | undefined, providerFallback?: string, bot?: Bot): string {
+  const cloud = isCloudPlace();
+  const rows = cloud ? cloudIdentityRows() : (state.identities || []).filter((row) => row.place !== "cloud");
+  const resolved = bot ? resolveBotIdentity(bot) : undefined;
+  const effective = selected || resolved?.id || "";
+  if (cloud) {
+    if (!rows.length) {
+      return `<option value="" selected>No cloud identities — sign in under Settings → Identities</option>`;
+    }
+    return rows
+      .map((row) => {
+        const on =
+          effective === row.id ||
+          workerCloudIdentityId(row.id) === effective ||
+          row.id === localCloudIdentityId(effective, bot?.computerId);
+        const who = row.subject ? ` · ${row.subject}` : "";
+        const status =
+          row.status === "signed_in" ? " ✓" : row.status === "expired" ? " · expired" : row.status ? ` · ${identityStatusLabel(row.status)}` : "";
+        return `<option value="${escapeHtml(row.id)}" ${on ? "selected" : ""}>${escapeHtml(`${row.label}${who}${status}`)}</option>`;
+      })
+      .join("");
+  }
+  const opts = [`<option value="" ${!effective ? "selected" : ""}>App default</option>`];
+  for (const row of rows) {
+    const on = effective === row.id || (!effective && row.provider === providerFallback && row.runtimeRef === "host");
+    const who = row.subject ? ` · ${row.subject}` : "";
+    opts.push(
+      `<option value="${escapeHtml(row.id)}" ${on ? "selected" : ""}>${escapeHtml(`${row.label}${who}`)}</option>`,
+    );
+  }
+  return opts.join("");
+}
+
 function harnessProviderOptions(selected: string | undefined): string {
   const def = appDefaultHarness();
   const defModel = def.model || (isCliHost(def.provider) ? "default" : "grok-4.6");
   const defLabel = `${harnessDisplayName(def.provider)} · ${defModel}`;
-  return [
-    ["default", defLabel],
-    ["grok-build", "Grok Build"],
-    ["hermes", "Hermes"],
-    ["claude", "Claude"],
-    ["codex", "Codex"],
-    ["cursor", "Cursor"],
-    ["ollama", "Ollama"],
-    ["lmstudio", "LM Studio"],
-    ["spacexai", "SpaceXAI"],
-  ]
+  const catalog = (state.identityCatalog || []).length
+    ? state.identityCatalog.map((item) => [item.id, item.label] as [string, string])
+    : ([
+        ["grok-build", "Grok Build"],
+        ["hermes", "Hermes"],
+        ["claude", "Claude"],
+        ["codex", "Codex"],
+        ["cursor", "Cursor"],
+        ["ollama", "Ollama"],
+        ["lmstudio", "LM Studio"],
+        ["spacexai", "SpaceXAI"],
+        ["openrouter", "OpenRouter"],
+        ["openai", "OpenAI"],
+        ["custom", "Custom API"],
+      ] as [string, string][]);
+  const ids = [["default", defLabel] as [string, string], ...catalog];
+  const seen = new Set<string>();
+  return ids
+    .filter(([id]) => {
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    })
     .map(([id, label]) => `<option value="${id}" ${selected === id ? "selected" : ""}>${escapeHtml(label)}</option>`)
     .join("");
 }
@@ -5039,12 +5292,22 @@ function paintVaultList(): void {
 
 function bindVaultSearch(): void {
   const q = $<HTMLInputElement>("#vault-q");
-  if (!q || q.dataset.bound) return;
-  q.dataset.bound = "1";
-  q.addEventListener("input", () => {
-    state.vaultQuery = q.value;
-    paintVaultList();
-  });
+  if (q && !q.dataset.bound) {
+    q.dataset.bound = "1";
+    q.addEventListener("input", () => {
+      state.vaultQuery = q.value;
+      paintVaultList();
+    });
+  }
+  const file = $<HTMLInputElement>("#vault-import-file");
+  if (file && !file.dataset.bound) {
+    file.dataset.bound = "1";
+    file.addEventListener("change", () => {
+      const picked = file.files?.[0];
+      file.value = "";
+      if (picked) importVaultBackup(picked);
+    });
+  }
 }
 
 function vaultKv(label: string, inner: string): string {
@@ -5136,14 +5399,21 @@ function vaultHtml(): string {
   return `<div class="overlay">
     <div class="modal vault-modal" data-modal="1">
       <nav class="snav">
-        ${navBtn("all", "All")}
-        ${navBtn("none", "Ungrouped")}
-        ${groups.map((g) => navBtn(g.id, g.name)).join("")}
-        ${
-          state.vaultNaming
-            ? `<input class="field vault-group-input" id="vault-group-name" placeholder="Group name" autocomplete="off" />`
-            : `<button type="button" data-act="vault-add-group">+ Group</button>`
-        }
+        <div class="vault-nav-list">
+          ${navBtn("all", "All")}
+          ${navBtn("none", "Ungrouped")}
+          ${groups.map((g) => navBtn(g.id, g.name)).join("")}
+          ${
+            state.vaultNaming
+              ? `<input class="field vault-group-input" id="vault-group-name" placeholder="Group name" autocomplete="off" />`
+              : `<button type="button" data-act="vault-add-group">+ Group</button>`
+          }
+        </div>
+        <div class="vault-io">
+          <button type="button" data-act="vault-export">Export all</button>
+          <button type="button" data-act="vault-import">Import…</button>
+          <input id="vault-import-file" type="file" accept="application/json,.json" hidden />
+        </div>
       </nav>
       <div class="vault-mid">
         <div class="vault-mid-head">
@@ -5299,8 +5569,8 @@ function harnessHtml(h: HarnessSettingsState): string {
     : `<input class="field" data-harness-text="model" value="${escapeHtml(tab === def ? h.model || "" : modelValue)}" placeholder="${
         tab === "claude" ? "auto" : tab === "codex" ? "CLI default" : tab === "cursor" ? "cursor-grok-4.6-low" : tab === "hermes" || tab === "ollama" || tab === "lmstudio" ? "start LM Studio to list models" : "grok-4.6"
       }" />`;
-  return `<h2>Harness</h2>
-    <p class="muted" style="margin-top:-8px">One tab per engine. Check login, binary, and a test before you assign it to a Bot.</p>
+  return `<h2>This Mac</h2>
+    <p class="muted" style="margin-top:-8px">Runtimes on this computer — binaries, local servers, default engine. Sign-ins live under Identities.</p>
     <div class="harness-layout">
       <div class="harness-tabs" role="tablist">${tabs}</div>
       <div class="card harness-panel">
@@ -5365,22 +5635,6 @@ function harnessHtml(h: HarnessSettingsState): string {
             : ""
         }
         ${
-          isCloudPlace()
-            ? `<div class="row"><div><div class="lbl">Claude on this desk</div><div class="sub">${
-                state.claudeAuth?.busy
-                  ? "Working…"
-                  : state.claudeAuth?.loggedIn
-                    ? `Signed in${state.claudeAuth.email ? ` as ${escapeHtml(state.claudeAuth.email)}` : ""}.`
-                    : "Not signed in. A new desk defaults to Claude, so it cannot answer until you do."
-              }</div></div>
-              ${
-                state.claudeAuth?.loggedIn
-                  ? `<button type="button" class="pill" data-act="claude-logout">Sign out</button>`
-                  : `<button type="button" class="pill primary" data-act="claude-login">Sign in</button>`
-              }</div>`
-            : ""
-        }
-        ${
           info?.hint
             ? `<div class="row"><div class="lbl">Fix</div><div class="sub">${escapeHtml(info.hint)}</div></div>`
             : ""
@@ -5403,6 +5657,127 @@ function harnessHtml(h: HarnessSettingsState): string {
               : `<button type="button" class="pill primary" data-act="harness-default" data-id="${escapeHtml(tab)}">Use as default</button>`
           }
         </div>
+      </div>
+    </div>`;
+}
+
+function claudeCodeHtml(): string {
+  const auth = state.claudeAuth || {};
+  const url = auth.signInUrl || "";
+  return `<div class="overlay">
+    <div class="modal" data-modal="1" style="height:auto;max-height:88%;width:min(440px,92%)">
+      <div class="sbody" style="width:100%">
+        <button type="button" class="close" data-act="claude-login-cancel" title="Cancel" aria-label="Cancel">${iconClose()}</button>
+        <h2>Claude sign-in</h2>
+        ${
+          auth.busy && !auth.awaitingCode
+            ? `<p class="muted" style="margin-top:-8px">Opening the Claude sign-in page…</p>`
+            : `<p class="muted" style="margin-top:-8px">Approve in the browser, then paste the code Claude shows you.</p>`
+        }
+        ${
+          url
+            ? `<div class="row"><a class="pill" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open sign-in page</a></div>`
+            : ""
+        }
+        ${
+          auth.awaitingCode
+            ? `<div class="row" style="margin-top:12px">
+          <input class="field" id="claude-auth-code" type="text" autocomplete="off" placeholder="Paste code" ${auth.busy ? "disabled" : ""} />
+        </div>
+        <div class="row" style="margin-top:10px;gap:8px">
+          <button type="button" class="pill primary" data-act="claude-code-submit" ${auth.busy ? "disabled" : ""}>${auth.busy ? "Checking…" : "Continue"}</button>
+          <button type="button" class="pill" data-act="claude-login-cancel">Cancel</button>
+        </div>`
+            : ""
+        }
+        ${auth.error ? `<p class="sub" style="color:var(--danger)">${escapeHtml(auth.error)}</p>` : ""}
+      </div>
+    </div>
+  </div>`;
+}
+
+function identitiesHtml(): string {
+  const rows = state.identities || [];
+  const local = rows.filter((r) => r.place !== "cloud");
+  const cloud = rows.filter((r) => r.place === "cloud");
+  const addOpts = (state.identityCatalog || [])
+    .map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`)
+    .join("");
+  const card = (row: IdentityRow) => {
+    const tone = row.status === "signed_in" ? "ok" : row.status === "expired" || row.status === "not_installed" ? "bad" : "warn";
+    const who = row.subject ? escapeHtml(row.subject) : "—";
+    const place = row.place === "cloud" ? "Cloud" : row.runtimeRef === "host" ? "This Mac (shared)" : "This Mac (isolated)";
+    return `<div class="card">
+      <div class="row">
+        <div>
+          <div class="lbl">${escapeHtml(row.label)}</div>
+          <div class="sub">${escapeHtml(place)} · ${escapeHtml(row.provider)}${row.model ? ` · ${escapeHtml(row.model)}` : ""}</div>
+        </div>
+        <span class="hbadge ${tone}">${escapeHtml(identityStatusLabel(row.status))}</span>
+      </div>
+      <div class="row"><div class="lbl">Account</div><span class="muted">${who}</span></div>
+      ${
+        row.place === "cloud" && row.provider === "claude"
+          ? `<div class="row"><div class="sub">${
+              state.claudeAuth?.loggedIn ? `Desk Claude${state.claudeAuth.email ? ` as ${escapeHtml(state.claudeAuth.email)}` : ""}` : "Desk Claude is not signed in."
+            }</div>
+            ${
+              state.claudeAuth?.loggedIn
+                ? `<button type="button" class="pill" data-act="claude-logout">Sign out</button>`
+                : `<button type="button" class="pill primary" data-act="claude-login">Sign in</button>`
+            }</div>`
+          : ""
+      }
+    </div>`;
+  };
+  const claudeCodePanel =
+    state.claudeAuth?.awaitingCode
+      ? `<div class="card claude-code-panel">
+      <div class="lbl">Claude sign-in</div>
+      <div class="sub">Approve in the browser, then paste the code claude.com shows you.</div>
+      ${
+        state.claudeAuth.signInUrl
+          ? `<div class="row"><a class="pill" href="${escapeHtml(state.claudeAuth.signInUrl)}" target="_blank" rel="noreferrer">Open sign-in page</a></div>`
+          : ""
+      }
+      <div class="row">
+        <input class="field" id="claude-auth-code" type="text" autocomplete="off" placeholder="Paste code" />
+        <button type="button" class="pill primary" data-act="claude-code-submit">Continue</button>
+        <button type="button" class="pill" data-act="claude-login-cancel">Cancel</button>
+      </div>
+      ${state.claudeAuth.error ? `<div class="sub" style="color:var(--danger)">${escapeHtml(state.claudeAuth.error)}</div>` : ""}
+    </div>`
+      : "";
+  return `<h2>Identities</h2>
+    <p class="muted" style="margin-top:-8px">Named logins. Any bot can attach to one. Add another Claude or Grok to switch when credits run out — the chat stays.</p>
+    ${
+      isCloudPlace()
+        ? `<div class="block"><h3>Cloud</h3>${
+            cloud.length
+              ? cloud.map(card).join("")
+              : `<div class="card">
+            <div class="sub">No Cloud sessions yet. Grok is account-wide; Claude is per desk (select a bot in the rail first).</div>
+            <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
+              <button type="button" class="pill primary" data-act="cloud-brain-grok">Sign in with Grok</button>
+              <button type="button" class="pill" data-act="claude-login" ${cloudDeskIdOf(currentBot()) ? "" : "disabled title=\"Select a Cloud desk bot first\""}>Sign in Claude on desk</button>
+            </div>
+            <p class="muted" id="cloud-grok-wait" hidden style="margin-top:8px"></p>
+          </div>`
+          }</div>`
+        : ""
+    }
+    ${claudeCodePanel}
+    <div class="block"><h3>This Mac</h3>
+      ${local.length ? local.map(card).join("") : `<div class="card"><div class="sub">No local identities yet. Open This Mac and sign in, or add another below.</div></div>`}
+    </div>
+    <div class="card">
+      <div class="row">
+        <div>
+          <div class="lbl">Add another</div>
+          <div class="sub">Starts a separate login so two bots can use different accounts.</div>
+        </div>
+        <select class="field" id="identity-add-provider" style="max-width:180px">${addOpts}</select>
+        <button type="button" class="pill primary" data-act="identity-add">Add</button>
       </div>
     </div>`;
 }
@@ -5506,7 +5881,8 @@ function settingsHtml(): string {
       <nav class="snav">
         ${cloudOn() ? `<button type="button" class="${sec === "account" ? "active" : ""}" data-act="sec" data-id="account">${iconPerson()} <span>Account</span></button>` : ""}
         <button type="button" class="${sec === "general" ? "active" : ""}" data-act="sec" data-id="general">${iconGear()} <span>General</span></button>
-        <button type="button" class="${sec === "harness" ? "active" : ""}" data-act="sec" data-id="harness">${iconHarness()} <span>Harness</span></button>
+        <button type="button" class="${sec === "harness" ? "active" : ""}" data-act="sec" data-id="harness">${iconHarness()} <span>This Mac</span></button>
+        <button type="button" class="${sec === "identities" ? "active" : ""}" data-act="sec" data-id="identities">${iconPerson()} <span>Identities</span></button>
         <button type="button" class="${sec === "updates" ? "active" : ""}" data-act="sec" data-id="updates">${iconMonitor()} <span>Computer</span></button>
         <button type="button" class="${sec === "about" ? "active" : ""}" data-act="sec" data-id="about">${iconAbout()} <span>About</span></button>
       </nav>
@@ -5517,6 +5893,8 @@ function settingsHtml(): string {
             ? accountHtml()
             : sec === "harness"
             ? harnessHtml(h)
+            : sec === "identities"
+            ? identitiesHtml()
             : sec === "about"
             ? aboutHtml()
             : sec === "general"
@@ -5888,6 +6266,14 @@ const ACTIONS: Record<string, ActHandler> = {
     deleteVaultAccount(el.dataset.id);
     return;
   },
+  "vault-export": (e) => {
+    exportVaultBackup();
+    return;
+  },
+  "vault-import": (e) => {
+    $<HTMLInputElement>("#vault-import-file")?.click();
+    return;
+  },
   "vault-share-toggle": (e) => {
     state.vaultShareOpen = !state.vaultShareOpen;
     paintVaultShare();
@@ -5997,6 +6383,10 @@ const ACTIONS: Record<string, ActHandler> = {
     return;
   },
   "close-modal": (e) => {
+    if (state.claudeAuth?.awaitingCode || state.modal === "claude-code") {
+      void claudeDeskLoginCancel();
+      return;
+    }
     state.modal = null;
     state.botEdit = false;
     state.editingRoutineId = null;
@@ -6008,6 +6398,11 @@ const ACTIONS: Record<string, ActHandler> = {
   },
   "sec": (e, { el }) => {
     state.section = el.dataset.id;
+    if (el.dataset.id === "identities") {
+      Promise.all([loadIdentities(), loadClaudeAuth(), loadHarnessStatus()]).then(() => {
+        if (state.modal === "settings" && state.section === "identities") paintModal();
+      });
+    }
     if (el.dataset.id === "harness") {
       state.harnessTab = state.settings?.harness?.provider || state.harnessTab || "grok-build";
       loadHarnessStatus().then(() => {
@@ -6174,6 +6569,12 @@ const ACTIONS: Record<string, ActHandler> = {
     state.botEdit = true;
     state.showComputer = true;
     state.modal = null;
+    if (isCloudPlace()) {
+      void loadIdentities().then(() => {
+        const bot = currentBot();
+        if (state.botEdit && bot) paintBotEditor(bot);
+      });
+    }
     return FALL_THROUGH;
   },
   "bot-color": (e, { el }) => {
@@ -6555,6 +6956,16 @@ const ACTIONS: Record<string, ActHandler> = {
     $<SendForm>("#send")?.dispatchEvent(new Event("submit"));
     return FALL_THROUGH;
   },
+  "dismiss-job": (e, { el }) => {
+    const bot = state.bots.find((b) => b.id === state.selected);
+    const team = teamOf(bot);
+    const teamId = el.dataset.id || team?.id;
+    if (!teamId) return;
+    if (team) delete team.job;
+    paintJobBar(bot);
+    void api(`/api/teams/${encodeURIComponent(teamId)}/job`, { method: "DELETE" }).catch(() => {});
+    return;
+  },
   "hide-team-brief": (e, { el }) => {
     const bot = state.bots.find((b) => b.id === el.dataset.id || b.id === state.selected);
     const team = teamOf(bot);
@@ -6883,6 +7294,19 @@ const ACTIONS: Record<string, ActHandler> = {
     testHarness(el.dataset.id);
     return;
   },
+  "identity-add": () => {
+    const provider = $<ValueEl>("#identity-add-provider")?.value || "claude";
+    void (async () => {
+      try {
+        await api("/api/identities", { method: "POST", body: { provider, isolated: true } });
+        await loadIdentities();
+        if (state.modal === "settings" && state.section === "identities") paintModal();
+      } catch (err) {
+        window.alert((err as CaughtError).message || "Could not add that identity.");
+      }
+    })();
+    return;
+  },
   "grok-oauth": (e) => {
     startGrokOAuth();
     return;
@@ -6893,6 +7317,14 @@ const ACTIONS: Record<string, ActHandler> = {
   // child, so the code is collected immediately rather than left open.
   "claude-login": () => {
     void claudeDeskLogin();
+    return;
+  },
+  "claude-code-submit": () => {
+    void claudeDeskSubmitCode();
+    return;
+  },
+  "claude-login-cancel": () => {
+    void claudeDeskLoginCancel();
     return;
   },
   "claude-logout": () => {
@@ -6992,6 +7424,11 @@ function bindDelegated(): void {
     if (e.key === "Enter" && (e.target as HTMLElement | null)?.hasAttribute?.("data-account-email")) {
       e.preventDefault();
       document.querySelector<HTMLElement>("[data-act=account-magic]")?.click();
+      return;
+    }
+    if (e.key === "Enter" && (e.target as HTMLElement | null)?.id === "claude-auth-code") {
+      e.preventDefault();
+      void claudeDeskSubmitCode();
       return;
     }
     if (e.key === "Enter" && (e.target as HTMLElement | null)?.id === "vault-group-name") {
@@ -7178,6 +7615,7 @@ function bindDelegated(): void {
         paintDockerGate();
         return;
       }
+      if (state.modal === "claude-code") return;
       state.modal = null;
       state.botEdit = false;
       state.editingRoutineId = null;
@@ -7203,6 +7641,19 @@ function bindDelegated(): void {
   document.addEventListener("change", async (e) => {
     // A change event only fires on a form control.
     const el = e.target as ValueEl;
+    if (el.id === "bid" && state.botEdit && isCloudPlace()) {
+      const bot = editorBot();
+      if (bot) {
+        const attach = editorHarnessFromIdentity(bot);
+        bot.identityId = attach.identityId;
+        bot.harness = { ...(bot.harness || {}), provider: attach.provider, model: attach.model };
+        const host = $("#bot-editor");
+        if (host) delete host.dataset.bot;
+        paintBotEditor(bot);
+        if (isLiveCloud()) void persistCloudIdentity(bot, attach);
+      }
+      return;
+    }
     if (el.classList?.contains("sched-mode") && state.schedPop) {
       state.schedPop = { ...state.schedPop, panel: el.value === "custom" ? "custom" : "advanced" };
       paintSchedPop();
@@ -7325,30 +7776,59 @@ function bindDelegated(): void {
   });
 }
 
+function restoreIdentitiesModal(): void {
+  if (state.modal === "claude-code") {
+    state.modal = "settings";
+    state.section = "identities";
+  }
+}
+
 /** GET the desk's Claude login state into `state.claudeAuth`. */
 async function loadClaudeAuth(): Promise<void> {
   const desk = cloudDeskIdOf(currentBot());
   if (!isCloudPlace() || !desk) {
-    state.claudeAuth = null;
+    if (!state.claudeAuth?.awaitingCode) state.claudeAuth = null;
     return;
   }
+  const pending = state.claudeAuth?.awaitingCode
+    ? {
+        awaitingCode: true as const,
+        signInUrl: state.claudeAuth.signInUrl,
+        error: state.claudeAuth.error,
+        busy: state.claudeAuth.busy,
+      }
+    : null;
   try {
     const r = (await api(`/api/cloud/brain/claude/auth?computerId=${encodeURIComponent(desk)}`)) as
       | { loggedIn?: boolean; email?: string; authMethod?: string; raw?: { loggedIn?: boolean; email?: string; authMethod?: string } }
       | null;
     const row = r?.raw || r || {};
-    state.claudeAuth = { loggedIn: Boolean(row.loggedIn), email: row.email, authMethod: row.authMethod };
+    if (row.loggedIn) {
+      state.claudeAuth = { loggedIn: true, email: row.email, authMethod: row.authMethod, busy: false, awaitingCode: false };
+      restoreIdentitiesModal();
+    } else {
+      state.claudeAuth = {
+        loggedIn: false,
+        email: row.email,
+        authMethod: row.authMethod,
+        ...(pending || {}),
+      };
+    }
   } catch {
     // A desk with no IP yet answers 409 -- that is "unknown", not "signed out".
-    state.claudeAuth = null;
+    if (!pending) state.claudeAuth = null;
   }
-  paintModal();
+  if (!state.claudeAuth?.awaitingCode) paintModal();
 }
 
 async function claudeDeskLogin(): Promise<void> {
   const desk = cloudDeskIdOf(currentBot());
-  if (!desk) return;
-  state.claudeAuth = { ...(state.claudeAuth || {}), busy: true };
+  if (!desk) {
+    window.alert("Select a Cloud desk bot first.");
+    return;
+  }
+  state.modal = "claude-code";
+  state.claudeAuth = { ...(state.claudeAuth || {}), busy: true, awaitingCode: false, error: "" };
   paintModal();
   try {
     const started = (await api("/api/cloud/brain/claude/auth/start", {
@@ -7356,25 +7836,72 @@ async function claudeDeskLogin(): Promise<void> {
       body: { computerId: desk },
     })) as { url?: string; loggedIn?: boolean } | null;
     if (started?.loggedIn) {
+      state.claudeAuth = { loggedIn: true, busy: false, awaitingCode: false };
+      restoreIdentitiesModal();
       await loadClaudeAuth();
+      await loadIdentities();
       return;
     }
     if (!started?.url) throw new Error("The desk did not return a sign-in link.");
     openExternal(started.url);
-    const code = window.prompt("Approve in the browser, then paste the code claude.com showed you:");
-    if (!code) {
-      await api("/api/cloud/brain/claude/auth/logout", { method: "POST", body: { computerId: desk } }).catch(() => null);
-      state.claudeAuth = { loggedIn: false };
-      paintModal();
-      return;
-    }
-    await api("/api/cloud/brain/claude/auth/code", { method: "POST", body: { computerId: desk, code: code.trim() } });
-    await loadClaudeAuth();
-  } catch (err) {
-    state.claudeAuth = { ...(state.claudeAuth || {}), busy: false };
+    state.modal = "claude-code";
+    state.claudeAuth = {
+      loggedIn: false,
+      busy: false,
+      awaitingCode: true,
+      signInUrl: started.url,
+      error: "",
+    };
     paintModal();
-    window.alert((err as CaughtError | undefined)?.message || "Could not sign this desk in to Claude.");
+  } catch (err) {
+    state.modal = "claude-code";
+    state.claudeAuth = {
+      ...(state.claudeAuth || {}),
+      busy: false,
+      awaitingCode: true,
+      error: (err as CaughtError | undefined)?.message || "Could not sign this desk in to Claude.",
+    };
+    paintModal();
   }
+}
+
+async function claudeDeskSubmitCode(): Promise<void> {
+  const desk = cloudDeskIdOf(currentBot());
+  if (!desk) return;
+  const code = ($<HTMLInputElement>("#claude-auth-code")?.value || "").trim();
+  if (!code) {
+    state.claudeAuth = { ...(state.claudeAuth || {}), error: "Paste the code from claude.com." };
+    paintModal();
+    return;
+  }
+  state.claudeAuth = { ...(state.claudeAuth || {}), busy: true, error: "" };
+  paintModal();
+  try {
+    await api("/api/cloud/brain/claude/auth/code", { method: "POST", body: { computerId: desk, code } });
+    state.claudeAuth = { loggedIn: true, busy: false, awaitingCode: false };
+    restoreIdentitiesModal();
+    await loadClaudeAuth();
+    await loadIdentities();
+  } catch (err) {
+    state.claudeAuth = {
+      ...(state.claudeAuth || {}),
+      busy: false,
+      awaitingCode: true,
+      error: (err as CaughtError | undefined)?.message || "That code did not work. Try again.",
+    };
+    paintModal();
+  }
+}
+
+async function claudeDeskLoginCancel(): Promise<void> {
+  const desk = cloudDeskIdOf(currentBot());
+  state.claudeAuth = { loggedIn: false, busy: false, awaitingCode: false, error: "" };
+  restoreIdentitiesModal();
+  if (desk) {
+    await api("/api/cloud/brain/claude/auth/logout", { method: "POST", body: { computerId: desk } }).catch(() => null);
+  }
+  await loadClaudeAuth();
+  await loadIdentities();
 }
 
 async function claudeDeskLogout(): Promise<void> {
@@ -7388,6 +7915,7 @@ async function claudeDeskLogout(): Promise<void> {
     window.alert((err as CaughtError | undefined)?.message || "Could not sign this desk out.");
   }
   await loadClaudeAuth();
+  await loadIdentities();
 }
 
 async function startGrokOAuth(): Promise<void> {
@@ -7456,6 +7984,18 @@ function setupQuery(): URLSearchParams {
     return new URLSearchParams(location.search);
   } catch {
     return new URLSearchParams();
+  }
+}
+
+async function loadIdentities(): Promise<void> {
+  try {
+    const desk = isCloudPlace() ? cloudDeskIdOf(currentBot()) : "";
+    const url = desk ? `/api/identities?computerId=${encodeURIComponent(desk)}` : "/api/identities";
+    const data = await api(url) as { identities?: IdentityRow[]; catalog?: { id: string; label: string }[] };
+    state.identities = data.identities || [];
+    state.identityCatalog = data.catalog || [];
+  } catch {
+    state.identities = state.identities || [];
   }
 }
 
@@ -7717,7 +8257,12 @@ async function onSend(e: ComposerSubmit): Promise<void> {
       const computerId = bot!.computerId || bot!.vm?.computerId;
       const snap = await api(`/api/cloud/draft/bots/${bot!.id}/messages`, {
         method: "POST",
-        body: { computerId, botId: bot!.id, content },
+        body: {
+          computerId,
+          botId: bot!.id,
+          content,
+          identityId: workerCloudIdentityId(bot!.identityId || ""),
+        },
       }) as CloudDraftState;
       state.cloudDraft = snap;
       const live = currentBot();
@@ -8038,6 +8583,57 @@ async function deleteVaultAccount(id: string | undefined): Promise<void> {
   if (!id || !window.confirm("Delete this login? Bots will lose access.")) return;
   state.vault = await api(`/api/vault/accounts/${id}`, { method: "DELETE" }) as VaultSnapshot;
   state.vaultEditId = null;
+  const host = $("#modal-host");
+  if (host) delete host.dataset.key;
+  render();
+}
+
+async function exportVaultBackup(): Promise<void> {
+  try {
+    const backup = await api("/api/vault/export");
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `sub8-vault-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+  } catch (err) {
+    window.alert((err as CaughtError | undefined)?.message || "Could not export the vault.");
+  }
+}
+
+async function importVaultBackup(file: File): Promise<void> {
+  let payload: { accounts?: unknown[]; groups?: unknown[]; kind?: string };
+  try {
+    payload = JSON.parse(await file.text());
+  } catch {
+    window.alert("That file is not valid JSON.");
+    return;
+  }
+  const n = Array.isArray(payload.accounts) ? payload.accounts.length : 0;
+  const g = Array.isArray(payload.groups) ? payload.groups.length : 0;
+  const ok = window.confirm(
+    `Replace all passwords, groups, and sharing with this backup (${n} login${n === 1 ? "" : "s"}, ${g} group${g === 1 ? "" : "s"})? The file contains secrets in plaintext.`,
+  );
+  if (!ok) return;
+  try {
+    state.vault = await api("/api/vault/import", {
+      method: "POST",
+      body: { ...payload, mode: "replace" },
+    }) as VaultSnapshot;
+  } catch (err) {
+    window.alert((err as CaughtError | undefined)?.message || "Could not import the vault.");
+    return;
+  }
+  state.vaultGroup = "all";
+  state.vaultReveal = false;
+  state.vaultShareOpen = false;
+  state.vaultQuery = "";
+  const accs = vaultAccountsInView();
+  state.vaultEditId = accs[0]?.id || null;
+  state.vaultShare = botsSharingAccount(state.vaultEditId);
+  state.vaultSharePacks = [];
   const host = $("#modal-host");
   if (host) delete host.dataset.key;
   render();
@@ -8550,10 +9146,33 @@ async function computerAction(id: string | undefined, action: string | undefined
   }
 }
 
+async function persistCloudIdentity(
+  bot: Bot,
+  attach: { provider: string; model: string; identityId: string },
+): Promise<void> {
+  try {
+    const snap = (await api(`/api/cloud/draft/bots/${bot.id}`, {
+      method: "PATCH",
+      body: {
+        computerId: cloudDeskIdOf(bot),
+        identityId: workerCloudIdentityId(attach.identityId),
+        harness: { provider: attach.provider, model: attach.model },
+      },
+    })) as CloudDraftState & { bot?: Bot };
+    if (snap?.bots) state.cloudDraft = snap;
+    const next = snap?.bot || (snap?.bots || []).find((row) => row.id === bot.id);
+    if (next?.identityId) bot.identityId = next.identityId;
+    if (next?.harness) bot.harness = next.harness;
+  } catch (err) {
+    window.alert((err as CaughtError | undefined)?.message || "Could not attach that identity.");
+  }
+}
+
 async function saveBot(): Promise<void> {
   const bot = currentBot();
   if (!bot) return;
   if (isLiveCloud()) {
+    const attach = editorHarnessFromIdentity(bot);
     const snap = await api(`/api/cloud/draft/bots/${bot.id}`, {
       method: "PATCH",
       body: {
@@ -8562,6 +9181,8 @@ async function saveBot(): Promise<void> {
         job: $<ValueEl>("#bi")?.value || $<ValueEl>("#bd")?.value || bot.instructions || bot.description,
         description: $<ValueEl>("#bd")?.value ?? bot.description,
         instructions: $<ValueEl>("#bi")?.value ?? bot.instructions,
+        identityId: workerCloudIdentityId(attach.identityId),
+        harness: { provider: attach.provider, model: attach.model },
       },
     }) as CloudDraftState;
     state.cloudDraft = snap;
@@ -8570,16 +9191,15 @@ async function saveBot(): Promise<void> {
     return;
   }
   if (isCloudPlace()) {
+    const attach = editorHarnessFromIdentity(bot);
     const snap = await api(`/api/cloud/draft/bots/${bot.id}`, {
       method: "PATCH",
       body: {
         name: $<ValueEl>("#bn")?.value ?? bot.name,
         description: $<ValueEl>("#bd")?.value ?? bot.description,
         instructions: $<ValueEl>("#bi")?.value ?? bot.instructions,
-        harness: {
-          provider: $<ValueEl>("#bh")?.value || bot.harness?.provider || "grok-build",
-          model: ($<ValueEl>("#bm")?.value ?? bot.harness?.model ?? "").trim(),
-        },
+        identityId: attach.identityId || bot.identityId || "",
+        harness: { provider: attach.provider, model: attach.model },
         color: bot.color,
         avatar: defaultAvatar(bot.avatar),
       },
@@ -8589,13 +9209,14 @@ async function saveBot(): Promise<void> {
     render();
     return;
   }
-  await api(`/api/bots/${bot.id}`, {
+  const next = await api(`/api/bots/${bot.id}`, {
     method: "PATCH",
     body: {
       name: $<ValueEl>("#bn")?.value ?? bot.name,
       title: $<ValueEl>("#bt")?.value ?? bot.title,
       description: $<ValueEl>("#bd")?.value ?? bot.description,
       instructions: $<ValueEl>("#bi")?.value ?? bot.instructions,
+      identityId: $<ValueEl>("#bid")?.value || "",
       harness: {
         provider: $<ValueEl>("#bh")?.value || bot.harness?.provider || "default",
         model: ($<ValueEl>("#bm")?.value ?? bot.harness?.model ?? "").trim(),
@@ -8604,9 +9225,14 @@ async function saveBot(): Promise<void> {
       color: bot.color,
       avatar: defaultAvatar(bot.avatar),
     },
-  });
+  }) as Bot;
   state.botEdit = false;
-  await refresh();
+  // Keep the local transcript. refresh() + loadBotHistory(tail=120) jumps a long thread.
+  const messages = bot.messages;
+  const messagesTruncated = bot.messagesTruncated;
+  const busy = bot.busy;
+  Object.assign(bot, next, { messages, messagesTruncated, busy });
+  render();
 }
 
 async function deleteMessages(ids: string[]): Promise<void> {
@@ -8757,6 +9383,7 @@ async function refreshSettings(): Promise<void> {
   paintDockerGate();
   await loadLocalHarness();
   loadHarnessStatus().catch(() => {});
+  loadIdentities().catch(() => {});
 }
 
 async function loadLocalHarness(): Promise<void> {
@@ -9037,6 +9664,7 @@ async function startCloudGrokOAuth(): Promise<void> {
           clearInterval(cloudGrokPoll!);
           cloudGrokPoll = null;
           await loadCloudDraft();
+          await loadIdentities();
           render();
         }
       } catch (err) {
@@ -9059,6 +9687,7 @@ async function saveCloudBrainKey(): Promise<void> {
   try {
     await api("/api/cloud/brain/key", { method: "POST", body: { provider, apiKey } });
     await loadCloudDraft();
+    await loadIdentities();
     render();
   } catch (err) {
     window.alert((err as CaughtError).message || "Could not save the key.");
@@ -9525,12 +10154,16 @@ function listen(): void {
     es.addEventListener("job", (e: MessageEvent<string>) => {
       try {
         const { teamId, job } = JSON.parse(e.data);
-        if (!teamId || !job) return;
+        if (!teamId) return;
         const rows = Array.isArray(state.teams) ? state.teams : [];
         const i = rows.findIndex((t) => t.id === teamId);
         // findIndex answered >= 0, so the row is in bounds.
-        if (i >= 0) rows[i] = { ...rows[i]!, job };
-        else rows.push({ id: teamId, job });
+        if (i >= 0) {
+          const row = { ...rows[i]! };
+          if (job) row.job = job;
+          else delete row.job;
+          rows[i] = row;
+        } else if (job) rows.push({ id: teamId, job });
         state.teams = rows;
       } catch {
         /* keep */

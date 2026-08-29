@@ -253,7 +253,7 @@ await withTempData(async ({ base, data }) => {
     // A bot's container reaches the host API through the VM gateway, and the
     // CSRF middleware exempts GETs -- so `curl .../api/vault/accounts/<id>/reveal`
     // returned plaintext passwords for accounts the bot was never granted.
-    for (const url of ["/api/vault", "/api/vault/accounts/whatever/reveal"]) {
+    for (const url of ["/api/vault", "/api/vault/export", "/api/vault/accounts/whatever/reveal"]) {
       const r = await fetch(`${base}${url}`);
       assert.equal(r.status, 403, `${url} must refuse a header-less caller`);
     }

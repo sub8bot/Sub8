@@ -15,12 +15,26 @@ export type {
   StoredSchedule,
 } from "./types.js";
 
+export type { StoredIdentity } from "./store.js";
+
+export {
+  copyMissingFiles,
+  legacyDataDirs,
+  migrateUserData,
+  shouldMigrateInto,
+  VAULT_FILENAMES,
+} from "./migrate.js";
+export type { MigrateUserDataResult } from "./migrate.js";
+
 export {
   botsPath,
   conversationPath,
   conversationsDir,
   dataDir,
   defaultSettings,
+  identitiesPath,
+  loadIdentities,
+  saveIdentities,
   deleteBot,
   deleteMessages,
   getBot,

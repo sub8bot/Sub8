@@ -710,6 +710,7 @@ body {
   border-bottom: 1px solid var(--line);
   scrollbar-width: thin;
 }
+.chrome-tabs[hidden] { display: none !important; }
 .chrome-tabs::-webkit-scrollbar { height: 4px; }
 .chrome-tab {
   position: relative;
@@ -950,6 +951,40 @@ h2.md-h { font-size: 16px; }
   gap: 4px;
   padding: 2px 0 2px 2px;
 }
+.tool-fold {
+  align-self: flex-start;
+  margin: 2px 0;
+  max-width: 72%;
+}
+.tool-fold-sum {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.tool-fold-sum::-webkit-details-marker { display: none; }
+.tool-fold-sum::after {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid #c4c4c8;
+  border-bottom: 1.5px solid #c4c4c8;
+  transform: rotate(-45deg);
+  margin-top: -1px;
+}
+.tool-fold[open] .tool-fold-sum::after { transform: rotate(45deg); }
+.tool-fold.is-live .tool-fold-sum { font-weight: 500; }
+.tool-fold .working-dot { width: 12px; height: 12px; }
+.tool-fold .tool-list {
+  margin: 4px 0 2px 14px;
+  padding: 0 0 2px 10px;
+  border-left: 2px solid var(--line);
+}
 .tool-row {
   display: flex;
   align-items: center;
@@ -995,13 +1030,30 @@ h2.md-h { font-size: 16px; }
 .job-progress[hidden] { display: none !important; }
 .job-progress-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 6px;
 }
-.job-progress-title { font-size: 12px; font-weight: 650; }
-.job-progress-count { font-size: 11px; color: var(--muted); }
+.job-progress-title { font-size: 12px; font-weight: 650; min-width: 0; flex: 1; }
+.job-progress-count { font-size: 11px; color: var(--muted); flex-shrink: 0; }
+.job-progress-x {
+  flex: 0 0 auto;
+  height: 22px;
+  min-width: 22px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font: 600 12px/22px var(--font);
+  cursor: pointer;
+}
+.job-progress-x:hover { background: var(--hover); color: var(--text); }
+.job-progress.is-complete .job-progress-x {
+  background: var(--pill);
+  border: 1px solid var(--line);
+}
 .job-progress-track {
   height: 4px;
   border-radius: 99px;
@@ -1944,7 +1996,29 @@ form.desk-wait {
 .snav button svg { flex: 0 0 16px; }
 .snav button span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .snav button.active { background: var(--card); font-weight: 600; }
+.vault-modal .snav {
+  overflow: hidden;
+}
 .vault-modal .snav button { justify-content: space-between; }
+.vault-nav-list {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.vault-io {
+  flex: 0 0 auto;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.vault-io button { color: var(--muted); font-size: 13px; }
 .vault-nav-n { color: var(--muted); font-size: 12px; font-weight: 500; }
 .sbody { flex: 1; min-width: 0; padding: 22px 28px; overflow: auto; position: relative; }
 .sbody h2 { margin: 0 0 18px; font-size: 22px; padding-right: 28px; }
@@ -2560,7 +2634,8 @@ select.vault-kv-in { appearance: none; cursor: pointer; }
 .toggle.on i { left: 20px; }
 .field { width: 100%; border: 1px solid var(--ring); background: var(--input); color: var(--text); border-radius: 10px; padding: 10px 12px; font: inherit; }
 .field:focus { outline: none; border-color: color-mix(in srgb, var(--accent) 45%, var(--ring)); background: var(--bg); }
-.field-static { display: flex; align-items: center; min-height: 42px; color: var(--text); }
+.field-static { display: flex; align-items: center; min-height: 42px; color: var(--muted); cursor: default; }
+.field.field-static:focus { border-color: var(--ring); background: var(--input); }
 textarea.field { min-height: 88px; resize: vertical; }
 .banner {
   background: #e8f0ff; color: #1d4ed8; border-radius: 10px; padding: 10px 12px; font-size: 13px;

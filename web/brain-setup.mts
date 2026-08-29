@@ -1,4 +1,4 @@
-export const HARNESS_SETUP_IDS = ["grok-build", "hermes", "claude", "codex", "ollama", "lmstudio"];
+export const HARNESS_SETUP_IDS = ["grok-build", "hermes", "claude", "codex", "cursor", "ollama", "lmstudio"];
 
 /** Where a harness comes from and what the user still has to do by hand. */
 export interface HarnessInstall {
@@ -46,6 +46,11 @@ export const HARNESS_INSTALL: Record<string, HarnessInstall> = {
     url: "https://code.claude.com/docs/en/setup",
     cmd: "npm install -g @anthropic-ai/claude-code",
     signIn: "In a terminal: claude auth login",
+  },
+  cursor: {
+    url: "https://cursor.com/docs/cli/overview",
+    cmd: "",
+    signIn: "In a terminal: cursor-agent login",
   },
   codex: {
     url: "https://github.com/openai/codex",

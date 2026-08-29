@@ -213,6 +213,7 @@ export interface CloudTeamMember {
   job?: string | undefined;
   role?: string | undefined;
   display?: unknown;
+  identityId?: string | undefined;
   [key: string]: unknown;
 }
 
@@ -304,6 +305,7 @@ export interface CloudBot {
   instructions: string;
   avatar: CloudBotAvatar;
   harness: CloudBotHarness;
+  identityId?: string | undefined;
   messages: unknown[];
   routines: unknown[];
   computerId: string | undefined;
@@ -393,6 +395,7 @@ export interface MateOptions extends DeskOptions {
   botId?: string | undefined;
   name?: string | undefined;
   job?: string | undefined;
+  identityId?: string | undefined;
 }
 
 export interface ChatOptions extends DeskOptions {
@@ -400,6 +403,7 @@ export interface ChatOptions extends DeskOptions {
   botId?: string | undefined;
   display?: unknown;
   persistUser?: boolean | undefined;
+  identityId?: string | undefined;
 }
 
 export interface TurnOptions extends DeskOptions {
@@ -628,6 +632,7 @@ export function botFromComputer(c: LiveComputer): CloudBot {
     instructions: "",
     avatar: { expression: "think", animation: "look", body: "rounder", color: "#8f4fba" },
     harness: { provider: "grok-build", model: "grok-4.6" },
+    identityId: defaultCloudIdentityId(null),
     messages: [],
     routines: [],
     computerId: desk.id,
@@ -645,11 +650,60 @@ export function botFromComputer(c: LiveComputer): CloudBot {
   };
 }
 
+function workerCloudIdentityId(identityId: string | undefined): string {
+  const id = String(identityId || "").trim();
+  if (!id) return "";
+  if (id === "cloud-claude" || id.startsWith("cloud-claude")) return "cloud-claude";
+  if (id === "cloud-key" || id.startsWith("cloud-api-")) return "cloud-key";
+  if (id === "cloud-grok" || id.startsWith("cloud-grok")) return "cloud-grok";
+  return id;
+}
+
+function defaultCloudIdentityId(brain: CloudBrain | null | undefined): string {
+  const provider = String(brain?.provider || "");
+  if (provider === "claude" || /^claude/i.test(provider)) return "cloud-claude";
+  if (brain?.grokSignedIn || provider === "grok-oauth" || provider === "grok-build") return "cloud-grok";
+  if (brain?.apiKeySet) return "cloud-key";
+  return "cloud-grok";
+}
+
+function harnessForCloudIdentity(
+  identityId: string | undefined,
+  brain: CloudBrain | null | undefined,
+): CloudBotHarness {
+  const id = workerCloudIdentityId(identityId) || defaultCloudIdentityId(brain);
+  if (id === "cloud-claude") {
+    return {
+      provider: "claude",
+      model: "haiku",
+      signedIn: Boolean(brain?.claudeCredentials || brain?.claudeSubscription),
+      apiKeySet: Boolean(brain?.apiKeySet),
+    };
+  }
+  if (id === "cloud-key") {
+    const provider = String(brain?.provider || "spacexai");
+    return {
+      provider: provider === "grok-oauth" || provider === "claude" ? "spacexai" : provider,
+      model: String(brain?.model || ""),
+      signedIn: Boolean(brain?.grokSignedIn),
+      apiKeySet: Boolean(brain?.apiKeySet),
+    };
+  }
+  const grokModel = String(brain?.model || "grok-4.6");
+  return {
+    provider: "grok-build",
+    model: /^grok/i.test(grokModel) ? grokModel : "grok-4.6",
+    signedIn: Boolean(brain?.grokSignedIn),
+    apiKeySet: Boolean(brain?.apiKeySet),
+  };
+}
+
 export function botFromCloudMember(c: LiveComputer, member: CloudTeamMember, brain: CloudBrain | null | undefined): CloudBot {
   const desk = mapLiveComputer(c);
   const ready = desk.status === "assigned" || desk.status === "warm";
   const display = Number(member?.display) || 1;
   const base = botFromComputer(c);
+  const identityId = workerCloudIdentityId(member.identityId) || defaultCloudIdentityId(brain);
   return {
     ...base,
     id: member.id,
@@ -660,12 +714,8 @@ export function botFromCloudMember(c: LiveComputer, member: CloudTeamMember, bra
     teamId: `team-${desk.id}`,
     teamRole: member.role || "worker",
     avatar: { ...base.avatar, color: member.color || base.color },
-    harness: {
-      provider: brain?.provider || "grok-oauth",
-      model: brain?.model || "grok-4.6",
-      signedIn: Boolean(brain?.grokSignedIn),
-      apiKeySet: Boolean(brain?.apiKeySet),
-    },
+    identityId,
+    harness: harnessForCloudIdentity(identityId, brain),
     vm: {
       ...base.vm,
       display: `:${display}`,
@@ -705,12 +755,8 @@ export async function liveSnapshot(): Promise<LiveSnapshot> {
     const threaded = await Promise.all(
       rows.map(async (bot) => {
         bot.brain = brain;
-        bot.harness = {
-          provider: brain.provider || "grok-oauth",
-          model: brain.model || "grok-4.6",
-          signedIn: Boolean(brain.grokSignedIn),
-          apiKeySet: Boolean(brain.apiKeySet),
-        };
+        bot.identityId = workerCloudIdentityId(bot.identityId) || defaultCloudIdentityId(brain);
+        bot.harness = harnessForCloudIdentity(bot.identityId, brain);
         try {
           const thread: CloudThreadBody = await cloudLiveBrainThread({ token, computerId: c.id, botId: bot.id });
           bot.messages = thread.messages || [];
@@ -922,7 +968,7 @@ async function requireLiveSession(): Promise<LiveAccountRow> {
   return row as LiveAccountRow;
 }
 
-export async function livePatchMate({ computerId, botId, name, job }: MateOptions = {}) {
+export async function livePatchMate({ computerId, botId, name, job, identityId }: MateOptions = {}) {
   const row = await requireLiveSession();
   const id = liveDeskId(computerId, botId);
   if (!id || !botId) {
@@ -930,7 +976,7 @@ export async function livePatchMate({ computerId, botId, name, job }: MateOption
     err.status = 404;
     throw err;
   }
-  await cloudLivePatchMate({ token: row.session.token, computerId: id, botId, name, job });
+  await cloudLivePatchMate({ token: row.session.token, computerId: id, botId, name, job, identityId });
   const snap = await liveSnapshot();
   const bot = (snap.bots || []).find((b) => b.id === botId) || null;
   return { bot, ...snap };
@@ -948,14 +994,14 @@ export async function liveDeleteMate({ computerId, botId }: MateOptions = {}): P
   return liveSnapshot();
 }
 
-export async function liveBrainChat({ computerId, content, botId, display, persistUser }: ChatOptions = {}): Promise<unknown> {
+export async function liveBrainChat({ computerId, content, botId, display, persistUser, identityId }: ChatOptions = {}): Promise<unknown> {
   const row = await loadAccount();
   if (!sessionLive(row.session)) {
     const err = new Error("Sign in to use Cloud.") as CloudError;
     err.code = "SIGN_IN";
     throw err;
   }
-  return cloudLiveBrainChat({ token: row.session.token, computerId, content, botId, display, persistUser });
+  return cloudLiveBrainChat({ token: row.session.token, computerId, content, botId, display, persistUser, identityId });
 }
 
 export async function liveBrainTurn({ computerId, id }: TurnOptions = {}): Promise<unknown> {

@@ -37,6 +37,8 @@ import {
   parseClaudeStream,
   claudeBin,
   claudeModelArgs,
+  CLAUDE_SAFE_SONNET,
+  resolveClaudeCliModel,
   mcpServerSpec,
   foldGrokVisibleText,
   grokBin,
@@ -817,8 +819,6 @@ export function grokArgs({ prompt, model, sessionId, work }: GrokArgsOptions): s
     "bypassPermissions",
     "--always-approve",
     "--no-alt-screen",
-    "--max-turns",
-    "48",
     "--effort",
     "low",
     "--rules",
@@ -1085,8 +1085,11 @@ export async function runTurn(body: TurnBody, emit: EmitTurnEvent, opts: RunTurn
     // the desk (~/.claude). A stray XAI key must not leak into its env.
     delete env.XAI_API_KEY;
     delete env.XAI_BASE_URL;
+    const claudeModel = resolveClaudeCliModel(t.model);
+    env.ANTHROPIC_MODEL = claudeModel;
+    env.ANTHROPIC_DEFAULT_SONNET_MODEL = CLAUDE_SAFE_SONNET;
     if (t.apiKey) env.ANTHROPIC_API_KEY = t.apiKey;
-    if (t.baseUrl) env.ANTHROPIC_BASE_URL = t.baseUrl;
+    if (t.baseUrl && /anthropic/i.test(t.baseUrl)) env.ANTHROPIC_BASE_URL = t.baseUrl;
   } else {
     args = grokArgs({ prompt, model: t.model, work, sessionId: randomUUID() });
     // hostEnv copies process.env. OAuth is auth.json; a droplet XAI_API_KEY must not shadow it.
@@ -1102,6 +1105,21 @@ export async function runTurn(body: TurnBody, emit: EmitTurnEvent, opts: RunTurn
     // login" writes to. Point at it, and make the scratch dir writable by that
     // user or the CLI cannot create its session files.
     env.HOME = runAs.home;
+    env.USER = runAs.user;
+    env.LOGNAME = runAs.user;
+    env.SHELL = "/bin/bash";
+    // systemd injects these into the harness; Claude's API client has treated
+    // them as part of a broken auth/model path (404 model_not_found).
+    delete env.MEMORY_PRESSURE_WATCH;
+    delete env.MEMORY_PRESSURE_WRITE;
+    delete env.JOURNAL_STREAM;
+    delete env.INVOCATION_ID;
+    delete env.SYSTEMD_EXEC_PID;
+    delete env.SUDO_USER;
+    delete env.SUDO_UID;
+    delete env.SUDO_GID;
+    delete env.SUDO_COMMAND;
+    delete env.SUDO_HOME;
     try {
       await fs.chmod(work, 0o777);
     } catch {
@@ -1207,12 +1225,30 @@ export async function runTurn(body: TurnBody, emit: EmitTurnEvent, opts: RunTurn
 }
 
 function defaultSpawnGrok(spec: GrokSpawnSpec): HarnessChild {
-  const child = spawn(spec.bin, spec.args, {
-    env: spec.env,
-    cwd: spec.cwd,
-    stdio: ["pipe", "pipe", "pipe"],
-    ...(Number.isFinite(spec.uid) ? { uid: spec.uid, gid: spec.gid } : {}),
-  });
+  // Node spawn({uid,gid}) 404s Claude's first API call as model_not_found.
+  // sudo -u sets SUDO_* and Claude then refuses --dangerously-skip-permissions.
+  // setpriv matches the working desk probe: drop to sub8 without sudo env.
+  const claudeAsUser = Number.isFinite(spec.uid) && /claude/i.test(String(spec.bin));
+  const child = claudeAsUser
+    ? spawn(
+        "setpriv",
+        [
+          `--reuid=${spec.uid}`,
+          `--regid=${spec.gid}`,
+          "--init-groups",
+          "--inh-caps=-all",
+          "--",
+          spec.bin,
+          ...spec.args,
+        ],
+        { env: spec.env, cwd: spec.cwd, stdio: ["pipe", "pipe", "pipe"] },
+      )
+    : spawn(spec.bin, spec.args, {
+        env: spec.env,
+        cwd: spec.cwd,
+        stdio: ["pipe", "pipe", "pipe"],
+        ...(Number.isFinite(spec.uid) ? { uid: spec.uid, gid: spec.gid } : {}),
+      });
   try {
     child.stdin.end();
   } catch {

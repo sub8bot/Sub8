@@ -298,6 +298,28 @@ await test("cloudStreamProbeUrl uses the desk IPv4 and display port", () => {
   assert.equal(account.cloudStreamProbeUrl({}), "");
 });
 
+await test("cloud teammate identityId drives harness", () => {
+  const computer = {
+    id: "cmp_abc",
+    status: "assigned",
+    sku: "vm.4g",
+    ipv4: "1.2.3.4",
+    streamUrl: "http://1.2.3.4:3000/vnc.html",
+    userId: "u1",
+  };
+  const brain = { grokSignedIn: true, provider: "grok-oauth", model: "grok-4.6", claudeCredentials: true };
+  const grok = account.botFromCloudMember(computer, { id: "cloud-cmp_abc", name: "Chief", role: "chief", display: 1 }, brain);
+  assert.equal(grok.identityId, "cloud-grok");
+  assert.equal(grok.harness.provider, "grok-build");
+  const claude = account.botFromCloudMember(
+    computer,
+    { id: "cloud-cmp_abc-scout", name: "Scout", role: "worker", display: 2, identityId: "cloud-claude" },
+    brain,
+  );
+  assert.equal(claude.identityId, "cloud-claude");
+  assert.equal(claude.harness.provider, "claude");
+});
+
 await test("live cloud desk bot id is CSS-safe and has an octopus", () => {
   const bot = account.botFromComputer({
     id: "cmp_abc",

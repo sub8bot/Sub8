@@ -83,11 +83,11 @@ def _unregister(proc: subprocess.Popen) -> None:
         _RUNNING[:] = [r for r in _RUNNING if r["proc"] is not proc]
 
 
-# A turn has no natural end: `--max-turns 24` bounds agent turns, not wall time,
-# so a grok child that hangs on I/O held its thread and its memory forever. The
-# container is capped at --memory 3g and a shared desk runs one turn per
-# teammate, so unbounded concurrent turns is how that cap gets hit. desk-agent.py
-# puts a timeout on every single subprocess call; this was the odd one out.
+# A turn has no natural end. `--max-turns` is omitted so Grok can finish a
+# long desk job. Wall time is still bounded below so a hung child cannot hold
+# the thread and its memory forever. The container is capped at --memory 3g
+# and a shared desk runs one turn per teammate. desk-agent.py puts a timeout
+# on every single subprocess call; this was the odd one out.
 TURN_TIMEOUT_S = int(os.environ.get("DESK_TURN_TIMEOUT_S") or "900")
 MAX_CONCURRENT_TURNS = int(os.environ.get("DESK_MAX_TURNS") or "3")
 _TURN_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_TURNS)
@@ -206,8 +206,6 @@ def run_grok_turn(prompt: str, emit, bot_id: str = "", display: int = 1) -> str:
         "bypassPermissions",
         "--always-approve",
         "--no-alt-screen",
-        "--max-turns",
-        "24",
         "--cwd",
         WORK,
         "--session-id",

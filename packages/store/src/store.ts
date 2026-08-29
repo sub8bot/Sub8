@@ -25,6 +25,7 @@ export const dataDir = process.env.SUB8BOT_DATA || process.env.OCTOBOT_DATA || p
 /** Host index (id, vm, team, harness, messages). Desk `profile.json` is canonical identity. */
 export const botsPath = path.join(dataDir, "bots.json");
 const settingsPath = path.join(dataDir, "settings.json");
+export const identitiesPath = path.join(dataDir, "identities.json");
 export const conversationsDir = path.join(dataDir, "conversations");
 export const screensDir = path.join(dataDir, "screens");
 
@@ -283,6 +284,7 @@ function normalizeHarness(h: HarnessInput = {}): HarnessSettings {
     "hermes",
     "claude",
     "codex",
+    "cursor",
     "ollama",
     "lmstudio",
     "spacexai",
@@ -351,6 +353,32 @@ export async function loadSettings(): Promise<Settings> {
   if (JSON.stringify(raw.harness || {}) !== JSON.stringify(next.harness)) {
     await writeJsonAtomic(settingsPath, next);
   }
+  return next;
+}
+
+/** One named session in `data/identities.json`. Normalized by `@sub8/identities`. */
+export interface StoredIdentity {
+  id: string;
+  [key: string]: unknown;
+}
+
+export async function loadIdentities(): Promise<StoredIdentity[]> {
+  await ensure();
+  try {
+    const raw = JSON.parse(await fs.readFile(identitiesPath, "utf8")) as unknown;
+    const rows = Array.isArray(raw) ? raw : (raw as { identities?: unknown })?.identities;
+    if (!Array.isArray(rows)) return [];
+    return rows.filter((row): row is StoredIdentity => Boolean(row && typeof row === "object" && typeof (row as StoredIdentity).id === "string"));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") throw err;
+    return [];
+  }
+}
+
+export async function saveIdentities(rows: readonly StoredIdentity[]): Promise<StoredIdentity[]> {
+  await ensure();
+  const next = rows.filter((row) => row && typeof row.id === "string");
+  await writeJsonAtomic(identitiesPath, next);
   return next;
 }
 
@@ -501,6 +529,7 @@ export function newBot(partial: BotSeed = {}): Bot {
     messages: [],
     routines: [],
     grokSessionId: id,
+    identityId: typeof partial.identityId === "string" ? partial.identityId : "",
     harness: partial.harness && typeof partial.harness === "object" ? partial.harness : { provider: "default" },
     pinned: Boolean(partial.pinned),
     section: partial.section || "",

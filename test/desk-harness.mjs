@@ -396,14 +396,14 @@ async function pollHealth(port, want, ms = 20000) {
   assert.equal(isClaudeProvider("grok-oauth"), false);
   assert.equal(isClaudeProvider(""), false);
 
-  const args = claudeArgs({ prompt: "hi", model: "claude-sonnet-4-5", sessionId: "s1", mcpFile: "/tmp/mcp.json", system: "RULES" });
+  const args = claudeArgs({ prompt: "hi", model: "haiku", sessionId: "s1", mcpFile: "/tmp/mcp.json", system: "RULES" });
   assert.equal(args[args.indexOf("--output-format") + 1], "stream-json");
   assert.equal(args[args.indexOf("--mcp-config") + 1], "/tmp/mcp.json");
   assert.ok(args.includes("--strict-mcp-config"), "must not inherit ambient MCP config");
   assert.equal(args[args.indexOf("--session-id") + 1], "s1");
   assert.equal(args[args.indexOf("--append-system-prompt") + 1], "RULES");
-  assert.equal(args[args.indexOf("--model") + 1], "claude-sonnet-4-5");
-  assert.ok(args.includes("--fallback-model"), "quota fallback must survive");
+  assert.equal(args[args.indexOf("--model") + 1], "haiku");
+  assert.equal(args[args.indexOf("--fallback-model") + 1], "haiku");
   assert.ok(!claudeArgs({ prompt: "hi", sessionId: "s2", mcpFile: "/tmp/m.json" }).includes("--append-system-prompt"));
 
   // Claude stream-json folds into the same {tool,delta,done} the Worker reads.

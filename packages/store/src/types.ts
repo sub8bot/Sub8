@@ -88,6 +88,7 @@ export interface Bot {
   messages?: Message[] | undefined;
   routines?: StoredRoutine[] | undefined;
   grokSessionId?: string | undefined;
+  identityId?: string | undefined;
   harness?: BotHarness | undefined;
   pinned?: boolean | undefined;
   section?: string | undefined;
@@ -108,6 +109,7 @@ export interface BotSeed {
   icon?: string | undefined;
   avatar?: Partial<BotAvatar> | undefined;
   harness?: BotHarness | undefined;
+  identityId?: string | undefined;
   pinned?: boolean | undefined;
   section?: string | undefined;
   unread?: boolean | undefined;

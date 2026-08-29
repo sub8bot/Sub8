@@ -11,6 +11,8 @@ import * as routines from "@sub8/automations";
 import { runTurn, publicBot, pingHarness, webSearch, orchestratorReply, isChatQuestion, HARNESS_PROVIDERS, harnessFor, setTeamDispatch, setTeamReply, setStopBot, setEndTurn } from "./agent.mjs";
 import { detectLocalHarnesses } from "./local-llm.mjs";
 import { collectHarnessStatus } from "./harness-status.mjs";
+import * as identities from "./identities.mjs";
+import type { Identity } from "@sub8/identities";
 import { applySimulate } from "../web/brain-setup.mjs";
 import { looksLikeAuthFailure, rewriteHarnessOutput } from "@sub8/harness-auth";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -96,6 +98,8 @@ type IndexBot = store.Bot & {
   teamRole?: string;
   section?: string;
   grokSessionId?: string;
+  harnessSessionId?: string;
+  harnessSessionFresh?: boolean;
   harness?: store.BotHarness & { provider?: string; model?: string };
   vm?: (store.BotVm & {
     // Detach and destroy blank these with `null`; every reader treats that as
@@ -327,6 +331,7 @@ function toClient(bot: store.Bot, opts: unknown = {}) {
     busy: busyIds.has(bot.id),
     storage: {
       sessionId: bot.id,
+      harnessSessionId: bot.harnessSessionId || bot.grokSessionId || bot.id,
       botsFile: store.botsPath,
       conversationFile: store.conversationPath(bot.id),
       screensFile: store.screenPath(bot.id),
@@ -895,6 +900,7 @@ app.patch("/api/cloud/draft/bots/:id", async (req, res) => {
         botId: req.params.id,
         name: req.body?.name,
         job: req.body?.job || req.body?.description || req.body?.instructions,
+        identityId: typeof req.body?.identityId === "string" ? req.body.identityId : undefined,
       });
       // Same key, same object: `snap.bot` spread back over itself.
       res.json({ bot: snap.bot, ...(snap as Omit<typeof snap, "bot">) });
@@ -937,7 +943,12 @@ app.post("/api/cloud/draft/bots/:id/messages", async (req, res) => {
       const { computerId, botId } = account.cloudMessageIdentity(req.body || {}, req.params.id);
       const text = String(req.body?.content || "").trim();
       if (!text) return res.status(422).json({ error: "empty", code: "EMPTY" });
-      const turned = await account.liveBrainChat({ computerId, content: text, botId });
+      const turned = await account.liveBrainChat({
+        computerId,
+        content: text,
+        botId,
+        identityId: typeof req.body?.identityId === "string" ? req.body.identityId : undefined,
+      });
       const snap = await account.liveSnapshot();
       // `liveBrainChat` answers `unknown` — account.mts moves the Worker's turn
       // payload without reading one. `CloudTurnReply` is the three fields this
@@ -1400,6 +1411,28 @@ app.get("/api/vault/accounts/:id/reveal", async (req, res) => {
   res.json(acc);
 });
 
+app.get("/api/vault/export", async (_req, res) => {
+  try {
+    const backup = await vault.exportVault();
+    res.setHeader("Content-Disposition", 'attachment; filename="sub8-vault.json"');
+    res.json(backup);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/vault/import", async (req, res) => {
+  try {
+    const mode = req.body?.mode === "merge" ? "merge" : "replace";
+    const snap = await vault.importVault(req.body, mode);
+    const bots = (await store.loadBots()) as IndexBot[];
+    for (const bot of bots) vault.pushListToBot(bot as vault.VaultBot).catch(() => {});
+    res.json(snap);
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
 app.get("/api/computers/:id/preview", async (req, res) => {
   const row = await computers.getComputer(req.params.id);
   if (!row) return res.status(404).end();
@@ -1668,6 +1701,17 @@ app.put("/api/settings", async (req, res) => {
     next.harness = { ...prev.harness, ...req.body.harness };
     if (req.body.harness.apiKey === "••••") next.harness.apiKey = prev.harness.apiKey;
   }
+  if (hostCli.shouldRotateHarnessSession(prev.harness?.provider, next.harness?.provider)) {
+    const bots = (await store.loadBots()) as IndexBot[];
+    for (const b of bots) {
+      const local = b.harness?.provider;
+      if (local && local !== "default") continue;
+      b.harnessSessionId = randomUUID();
+      b.grokSessionId = b.harnessSessionId;
+      b.harnessSessionFresh = true;
+      await store.upsertBot(b);
+    }
+  }
   // `next` is the stored record with a request body spread over it, so every
   // key it did not carry keeps the type `loadSettings` gave it and the ones it
   // did are still claims. `saveSettings` normalises the record it is handed —
@@ -1717,6 +1761,76 @@ app.get("/api/harness/grok-login", async (req, res) => {
   // which erases: the declared shape claimed ok:true while the runtime spread
   // job.ok over it. Dropping both leaves the same response with an honest type.
   res.json({ ...job, signedIn: signed.ok, container: box });
+});
+
+app.get("/api/identities", async (req, res) => {
+  try {
+    const settings = await store.loadSettings();
+    const status = await collectHarnessStatus(settings);
+    let rows = await identities.ensureHostIdentities(status);
+    let cloudCtx: identities.CloudIdentityInput = {};
+    if (account.cloudFeaturesEnabled()) {
+      try {
+        const acct = await account.loadAccount();
+        if (account.sessionLive(acct.session)) {
+          const computerId = String(req.query?.computerId || "").trim();
+          const brain = await account.liveBrain().catch(() => null);
+          let claude: { loggedIn?: unknown; email?: unknown } | null = null;
+          if (computerId) {
+            const raw = (await account.liveBrainClaudeAuth(computerId).catch(() => null)) as
+              | { loggedIn?: unknown; email?: unknown; raw?: { loggedIn?: unknown; email?: unknown } }
+              | null;
+            claude = (raw?.raw || raw) as { loggedIn?: unknown; email?: unknown } | null;
+          }
+          cloudCtx = { brain, computerId, claude };
+          rows = await identities.ensureCloudIdentities(cloudCtx);
+        }
+      } catch {
+        /* cloud brain optional */
+      }
+    }
+    res.json({
+      identities: rows.map((row) =>
+        row.place === "cloud" ? identities.decorateCloudIdentity(row, cloudCtx) : identities.decorateIdentity(row, status),
+      ),
+      catalog: (await import("@sub8/identities")).catalog(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/identities", async (req, res) => {
+  try {
+    const label = String(req.body?.label || "").trim();
+    const runtimeRef = req.body?.runtimeRef ? String(req.body.runtimeRef) : "";
+    const row = await identities.addIdentity({
+      provider: String(req.body?.provider || "").trim(),
+      place: req.body?.place === "cloud" ? "cloud" : "local",
+      ...(label ? { label } : {}),
+      isolated: req.body?.isolated !== false,
+      ...(runtimeRef ? { runtimeRef } : {}),
+    });
+    res.json({ identity: row });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+app.patch("/api/identities/:id", async (req, res) => {
+  const patch: Partial<Identity> = {};
+  if (typeof req.body?.label === "string") patch.label = req.body.label;
+  if (typeof req.body?.subject === "string") patch.subject = req.body.subject;
+  if (typeof req.body?.model === "string") patch.model = req.body.model;
+  const row = await identities.patchIdentity(req.params.id, patch);
+  if (!row) return res.status(404).json({ error: "not found" });
+  res.json({ identity: row });
+});
+
+app.delete("/api/identities/:id", async (req, res) => {
+  const ok = await identities.removeIdentity(req.params.id);
+  if (!ok) return res.status(404).json({ error: "not found" });
+  res.json({ ok: true });
 });
 
 app.get("/api/harness/local", async (_req, res) => {
@@ -1788,6 +1902,7 @@ app.get("/api/bots", async (_req, res) => {
 });
 
 async function publicTeams() {
+  await teams.pruneSoloTeams();
   const [rows, bots] = await Promise.all([teams.listTeams(), store.loadBots() as Promise<IndexBot[]>]);
   const out = [];
   for (const t of rows) {
@@ -1974,6 +2089,15 @@ app.patch("/api/teams/:id/job", async (req, res) => {
   if (bumped.renamed?.length) broadcast("bots", (await store.loadBots()).map(toClient));
   broadcast("teams", await publicTeams());
   res.json(bumped.job);
+});
+
+app.delete("/api/teams/:id/job", async (req, res) => {
+  const team = await teams.getTeam(req.params.id);
+  if (!team) return res.status(404).json({ error: "not found" });
+  await teams.clearTeamJob(team.id);
+  broadcast("job", { teamId: team.id, job: null });
+  broadcast("teams", await publicTeams());
+  res.json({ ok: true });
 });
 
 app.patch("/api/teams/:id", async (req, res) => {
@@ -2164,7 +2288,17 @@ app.post("/api/bots/:id/duplicate", async (req, res) => {
 app.patch("/api/bots/:id", async (req, res) => {
   const bot = await store.getBot(req.params.id) as IndexBot | null;
   if (!bot) return res.status(404).json({ error: "not found" });
+  const settings = await store.loadSettings();
+  const prevEffective = harnessFor(bot as AgentBotRow, settings as Parameters<typeof harnessFor>[1]).provider;
+  const prevIdentity = String(bot.identityId || "");
   const body = { ...req.body };
+  if (typeof body.identityId === "string" && body.identityId) {
+    const pool = await identities.loadNormalizedIdentities();
+    const picked = pool.find((row) => row.id === body.identityId);
+    if (picked) {
+      bot.harness = { ...(bot.harness || {}), provider: picked.provider, model: body.harness?.model || bot.harness?.model || picked.model };
+    }
+  }
   if (body.avatar && typeof body.avatar === "object") {
     // `BotAvatar` also carries `body`; this route has never written it, and
     // `loadBots` fills a missing third field in on the way back out.
@@ -2175,6 +2309,13 @@ app.patch("/api/bots/:id", async (req, res) => {
     delete body.avatar;
   }
   Object.assign(bot, body, { id: bot.id, vm: bot.vm, messages: bot.messages, routines: bot.routines });
+  const nextEffective = harnessFor(bot as AgentBotRow, settings as Parameters<typeof harnessFor>[1]).provider;
+  const nextIdentity = String(bot.identityId || "");
+  if (hostCli.shouldRotateHarnessSession(prevEffective, nextEffective) || (prevIdentity && nextIdentity && prevIdentity !== nextIdentity)) {
+    bot.harnessSessionId = randomUUID();
+    bot.grokSessionId = bot.harnessSessionId;
+    bot.harnessSessionFresh = true;
+  }
   await store.upsertBot(bot);
   broadcast("bot", toClient(bot));
   res.json(toClient(bot));
@@ -3710,6 +3851,14 @@ async function restoreDeskAutomations(bot: IndexBot) {
 }
 
 const httpServer = app.listen(PORT, "127.0.0.1", async () => {
+  const migrated = store.migrateUserData(dataDir, { extraSources: [path.join(appRoot, "data")] });
+  if (migrated.copied.length || migrated.clonedFrom) {
+    console.log(
+      "migrated user data",
+      migrated.clonedFrom ? `cloned ${migrated.clonedFrom}` : "",
+      migrated.copied.length ? `copied ${migrated.copied.join(", ")}` : "",
+    );
+  }
   console.log(`Sub8 http://127.0.0.1:${PORT}`);
   try {
     const hints = await collectRecoverHints();

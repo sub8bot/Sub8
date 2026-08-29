@@ -12,6 +12,8 @@ scripts/.cache
 /resume.md
 /RESUME.md
 /RESUME2.md
+/AGENTS.md
+/LOOP.MD
 /docs/monorepo.md
 /docs/workspace.md
 /tools/test-dashboard.mjs
@@ -86,6 +88,7 @@ plan/
 /server/harness-status.mjs
 /server/hermes-acp.mjs
 /server/host-cli.mjs
+/server/identities.mjs
 /server/index.mjs
 /server/isolation.mjs
 /server/local-llm.mjs

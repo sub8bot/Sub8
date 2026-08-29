@@ -62,6 +62,22 @@ assert.match(sentinel, /%%FENCE0%% is the sentinel/, "the literal text was repla
 const lonely = formatChatText("hello %%FENCE0%% world");
 assert.match(lonely, /hello %%FENCE0%% world/, "the literal text was silently deleted");
 
+// Bold wrapping a sentence that ends in a URL + `:**`. Autolink used to eat the
+// closing `**`, so </strong> landed inside href and the rest of the message
+// (every following line in the same bubble) stayed bold.
+const boldUrl = formatChatText(
+  "**Live on https://freebots.lol/media:**\n- **u/voltgarden** — ok\nplain after",
+);
+assert.match(boldUrl, /<strong>Live on <a href="https:\/\/freebots\.lol\/media"/);
+assert.match(boldUrl, /<strong>u\/voltgarden<\/strong>/);
+assert.match(boldUrl, /plain after/);
+assert.equal((boldUrl.match(/<strong>/g) || []).length, (boldUrl.match(/<\/strong>/g) || []).length);
+assert.doesNotMatch(boldUrl, /href="[^"]*<\/strong>/);
+
+const boldBareUrl = formatChatText("**https://example.com/path**");
+assert.match(boldBareUrl, /<strong><a href="https:\/\/example.com\/path"/);
+assert.match(boldBareUrl, /<\/a><\/strong>/);
+
 // NUL is the new delimiter, so it is stripped from input; a pasted NUL must not
 // be able to forge a placeholder.
 const forged = formatChatText("hi \u0000FENCE0\u0000 there\n\n```\nreal\n```");

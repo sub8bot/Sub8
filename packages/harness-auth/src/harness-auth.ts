@@ -11,6 +11,10 @@ export const HARNESS_LABELS: Record<string, string> = {
   ollama: "Ollama",
   lmstudio: "LM Studio",
   spacexai: "SpaceXAI",
+  openrouter: "OpenRouter",
+  openai: "OpenAI",
+  custom: "Custom API",
+  sub8: "Sub8",
 };
 
 /**
@@ -99,6 +103,19 @@ export function parseClaudeAuthStatus(out: unknown): ClaudeAuthStatus {
   const expired = /expired|log in again|not logged in|unauthenticated/i.test(t);
   if (expired) loggedIn = false;
   return { signedIn: Boolean(loggedIn), email, expired };
+}
+
+export type IdentityProbeStatus = "signed_in" | "signed_out" | "expired" | "not_running" | "not_installed";
+
+export function statusForIdentity(row: HarnessRow | null | undefined): IdentityProbeStatus {
+  if (!row) return "not_installed";
+  if (row.expired) return "expired";
+  if (row.installed === false) return "not_installed";
+  if (row.signedIn && row.ready) return "signed_in";
+  const kind = String(row.kind || "");
+  if ((kind === "openai-local" || row.id === "ollama" || row.id === "lmstudio") && !row.ready) return "not_running";
+  if (!row.signedIn) return "signed_out";
+  return row.ready ? "signed_in" : "signed_out";
 }
 
 export function applyAuthAlert(row: HarnessRow | null | undefined): HarnessRow | null | undefined {

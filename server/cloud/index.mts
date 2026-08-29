@@ -247,14 +247,15 @@ export interface LiveBrainChatOptions extends ComputerIdOptions {
   botId?: string | undefined;
   display?: unknown;
   persistUser?: boolean | undefined;
+  identityId?: string | undefined;
 }
 
-export async function liveBrainChat({ token, computerId, content, botId, display, persistUser }: LiveBrainChatOptions = {}) {
+export async function liveBrainChat({ token, computerId, content, botId, display, persistUser, identityId }: LiveBrainChatOptions = {}) {
   return http.cloudApi("/api/brain/chat", {
     baseUrl: needBase(),
     token,
     method: "POST",
-    body: { computerId, content, botId, display, persistUser },
+    body: { computerId, content, botId, display, persistUser, identityId },
   });
 }
 
@@ -283,6 +284,7 @@ export interface LiveMateOptions extends ComputerIdOptions {
   botId?: string | undefined;
   name?: string | undefined;
   job?: string | undefined;
+  identityId?: string | undefined;
 }
 
 export async function liveBrainCreateMate({ token, computerId, name, job }: LiveMateOptions = {}) {
@@ -294,12 +296,12 @@ export async function liveBrainCreateMate({ token, computerId, name, job }: Live
   });
 }
 
-export async function liveBrainPatchMate({ token, computerId, botId, name, job }: LiveMateOptions = {}) {
+export async function liveBrainPatchMate({ token, computerId, botId, name, job, identityId }: LiveMateOptions = {}) {
   return http.cloudApi("/api/brain/team", {
     baseUrl: needBase(),
     token,
     method: "PATCH",
-    body: { computerId, botId, name, job },
+    body: { computerId, botId, name, job, identityId },
   });
 }
 

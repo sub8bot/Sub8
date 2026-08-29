@@ -4,7 +4,8 @@ import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { dataDir } from "./paths.mjs";
+import { appRoot, dataDir } from "./paths.mjs";
+import { copyMissingFiles, legacyDataDirs, shouldMigrateInto, VAULT_FILENAMES } from "@sub8/store";
 import * as vm from "./vm.mjs";
 
 /** One saved login, as it sits inside the encrypted file. */
@@ -38,6 +39,20 @@ export interface VaultFile {
   accounts: VaultAccount[];
   grants: VaultGrants;
 }
+
+/** Portable backup: groups, secrets, and sharing. Not the on-disk encryption key. */
+export const VAULT_EXPORT_KIND = "sub8-vault";
+
+export interface VaultBackup {
+  kind: typeof VAULT_EXPORT_KIND;
+  version: 1;
+  exportedAt: number;
+  groups: VaultGroup[];
+  accounts: VaultAccount[];
+  grants: VaultGrants;
+}
+
+export type VaultImportMode = "replace" | "merge";
 
 /** What leaves this module: the account minus its password, plus a flag. */
 export type PublicAccount = Omit<VaultAccount, "password"> & { hasPassword: boolean };
@@ -217,7 +232,14 @@ function openSealed(raw: string, key: Buffer): string {
   return Buffer.concat([decipher.update(data), decipher.final()]).toString("utf8");
 }
 
+function recoverVaultFile(): void {
+  if (fsSync.existsSync(VAULT_PATH)) return;
+  if (!shouldMigrateInto(dataDir)) return;
+  copyMissingFiles(dataDir, legacyDataDirs(os.homedir(), [path.join(appRoot, "data")]), VAULT_FILENAMES);
+}
+
 async function readVault(): Promise<VaultFile> {
+  recoverVaultFile();
   const key = await loadOrCreateKey();
   if (!fsSync.existsSync(VAULT_PATH)) return emptyVault();
   try {
@@ -310,6 +332,139 @@ function snapshotUnlocked(v: VaultFile): VaultSnapshot {
     accounts: v.accounts.map(publicAccount),
     grants: v.grants,
   };
+}
+
+function asText(value: unknown): string {
+  return typeof value === "string" ? value : value == null ? "" : String(value);
+}
+
+function asTime(value: unknown, fallback: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function backupFromUnknown(raw: unknown): VaultBackup {
+  if (raw && typeof raw === "object" && "vault" in raw) {
+    const nested = (raw as { vault?: unknown }).vault;
+    if (nested && typeof nested === "object") return backupFromUnknown(nested);
+  }
+  if (!raw || typeof raw !== "object") throw new Error("Not a vault backup.");
+  const doc = raw as Record<string, unknown>;
+  const kind = asText(doc.kind).trim();
+  if (kind && kind !== VAULT_EXPORT_KIND) throw new Error("Not a Sub8 vault backup.");
+  const now = Date.now();
+  const groups: VaultGroup[] = [];
+  const groupIds = new Set<string>();
+  for (const row of Array.isArray(doc.groups) ? doc.groups : []) {
+    if (!row || typeof row !== "object") continue;
+    const g = row as Record<string, unknown>;
+    const id = asText(g.id).trim() || randomUUID();
+    if (groupIds.has(id)) continue;
+    groupIds.add(id);
+    groups.push({
+      id,
+      name: asText(g.name).trim() || "Group",
+      createdAt: asTime(g.createdAt, now),
+    });
+  }
+  const accounts: VaultAccount[] = [];
+  const accountIds = new Set<string>();
+  for (const row of Array.isArray(doc.accounts) ? doc.accounts : []) {
+    if (!row || typeof row !== "object") continue;
+    const a = row as Record<string, unknown>;
+    const id = asText(a.id).trim() || randomUUID();
+    if (accountIds.has(id)) continue;
+    accountIds.add(id);
+    let groupId = asText(a.groupId).trim();
+    if (groupId && !groupIds.has(groupId)) groupId = "";
+    const site = asText(a.site).trim();
+    const username = asText(a.username);
+    const label = asText(a.label).trim() || site || username.trim() || "Account";
+    const lastUsedRaw = a.lastUsedAt;
+    accounts.push({
+      id,
+      groupId,
+      label,
+      site,
+      username,
+      password: asText(a.password),
+      notes: asText(a.notes),
+      createdAt: asTime(a.createdAt, now),
+      updatedAt: asTime(a.updatedAt, now),
+      lastUsedAt: lastUsedRaw == null || lastUsedRaw === "" ? null : asTime(lastUsedRaw, now),
+    });
+  }
+  const grants: VaultGrants = {};
+  if (doc.grants && typeof doc.grants === "object") {
+    for (const [botId, ids] of Object.entries(doc.grants as Record<string, unknown>)) {
+      const key = String(botId || "").trim();
+      if (!key || !Array.isArray(ids)) continue;
+      const allowed = [...new Set(ids.map(String).filter((id) => accountIds.has(id)))];
+      if (allowed.length) grants[key] = allowed;
+    }
+  }
+  return {
+    kind: VAULT_EXPORT_KIND,
+    version: 1,
+    exportedAt: asTime(doc.exportedAt, now),
+    groups,
+    accounts,
+    grants,
+  };
+}
+
+export function parseVaultBackup(raw: unknown): VaultBackup {
+  return backupFromUnknown(raw);
+}
+
+export async function exportVault(): Promise<VaultBackup> {
+  const v = await readVault();
+  return {
+    kind: VAULT_EXPORT_KIND,
+    version: 1,
+    exportedAt: Date.now(),
+    groups: v.groups,
+    accounts: v.accounts,
+    grants: v.grants,
+  };
+}
+
+export async function importVault(raw: unknown, mode: VaultImportMode = "replace"): Promise<VaultSnapshot> {
+  const incoming = parseVaultBackup(raw);
+  const merge = mode === "merge";
+  return withLock(async () => {
+    const current = merge ? await readVault() : emptyVault();
+    const groupsById = new Map(current.groups.map((g) => [g.id, g]));
+    for (const g of incoming.groups) groupsById.set(g.id, g);
+    const accById = new Map(current.accounts.map((a) => [a.id, a]));
+    for (const a of incoming.accounts) {
+      const prev = accById.get(a.id);
+      accById.set(a.id, prev ? { ...prev, ...a, createdAt: prev.createdAt } : a);
+    }
+    const known = new Set(accById.keys());
+    const grants: VaultGrants = merge ? { ...current.grants } : {};
+    if (merge) {
+      for (const botId of Object.keys(grants)) {
+        grants[botId] = (grants[botId] || []).filter((id) => known.has(id));
+        if (!grants[botId].length) delete grants[botId];
+      }
+    }
+    for (const [botId, ids] of Object.entries(incoming.grants)) {
+      const combined = [...new Set([...(merge ? grants[botId] || [] : []), ...ids])].filter((id) =>
+        known.has(id),
+      );
+      if (combined.length) grants[botId] = combined;
+      else delete grants[botId];
+    }
+    const next: VaultFile = {
+      version: 1,
+      groups: [...groupsById.values()],
+      accounts: [...accById.values()],
+      grants,
+    };
+    await writeVault(next);
+    return snapshotUnlocked(next);
+  });
 }
 
 export async function upsertAccount(spec: AccountSpec = {}): Promise<PublicAccount | null> {

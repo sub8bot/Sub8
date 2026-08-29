@@ -15,11 +15,12 @@
 //     -c.extraMetadata.version=<version>.
 //   * The GitHub tag points at the current PUBLIC origin/master commit. No source push.
 //   * Only the built binaries are uploaded. latest*.yml is intentionally omitted
-//     (auto-update is a separate decision — see robustness T9).
+//     (auto-update is a separate decision — see robustness T9). After GitHub,
+//     this PUTs https://sub8.bot/latest.json so the app checks the site first.
 //   * Windows is not Authenticode-signed yet; an unsigned Windows build is allowed (warns).
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,6 +65,69 @@ function capture(cmd, args, opts = {}) {
   return { status: r.status ?? 1, out: (r.stdout || "").trim(), err: (r.stderr || "").trim() };
 }
 
+function cloudBaseUrl() {
+  return String(process.env.SUB8_CLOUD_URL || "https://sub8.bot").replace(/\/$/, "");
+}
+
+function latestPublishToken() {
+  return String(process.env.SUB8_LATEST_TOKEN || process.env.LATEST_PUBLISH_TOKEN || "").trim();
+}
+
+/** Tell sub8.bot what GitHub just shipped. Warns on failure — the GitHub release still stands. */
+async function publishLatestJson(version) {
+  const { latestManifest } = await import("../server/update.mjs");
+  const body = latestManifest(version, { publishedAt: new Date().toISOString() });
+  const token = latestPublishToken();
+  const url = `${cloudBaseUrl()}/api/admin/latest`;
+  if (token) {
+    try {
+      const res = await fetch(url, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "User-Agent": "Sub8-release",
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (res.ok) {
+        ok(`sub8.bot/latest.json -> ${body.tag}`);
+        return true;
+      }
+      warn(`sub8.bot latest.json HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    } catch (err) {
+      warn(`sub8.bot latest.json: ${err instanceof Error ? err.message : err}`);
+    }
+  } else {
+    warn("SUB8_LATEST_TOKEN unset — trying wrangler kv put");
+  }
+  const cloudDir = String(process.env.SUB8_CLOUD_DIR || path.join(ROOT, "cloud"));
+  if (!existsSync(path.join(cloudDir, "wrangler.jsonc"))) {
+    warn(`no wrangler.jsonc in ${cloudDir} — skip latest.json`);
+    return false;
+  }
+  const tmp = path.join(tmpdir(), `sub8-latest-${version}.json`);
+  writeFileSync(tmp, JSON.stringify(body));
+  try {
+    const r = capture("npx", ["wrangler", "kv", "key", "put", "app:latest", "--binding", "KV", "--remote", `--path=${tmp}`], {
+      cwd: cloudDir,
+    });
+    if (r.status !== 0) {
+      warn(`wrangler kv put latest.json failed: ${r.err || r.out}`);
+      return false;
+    }
+    ok(`sub8.bot/latest.json -> ${body.tag} (wrangler kv)`);
+    return true;
+  } finally {
+    try {
+      rmSync(tmp);
+    } catch {
+      /* tmp */
+    }
+  }
+}
+
 // ---- arg parsing ----------------------------------------------------------
 const USAGE = `Sub8 deterministic release
 
@@ -91,6 +155,7 @@ Stages (all blocking, non-zero exit on any failure):
   3. Verify: mac dmgs notarized (spctl accepted), app.asar has cloud OFF, per-OS
      signing status. Windows unsigned is allowed (warns).
   4. Publish (only with --publish): tag current origin/master, upload the 8 binaries.
+  5. PUT https://sub8.bot/latest.json so in-app update checks the site first.
 
 Examples:
   node scripts/release.mjs 0.3.32              # dry-run
@@ -105,7 +170,7 @@ if (argv.includes("-h") || argv.includes("--help")) {
 
 const flags = new Set(argv.filter((a) => a.startsWith("-")));
 const positionals = argv.filter((a) => !a.startsWith("-"));
-const KNOWN = new Set(["--publish", "--dry-run", "--skip-build", "--skip-notarize", "-h", "--help"]);
+const KNOWN = new Set(["--publish", "--dry-run", "--skip-build", "--skip-notarize", "--replace-published", "-h", "--help"]);
 for (const f of flags) if (!KNOWN.has(f)) die(`unknown flag: ${f}\n\n${USAGE}`);
 
 if (positionals.length === 0) die(`missing <version>.\n\n${USAGE}`);
@@ -160,7 +225,7 @@ if (head && head !== TARGET_SHA) {
 const ghOk = capture("gh", ["--version"]).status === 0;
 if (PUBLISH) {
   if (!ghOk) die("`gh` (GitHub CLI) is not installed but --publish was requested.");
-  const auth = capture("gh", ["auth", "status"]);
+  const auth = capture("gh", ["auth", "status", "--hostname", "github.com"]);
   if (auth.status !== 0) die("`gh auth status` failed — run `gh auth login` before --publish.");
   ok("gh installed and authenticated");
 } else if (!ghOk) {
@@ -327,6 +392,12 @@ console.log(`    Tag:    ${TAG}  ->  origin/master @ ${shortTarget}  (no source 
 console.log(`    Assets it WOULD upload (${uploadFiles.length}):`);
 for (const f of uploadFiles) console.log(`      - dist/${f}`);
 console.log(`    latest*.yml: omitted by design (auto-update decision pending, T9).`);
+if (VERSION.includes("-")) {
+  console.log(`    latest.json: skipped (prerelease — GitHub /releases/latest and sub8.bot stay on the last stable).`);
+} else {
+  console.log(`    latest.json: PUT ${cloudBaseUrl()}/api/admin/latest after GitHub.`);
+  if (!latestPublishToken()) warn("SUB8_LATEST_TOKEN unset — publish will try wrangler kv, then skip.");
+}
 
 if (!PUBLISH) {
   console.log(`\n${yellow("DRY-RUN complete.")} Re-run with ${bold("--publish")} to cut the release.`);
@@ -398,6 +469,13 @@ try {
 }
 if (!published) {
   die(`upload finished but ${TAG} is not published (still a draft, or the tag is missing). Nothing was announced.`);
+}
+
+if (IS_PRERELEASE) {
+  warn(`not writing sub8.bot/latest.json — ${TAG} is a prerelease`);
+} else {
+  stage("Publish latest.json to sub8.bot");
+  await publishLatestJson(VERSION);
 }
 
 console.log(`\n${green("RELEASE PUBLISHED:")} ${TAG} on ${REPO}${IS_PRERELEASE ? " (prerelease)" : ""}`);

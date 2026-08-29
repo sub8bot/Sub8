@@ -68,6 +68,7 @@ export interface DraftBotRow {
   instructions?: string | undefined;
   avatar?: unknown;
   harness?: DraftHarness | undefined;
+  identityId?: string | undefined;
   messages?: DraftMessage[] | undefined;
   routines?: unknown[] | undefined;
   computerId?: string | undefined;
@@ -125,6 +126,7 @@ function publicBot(row: DraftBotRow) {
     instructions: row.instructions || "",
     avatar: row.avatar || { expression: "calm", animation: "idle", body: "rounder" },
     harness: row.harness || { provider: "grok-build", model: "grok-4.6" },
+    identityId: row.identityId || "",
     messages: row.messages || [],
     routines: row.routines || [],
     computerId: row.computerId,
@@ -285,6 +287,7 @@ export interface DraftBotPatch {
   color?: string | undefined;
   avatar?: Record<string, unknown> | undefined;
   harness?: DraftHarness | undefined;
+  identityId?: string | undefined;
   [key: string]: unknown;
 }
 
@@ -297,6 +300,7 @@ export async function patchBot(id: string, patch: DraftBotPatch = {}) {
   }
   if (patch.avatar) row.avatar = { ...(row.avatar || {}), ...patch.avatar };
   if (patch.harness) row.harness = { ...(row.harness || {}), ...patch.harness };
+  if (patch.identityId != null) row.identityId = String(patch.identityId).trim();
   await writeAll(data);
   const desk = data.computers.find((c) => c.id === row.computerId);
   return publicBot({ ...row, _computer: desk });
