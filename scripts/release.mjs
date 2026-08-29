@@ -416,7 +416,7 @@ const existing = capture("gh", ["release", "view", TAG, "--repo", REPO, "--json"
 let existingDraft = false;
 if (existing.status === 0) {
   try {
-    existingDraft = Boolean(JSON.parse(existing.stdout || "{}").isDraft);
+    existingDraft = Boolean(JSON.parse(existing.out || "{}").isDraft);
   } catch {
     existingDraft = false;
   }
@@ -462,7 +462,7 @@ if (existing.status === 0 && existingDraft) {
 const after = capture("gh", ["release", "view", TAG, "--repo", REPO, "--json", "isDraft,tagName"]);
 let published = false;
 try {
-  const row = JSON.parse(after.stdout || "{}");
+  const row = JSON.parse(after.out || "{}");
   published = after.status === 0 && row.isDraft === false && row.tagName === TAG;
 } catch {
   published = false;
