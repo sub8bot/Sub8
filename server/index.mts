@@ -21,6 +21,7 @@ import { appRoot, dataDir } from "./paths.mjs";
 import * as appUpdate from "./update.mjs";
 import * as vault from "./vault.mjs";
 import * as computers from "./computers.mjs";
+import * as deskImages from "./desk-images.mjs";
 import * as hostCli from "./host-cli.mjs";
 import { resolveZone } from "./context.mjs";
 import * as teams from "./teams.mjs";
@@ -1504,6 +1505,67 @@ async function computerBot(row: computers.Computer) {
   const bots = await store.loadBots() as IndexBot[];
   return bots.find((b) => b.vm?.computerId === row.id) || null;
 }
+
+// Image routes must register before POST /:id/:action so Express does not treat
+// "images" as an action name.
+app.get("/api/computers/:id/images", async (req, res) => {
+  const row = await computers.getComputer(req.params.id);
+  if (!row) return res.status(404).json({ error: "not found" });
+  const images = deskImages.readCatalog(dataDir).filter((img) => img.computerId === row.id);
+  res.json({ images });
+});
+
+app.post("/api/computers/:id/images", async (req, res) => {
+  const row = await computers.getComputer(req.params.id);
+  if (!row) return res.status(404).json({ error: "not found" });
+  const dock = await vm.dockerStatus();
+  if (!dock.ok) return res.status(503).json({ error: "Docker is not running." });
+  try {
+    const image = await deskImages.performSnapshot({
+      computerId: row.id,
+      note: typeof req.body?.note === "string" ? req.body.note : "",
+      dataDir,
+      run: deskImages.dockerRunner(),
+      computer: { id: row.id, container: row.container, volume: row.volume },
+    });
+    broadcast("computers", { dirty: true });
+    res.json({ image });
+  } catch (err) {
+    const status = Number((err as { status?: number })?.status) || 500;
+    res.status(status).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/computers/:id/images/:imageId/restore", async (req, res) => {
+  const row = await computers.getComputer(req.params.id);
+  if (!row) return res.status(404).json({ error: "not found" });
+  const dock = await vm.dockerStatus();
+  if (!dock.ok) return res.status(503).json({ error: "Docker is not running." });
+  try {
+    const image = await deskImages.performRestore({
+      computerId: row.id,
+      imageId: req.params.imageId,
+      dataDir,
+      run: deskImages.dockerRunner(),
+      computer: { id: row.id, container: row.container, volume: row.volume },
+    });
+    await computers.saveComputer({ ...row, status: "running", pausedByQuit: false });
+    broadcast("computers", { dirty: true });
+    res.json({ image });
+  } catch (err) {
+    const status = Number((err as { status?: number })?.status) || 500;
+    res.status(status).json({ error: (err as Error).message });
+  }
+});
+
+app.delete("/api/computers/:id/images/:imageId", async (req, res) => {
+  const row = await computers.getComputer(req.params.id);
+  if (!row) return res.status(404).json({ error: "not found" });
+  const existing = deskImages.readCatalog(dataDir).find((img) => img.id === req.params.imageId && img.computerId === row.id);
+  if (!existing) return res.status(404).json({ error: "not found" });
+  const removed = deskImages.removeImageRow(dataDir, existing.id);
+  res.json({ ok: true, image: removed });
+});
 
 app.post("/api/computers/:id/:action", async (req, res) => {
   const action = req.params.action;

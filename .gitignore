@@ -81,6 +81,7 @@ plan/
 /server/context.mjs
 /server/delivery.mjs
 /server/desk-client.mjs
+/server/desk-images.mjs
 /server/desk-harness/harness.mjs
 /server/desk-harness/local.mjs
 /server/desk-harness/mcp-cloud.mjs

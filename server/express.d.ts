@@ -149,7 +149,7 @@ declare module "express" {
 
   /**
    * The `:name` segments the routes in index.mts declare. Express hands back a
-   * dictionary; naming the five keys instead of an index signature is what
+   * dictionary; naming the keys instead of an index signature is what
    * keeps `req.params.id` a `string` under noUncheckedIndexedAccess, which is
    * what the route that declared `:id` already knows it is.
    */
@@ -157,6 +157,7 @@ declare module "express" {
     action: string;
     botId: string;
     id: string;
+    imageId: string;
     mid: string;
     rid: string;
   }
