@@ -4,6 +4,7 @@ import {
   snapshotArgs,
   restoreArgs,
   listVolumeArgs,
+  ensureVolumeArgs,
   snapshotVolume,
   restoreVolume,
 } from "../dist/index.js";
@@ -94,10 +95,48 @@ test("snapshotVolume shells the tar argv and throws when docker fails", async ()
   );
 });
 
+test("ensureVolumeArgs creates a named volume", () => {
+  assert.deepEqual(ensureVolumeArgs("vol-a"), ["volume", "create", "vol-a"]);
+});
+
 test("restoreVolume creates the volume first, then untars", async () => {
   const { calls, run } = recorder();
   await restoreVolume({ run, volume: "vol-a", archiveAbs: "/tmp/a.tgz" });
-  assert.equal(calls[0][0], "volume");
-  assert.equal(calls[0][1], "create");
+  assert.deepEqual(calls[0], ensureVolumeArgs("vol-a"));
   assert.deepEqual(calls[1], restoreArgs("vol-a", "/tmp/a.tgz"));
+});
+
+test("restoreVolume treats volume already exists as success then untars", async () => {
+  const calls = [];
+  const run = async (argv) => {
+    calls.push(argv.slice());
+    if (argv[0] === "volume" && argv[1] === "create") {
+      return { ok: false, out: "", err: "Error: volume already exists" };
+    }
+    return { ok: true, out: "", err: "" };
+  };
+  await restoreVolume({ run, volume: "vol-a", archiveAbs: "/tmp/a.tgz" });
+  assert.deepEqual(calls[0], ensureVolumeArgs("vol-a"));
+  assert.deepEqual(calls[1], restoreArgs("vol-a", "/tmp/a.tgz"));
+});
+
+test("restoreVolume throws when volume create fails for another reason", async () => {
+  const run = async () => ({ ok: false, out: "", err: "permission denied" });
+  await assert.rejects(
+    () => restoreVolume({ run, volume: "vol-a", archiveAbs: "/tmp/a.tgz" }),
+    /permission denied/,
+  );
+});
+
+test("restoreVolume throws when restore tar fails after create", async () => {
+  const run = async (argv) => {
+    if (argv[0] === "volume" && argv[1] === "create") {
+      return { ok: true, out: "", err: "" };
+    }
+    return { ok: false, out: "", err: "tar boom" };
+  };
+  await assert.rejects(
+    () => restoreVolume({ run, volume: "vol-a", archiveAbs: "/tmp/a.tgz" }),
+    /tar boom/,
+  );
 });
