@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createCatalog, addImageRow, readCatalog, removeImageRow, performSnapshot, performRestore } from "../server/desk-images.mjs";
+import { createCatalog, addImageRow, readCatalog, removeImageRow, performSnapshot, performRestore, beginDiskJob, getDiskJob, endDiskJob, patchDiskJob, watchFileSize } from "../server/desk-images.mjs";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "desk-img-"));
 process.env.SUB8BOT_DATA = dir;
@@ -155,6 +155,50 @@ await test("removeImageRow deletes the archive file", () => {
   removeImageRow(dir, target.id);
   assert.equal(fs.existsSync(archiveAbs), false);
   assert.equal(readCatalog(dir).some((r) => r.id === target.id), false);
+});
+
+await test("disk job map roundtrip and clear", () => {
+  assert.equal(getDiskJob("c-job"), null);
+  beginDiskJob({ computerId: "c-job", action: "snapshot", phase: "pausing", bytes: 0, totalBytes: 100 });
+  assert.equal(getDiskJob("c-job").phase, "pausing");
+  patchDiskJob("c-job", { phase: "copying", bytes: 40 });
+  assert.equal(getDiskJob("c-job").bytes, 40);
+  endDiskJob("c-job");
+  assert.equal(getDiskJob("c-job"), null);
+});
+
+await test("watchFileSize reports a growing archive", async () => {
+  const file = path.join(dir, "grow.bin");
+  const seen = [];
+  const stop = watchFileSize(file, (n) => seen.push(n), 40);
+  fs.writeFileSync(file, "aaa");
+  await new Promise((r) => setTimeout(r, 90));
+  fs.writeFileSync(file, "aaabbbbb");
+  await new Promise((r) => setTimeout(r, 90));
+  stop();
+  assert.ok(seen.some((n) => n >= 3));
+  assert.ok(seen.some((n) => n >= 8));
+});
+
+await test("performSnapshot publishes copying job then clears it", async () => {
+  let during = null;
+  await performSnapshot({
+    computerId: "comp-job",
+    dataDir: dir,
+    computer: { id: "comp-job", container: "localbot-job", volume: "vol-job" },
+    control: { pause: async () => {}, unpause: async () => {} },
+    run: async (argv) => {
+      during = getDiskJob("comp-job");
+      const toBind = argv.find((a) => typeof a === "string" && a.endsWith(":/to"));
+      const hostDir = toBind.slice(0, -":/to".length);
+      const outIdx = argv.indexOf("-czf");
+      fs.writeFileSync(path.join(hostDir, path.basename(argv[outIdx + 1])), "job-bytes");
+      return { ok: true, out: "", err: "" };
+    },
+  });
+  assert.equal(during.action, "snapshot");
+  assert.equal(during.phase, "copying");
+  assert.equal(getDiskJob("comp-job"), null);
 });
 
 const failed = results.filter((r) => !r.ok);

@@ -91,6 +91,7 @@ const HANDLED = [
   "ctx-rename-tab-open",
   "ctx-rename-team",
   "ctx-rename-team-open",
+  "ctx-snapshots",
   "ctx-tab-remove",
   "ctx-unread",
   "cycle-desk",
@@ -240,9 +241,9 @@ assert.deepEqual(extra, [], "data-act values handled that were not before: " + e
 assert.deepEqual(covered, expected);
 
 // Guard the guard: an empty pin would make every assertion above vacuous.
-// 169 -> 172: desk-snap / desk-restore / desk-image-del.
-assert.equal(HANDLED.length, 172);
-assert.equal(covered.length, 172);
+// 172 -> 173: ctx-snapshots.
+assert.equal(HANDLED.length, 173);
+assert.equal(covered.length, 173);
 
 console.log(
   "ok delegated-acts (" + keys.length + " in ACTIONS, " + new Set(chain).size +

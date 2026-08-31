@@ -2369,11 +2369,43 @@ form.desk-wait {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding-top: 4px;
+  padding-top: 12px;
   border-top: 1px solid var(--line);
-  margin-top: 4px;
+  margin-top: 8px;
 }
-.csnap-head .sub { margin-top: 4px; max-width: 520px; }
+.csnap-title {
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+.csnap-head .sub { margin: 4px 0 0; max-width: 520px; font-size: 12px; color: var(--muted); }
+.csnap-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.csnap-progress-label { font-size: 12px; color: var(--muted); }
+.csnap-bar {
+  height: 6px;
+  border-radius: 99px;
+  background: var(--line);
+  overflow: hidden;
+}
+.csnap-bar-fill {
+  height: 100%;
+  width: 28%;
+  border-radius: 99px;
+  background: var(--text, #111);
+  transition: width 0.2s ease;
+}
+.csnap-bar-indeterminate .csnap-bar-fill {
+  width: 32%;
+  animation: csnap-indeterminate 1.1s ease-in-out infinite;
+}
+@keyframes csnap-indeterminate {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(380%); }
+}
 .csnap-list { display: flex; flex-direction: column; gap: 6px; }
 .csnap-empty { margin: 0; font-size: 12px; }
 .csnap-row {

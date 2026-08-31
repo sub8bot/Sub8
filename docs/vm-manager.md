@@ -146,16 +146,20 @@ Stats: poll `docker stats --no-stream` every few seconds while the modal is open
 
 Local Computers can snapshot and restore a desk’s named volume (files + Chrome profile). Chat history stays in Sub8 and is not part of the archive.
 
-In the Computers detail pane, below Start / Stop / Destroy:
+In the Computers detail pane, below Start / Stop / Destroy, section **Disk snapshots**:
 
 - **Snapshot disk** — pauses the container, tars the volume into `dataDir/desk-images/`, then unpauses. Subtitle: “Saves this Linux desk’s files and Chrome profile. Chat stays in Sub8.”
+- Progress bar while a snapshot/restore/delete runs (`GET …/images/progress`). Do not leave the button stuck on “Working…”.
 - Snapshot list — date, size, note, **Restore**, **Delete**
 - **Restore** confirm: “This replaces the desk’s files with the snapshot. The bot’s chat does not change.” Stops the desk, untars into its volume, starts again.
+- **Delete** confirm: “Delete this snapshot? The live desk is unchanged.”
+- Shortcut: right-click a local bot (rail or chrome tab) → **Snapshots…** opens this pane on that bot’s desk.
 
 HTTP (session-gated like other computer routes; Docker missing → `503 { error: "Docker is not running." }`):
 
 ```
 GET    /api/computers/:id/images
+GET    /api/computers/:id/images/progress
 POST   /api/computers/:id/images              { note?: string }
 POST   /api/computers/:id/images/:imageId/restore
 DELETE /api/computers/:id/images/:imageId

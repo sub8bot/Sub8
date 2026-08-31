@@ -32,6 +32,65 @@ export type RestoreControl = {
   start: (container: string) => Promise<void>;
 };
 
+export type DiskJobAction = "snapshot" | "restore" | "delete";
+
+export interface DiskJob {
+  computerId: string;
+  action: DiskJobAction;
+  phase: string;
+  bytes: number;
+  totalBytes: number | null;
+}
+
+const diskJobs = new Map<string, DiskJob>();
+
+export function getDiskJob(computerId: string): DiskJob | null {
+  return diskJobs.get(computerId) || null;
+}
+
+export function beginDiskJob(job: DiskJob): DiskJob {
+  const row: DiskJob = {
+    computerId: job.computerId,
+    action: job.action,
+    phase: job.phase,
+    bytes: job.bytes,
+    totalBytes: job.totalBytes,
+  };
+  diskJobs.set(job.computerId, row);
+  return row;
+}
+
+export function patchDiskJob(computerId: string, patch: Partial<DiskJob>): DiskJob | null {
+  const cur = diskJobs.get(computerId);
+  if (!cur) return null;
+  const next: DiskJob = { ...cur, ...patch, computerId: cur.computerId };
+  diskJobs.set(computerId, next);
+  return next;
+}
+
+export function endDiskJob(computerId: string): void {
+  diskJobs.delete(computerId);
+}
+
+export function watchFileSize(abs: string, onSize: (n: number) => void, ms = 200): () => void {
+  const timer = setInterval(() => {
+    try {
+      onSize(fs.statSync(abs).size);
+    } catch {
+      /* file not created yet */
+    }
+  }, ms);
+  return () => clearInterval(timer);
+}
+
+function latestSnapshotBytes(root: string, computerId: string): number | null {
+  const rows = readCatalog(root).filter((r) => r.computerId === computerId);
+  if (!rows.length) return null;
+  rows.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  const n = Number(rows[0]?.bytes);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 function notFound(): Error {
   const err = new Error("not found") as Error & { status: number };
   err.status = 404;
@@ -180,11 +239,31 @@ export async function performSnapshot(opts: {
   const pause = opts.control?.pause || defaultPause;
   const unpause = opts.control?.unpause || defaultUnpause;
 
-  await pause(desk.container);
+  beginDiskJob({
+    computerId: desk.id,
+    action: "snapshot",
+    phase: "pausing",
+    bytes: 0,
+    totalBytes: latestSnapshotBytes(root, desk.id),
+  });
   try {
-    await snapshotVolume({ run: opts.run, volume: desk.volume, archiveAbs });
+    await pause(desk.container);
+    try {
+      patchDiskJob(desk.id, { phase: "copying" });
+      const stopWatch = watchFileSize(archiveAbs, (n) => {
+        patchDiskJob(desk.id, { bytes: n });
+      });
+      try {
+        await snapshotVolume({ run: opts.run, volume: desk.volume, archiveAbs });
+      } finally {
+        stopWatch();
+      }
+      patchDiskJob(desk.id, { phase: "resuming" });
+    } finally {
+      await unpause(desk.container).catch(() => {});
+    }
   } finally {
-    await unpause(desk.container).catch(() => {});
+    endDiskJob(desk.id);
   }
 
   const st = fs.statSync(archiveAbs);
@@ -221,11 +300,24 @@ export async function performRestore(opts: {
   const stop = opts.control?.stop || defaultStop;
   const start = opts.control?.start || defaultStart;
 
-  await stop(desk.container);
+  beginDiskJob({
+    computerId: desk.id,
+    action: "restore",
+    phase: "stopping",
+    bytes: 0,
+    totalBytes: image.bytes || null,
+  });
   try {
-    await restoreVolume({ run: opts.run, volume: desk.volume, archiveAbs });
+    await stop(desk.container);
+    try {
+      patchDiskJob(desk.id, { phase: "restoring" });
+      await restoreVolume({ run: opts.run, volume: desk.volume, archiveAbs });
+      patchDiskJob(desk.id, { phase: "starting" });
+    } finally {
+      await start(desk.container);
+    }
   } finally {
-    await start(desk.container);
+    endDiskJob(desk.id);
   }
   return image;
 }

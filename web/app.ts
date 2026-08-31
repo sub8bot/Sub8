@@ -281,6 +281,15 @@ interface DeskImage {
   note?: string;
 }
 
+/** Live snapshot/restore/delete job from GET /images/progress. */
+interface DeskImageJob {
+  computerId?: string;
+  action?: string;
+  phase?: string;
+  bytes?: number;
+  totalBytes?: number | null;
+}
+
 interface JobStep {
   botId?: string;
   label?: string;
@@ -738,6 +747,7 @@ interface AppState {
   computerStats: Record<string, ComputerStat>;
   computerImages: DeskImage[];
   computerImagesBusy: boolean;
+  computerImageJob: DeskImageJob | null;
   computerAttach: boolean;
   computerView: string;
   computerSort: string;
@@ -879,6 +889,7 @@ const state: AppState = {
   computerStats: {},
   computerImages: [],
   computerImagesBusy: false,
+  computerImageJob: null,
   computerAttach: false,
   computerView: (() => {
     try {
@@ -3505,6 +3516,7 @@ function ctxIcon(kind: string): string {
   if (kind === "hide") return svg(`<path d="M3 3l18 18M10.6 10.6A3 3 0 0 0 13.4 13.4M9.9 5.1A10 10 0 0 1 21 12c-1 1.8-2.4 3.3-4.1 4.4M6.1 6.1C4.4 7.2 3 8.7 2 12c1.6 2.8 4.4 5 8 6.1"/>`);
   if (kind === "del") return svg(`<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>`);
   if (kind === "plus") return svg(`<path d="M12 5v14M5 12h14"/><path d="M4 7h6l2 2"/>`);
+  if (kind === "disk") return svg(`<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 4v6h8V4M8 20v-5h8v5"/>`);
   return "";
 }
 
@@ -3647,6 +3659,7 @@ function paintCtxMenu(): void {
       ${item("ctx-rename-tab-open", "edit", "Rename")}
       ${item(briefOn ? "hide-team-brief" : "show-team-brief", "info", briefOn ? "Hide description" : "Show description")}
       ${item("ctx-edit", "gear", "Open settings")}
+      ${isCloudPlace() ? "" : item("ctx-snapshots", "disk", "Snapshots…")}
       <div class="ctx-sep"></div>
       ${item("ctx-tab-remove", "del", "Remove from team", "ctx-danger")}
     </div>`;
@@ -3707,6 +3720,7 @@ function paintCtxMenu(): void {
       ${item("ctx-unread", "unread", bot.unread ? "Mark as Read" : "Mark as Unread")}
       <div class="ctx-sep"></div>
       ${item("ctx-edit", "edit", "Edit Profile")}
+      ${item("ctx-snapshots", "disk", "Snapshots…")}
       ${item("ctx-dup", "dup", "Duplicate")}
       <div class="ctx-sep"></div>
       ${item("ctx-copy", "copy", "Copy conversation ID")}
@@ -4847,6 +4861,40 @@ function formatDeskImageWhen(ms: number | undefined): string {
   return new Date(ms).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
+function deskJobLabel(job: DeskImageJob | null | undefined): string {
+  const phase = String(job?.phase || "");
+  const bytes = Number(job?.bytes) || 0;
+  if (phase === "pausing") return "Pausing desk…";
+  if (phase === "copying") return bytes > 0 ? `Copying files · ${formatDeskBytes(bytes)}` : "Copying files…";
+  if (phase === "resuming") return "Resuming desk…";
+  if (phase === "stopping") return "Stopping desk…";
+  if (phase === "restoring") return "Restoring files…";
+  if (phase === "starting") return "Starting desk…";
+  if (phase === "deleting") return "Deleting snapshot…";
+  if (job?.action === "restore") return "Restoring this desk…";
+  if (job?.action === "delete") return "Deleting snapshot…";
+  return "Saving this desk…";
+}
+
+function deskJobBarHtml(job: DeskImageJob | null | undefined): string {
+  if (!job) {
+    return `<div class="csnap-progress" role="status" aria-live="polite">
+      <div class="csnap-progress-label">Saving this desk…</div>
+      <div class="csnap-bar csnap-bar-indeterminate"><div class="csnap-bar-fill"></div></div>
+    </div>`;
+  }
+  const total = Number(job.totalBytes) || 0;
+  const bytes = Number(job.bytes) || 0;
+  const determinate = total > 0 && bytes >= 0;
+  const pct = determinate ? Math.max(2, Math.min(100, Math.round((bytes / total) * 100))) : 0;
+  return `<div class="csnap-progress" role="status" aria-live="polite">
+    <div class="csnap-progress-label">${escapeHtml(deskJobLabel(job))}</div>
+    <div class="csnap-bar ${determinate ? "" : "csnap-bar-indeterminate"}"${determinate ? ` aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"` : ""}>
+      <div class="csnap-bar-fill" style="${determinate ? `width:${pct}%` : ""}"></div>
+    </div>
+  </div>`;
+}
+
 function computerSnapshotsHtml(row: Computer): string {
   if (isCloudPlace() || row.kind === "cloud-draft") return "";
   const busy = state.computerImagesBusy;
@@ -4870,11 +4918,13 @@ function computerSnapshotsHtml(row: Computer): string {
         )
         .join("")
     : `<p class="muted csnap-empty">No snapshots yet.</p>`;
-  return `<div class="csnaps">
+  return `<div class="csnaps" id="desk-snapshots">
     <div class="csnap-head">
-      <button type="button" class="pill" data-act="desk-snap" data-id="${escapeHtml(row.id)}" ${busy ? "disabled" : ""}>${busy ? "Working…" : "Snapshot disk"}</button>
-      <div class="sub">Saves this Linux desk’s files and Chrome profile. Chat stays in Sub8.</div>
+      <div class="csnap-title">Disk snapshots</div>
+      <p class="sub">Saves this Linux desk’s files and Chrome profile. Chat stays in Sub8.</p>
     </div>
+    ${busy ? deskJobBarHtml(state.computerImageJob) : ""}
+    <button type="button" class="pill primary" data-act="desk-snap" data-id="${escapeHtml(row.id)}" ${busy ? "disabled" : ""}>Snapshot disk</button>
     <div class="csnap-list">${list}</div>
   </div>`;
 }
@@ -6859,7 +6909,12 @@ const ACTIONS: Record<string, ActHandler> = {
     return;
   },
   "desk-image-del": (e, { el }) => {
+    if (!confirm("Delete this snapshot? The live desk is unchanged.")) return;
     deleteDeskImage(el.dataset.id, el.dataset.image);
+    return;
+  },
+  "ctx-snapshots": (e, { el }) => {
+    openSnapshotsForBot(el.dataset.id);
     return;
   },
   "place": (e, { el }) => {
@@ -9308,6 +9363,53 @@ async function computerAction(id: string | undefined, action: string | undefined
   }
 }
 
+let imageJobPoll = 0;
+
+function stopImageJobPoll(): void {
+  if (imageJobPoll) window.clearInterval(imageJobPoll);
+  imageJobPoll = 0;
+}
+
+function startImageJobPoll(computerId: string): void {
+  stopImageJobPoll();
+  const tick = async () => {
+    try {
+      const r = (await api(`/api/computers/${computerId}/images/progress`)) as { progress?: DeskImageJob | null };
+      if (state.computerId !== computerId) return;
+      state.computerImageJob = r.progress || null;
+      if (state.modal === "computers") paintModal();
+    } catch {
+      /* keep last job */
+    }
+  };
+  void tick();
+  imageJobPoll = window.setInterval(tick, 300);
+}
+
+function openSnapshotsForBot(botId: string | undefined): void {
+  const bot = botById(botId) || state.bots.find((b) => b.id === botId);
+  const computerId = bot?.vm?.computerId;
+  state.ctx = null;
+  paintCtxMenu();
+  if (!computerId) {
+    window.alert("This bot has no computer.");
+    return;
+  }
+  state.modal = "computers";
+  state.computerId = computerId;
+  state.computerAttach = false;
+  render();
+  loadComputers().then(() => {
+    state.computerId = computerId;
+    paintModal();
+    refreshComputerPreviews();
+    loadComputerImages(computerId);
+    requestAnimationFrame(() => {
+      document.getElementById("desk-snapshots")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  });
+}
+
 async function loadComputerImages(computerId: string | null | undefined): Promise<void> {
   if (!computerId || isCloudPlace()) {
     state.computerImages = [];
@@ -9329,6 +9431,8 @@ async function loadComputerImages(computerId: string | null | undefined): Promis
 async function snapshotDesk(computerId: string | undefined): Promise<void> {
   if (!computerId || state.computerImagesBusy) return;
   state.computerImagesBusy = true;
+  state.computerImageJob = { computerId, action: "snapshot", phase: "pausing", bytes: 0, totalBytes: null };
+  startImageJobPoll(computerId);
   if (state.modal === "computers") paintModal();
   try {
     await api(`/api/computers/${computerId}/images`, { method: "POST", body: {} });
@@ -9336,7 +9440,9 @@ async function snapshotDesk(computerId: string | undefined): Promise<void> {
   } catch (err) {
     window.alert((err as CaughtError | undefined)?.message || "Could not snapshot this desk.");
   } finally {
+    stopImageJobPoll();
     state.computerImagesBusy = false;
+    state.computerImageJob = null;
     if (state.modal === "computers") paintModal();
   }
 }
@@ -9344,6 +9450,8 @@ async function snapshotDesk(computerId: string | undefined): Promise<void> {
 async function restoreDeskImage(computerId: string | undefined, imageId: string | undefined): Promise<void> {
   if (!computerId || !imageId || state.computerImagesBusy) return;
   state.computerImagesBusy = true;
+  state.computerImageJob = { computerId, action: "restore", phase: "stopping", bytes: 0, totalBytes: null };
+  startImageJobPoll(computerId);
   if (state.modal === "computers") paintModal();
   try {
     await api(`/api/computers/${computerId}/images/${imageId}/restore`, { method: "POST", body: {} });
@@ -9352,7 +9460,9 @@ async function restoreDeskImage(computerId: string | undefined, imageId: string 
   } catch (err) {
     window.alert((err as CaughtError | undefined)?.message || "Could not restore that snapshot.");
   } finally {
+    stopImageJobPoll();
     state.computerImagesBusy = false;
+    state.computerImageJob = null;
     if (state.modal === "computers") paintModal();
   }
 }
@@ -9360,6 +9470,8 @@ async function restoreDeskImage(computerId: string | undefined, imageId: string 
 async function deleteDeskImage(computerId: string | undefined, imageId: string | undefined): Promise<void> {
   if (!computerId || !imageId || state.computerImagesBusy) return;
   state.computerImagesBusy = true;
+  state.computerImageJob = { computerId, action: "delete", phase: "deleting", bytes: 0, totalBytes: null };
+  startImageJobPoll(computerId);
   if (state.modal === "computers") paintModal();
   try {
     await api(`/api/computers/${computerId}/images/${imageId}`, { method: "DELETE" });
@@ -9367,7 +9479,9 @@ async function deleteDeskImage(computerId: string | undefined, imageId: string |
   } catch (err) {
     window.alert((err as CaughtError | undefined)?.message || "Could not delete that snapshot.");
   } finally {
+    stopImageJobPoll();
     state.computerImagesBusy = false;
+    state.computerImageJob = null;
     if (state.modal === "computers") paintModal();
   }
 }

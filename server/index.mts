@@ -1508,6 +1508,12 @@ async function computerBot(row: computers.Computer) {
 
 // Image routes must register before POST /:id/:action so Express does not treat
 // "images" as an action name.
+app.get("/api/computers/:id/images/progress", async (req, res) => {
+  const row = await computers.getComputer(req.params.id);
+  if (!row) return res.status(404).json({ error: "not found" });
+  res.json({ progress: deskImages.getDiskJob(row.id) });
+});
+
 app.get("/api/computers/:id/images", async (req, res) => {
   const row = await computers.getComputer(req.params.id);
   if (!row) return res.status(404).json({ error: "not found" });
@@ -1563,8 +1569,13 @@ app.delete("/api/computers/:id/images/:imageId", async (req, res) => {
   if (!row) return res.status(404).json({ error: "not found" });
   const existing = deskImages.readCatalog(dataDir).find((img) => img.id === req.params.imageId && img.computerId === row.id);
   if (!existing) return res.status(404).json({ error: "not found" });
-  const removed = deskImages.removeImageRow(dataDir, existing.id);
-  res.json({ ok: true, image: removed });
+  deskImages.beginDiskJob({ computerId: row.id, action: "delete", phase: "deleting", bytes: 0, totalBytes: existing.bytes || null });
+  try {
+    const removed = deskImages.removeImageRow(dataDir, existing.id);
+    res.json({ ok: true, image: removed });
+  } finally {
+    deskImages.endDiskJob(row.id);
+  }
 });
 
 app.post("/api/computers/:id/:action", async (req, res) => {
