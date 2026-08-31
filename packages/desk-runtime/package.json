@@ -21,6 +21,10 @@
     "build": "tsc",
     "test": "tsc && node --test test/desk-runtime.test.mjs"
   },
+  "dependencies": {
+    "@sub8/desk-ports": "*",
+    "@sub8/harness-protocol": "*"
+  },
   "devDependencies": {
     "@types/node": "^22.15.3",
     "typescript": "^5.8.3"

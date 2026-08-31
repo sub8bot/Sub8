@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { limitsFromRamMb } from "../dist/index.js";
+import { DISPLAY_SLOTS, HARNESS_PORT } from "@sub8/desk-ports";
+import { deskRunArgs, limitsFromRamMb } from "../dist/index.js";
 
 test("1 GB desk is a 1g cgroup with a half CPU and a pid cap", () => {
   assert.deepEqual(limitsFromRamMb(1024), {
@@ -33,4 +34,32 @@ test("unknown RAM rounds down to the next known rung, never throws", () => {
   assert.equal(limitsFromRamMb(3000).memory, "2g");
   assert.equal(limitsFromRamMb(0).memory, "1g");
   assert.equal(limitsFromRamMb(-1).memory, "1g");
+});
+
+test("loopback run args mount /config, cap cgroups, and never bind 0.0.0.0", () => {
+  const args = deskRunArgs({
+    name: "localbot-deadbeef",
+    volume: "localbot-config-deadbeef",
+    image: "sub8-desk:trixie",
+    platform: "linux/arm64",
+    hostname: "computer",
+    limits: limitsFromRamMb(2048),
+    publish: { kind: "loopback", novncPort: 13109, harnessPort: 13109 + DISPLAY_SLOTS },
+    env: ["PUID=1000", "PGID=1000", "TZ=America/New_York", "TITLE=My Computer", "DESK_HARNESS=1"],
+    extraArgs: ["--dns", "8.8.8.8", "--dns", "1.1.1.1", "--add-host", "host.docker.internal:host-gateway"],
+  });
+  assert.equal(args[0], "run");
+  assert.equal(args.at(-1), "sub8-desk:trixie");
+  assert.equal(args[args.indexOf("--name") + 1], "localbot-deadbeef");
+  assert.equal(args[args.indexOf("-v") + 1], "localbot-config-deadbeef:/config");
+  assert.equal(args[args.indexOf("--memory") + 1], "2g");
+  assert.equal(args[args.indexOf("--memory-swap") + 1], "2g");
+  assert.equal(args[args.indexOf("--shm-size") + 1], "256m");
+  assert.equal(args[args.indexOf("--cpus") + 1], "0.5");
+  assert.equal(args[args.indexOf("--pids-limit") + 1], "384");
+  const ports = args.filter((_, i) => args[i - 1] === "-p");
+  for (const p of ports) assert.ok(String(p).startsWith("127.0.0.1:"), p);
+  assert.ok(ports.some((p) => p === `127.0.0.1:13109-${13109 + DISPLAY_SLOTS - 1}:3000-${3000 + DISPLAY_SLOTS - 1}`));
+  assert.ok(ports.some((p) => p === `127.0.0.1:${13109 + DISPLAY_SLOTS}:${HARNESS_PORT}`));
+  assert.ok(!args.includes("--privileged"));
 });
