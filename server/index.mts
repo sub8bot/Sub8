@@ -22,7 +22,7 @@ import * as appUpdate from "./update.mjs";
 import * as vault from "./vault.mjs";
 import * as computers from "./computers.mjs";
 import * as deskImages from "./desk-images.mjs";
-import { copyArchiveToDesk } from "./move-to-cloud.mjs";
+import { copyArchiveToDesk, identityStamp, stampAgentsMdShell } from "./move-to-cloud.mjs";
 import * as hostCli from "./host-cli.mjs";
 import { resolveZone } from "./context.mjs";
 import * as teams from "./teams.mjs";
@@ -1243,22 +1243,6 @@ function withDeskToolLock<T>(fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
-async function teamForDeskBot(bot: IndexBot) {
-  let team = bot.teamId ? await teams.getTeam(bot.teamId) : null;
-  if (team) return team;
-  const rows = await teams.listTeams();
-  team =
-    rows.find((t) => t.chiefId === bot.id && (!bot.vm?.computerId || t.computerId === bot.vm.computerId)) ||
-    rows.find((t) => (t.memberIds || []).includes(bot.id)) ||
-    null;
-  if (team) {
-    bot.teamId = team.id;
-    bot.teamRole = bot.teamRole || (team.chiefId === bot.id ? "chief" : "worker");
-    await store.upsertBot(bot);
-  }
-  return team;
-}
-
 app.post("/api/internal/desk-tool", async (req, res) => {
   if (req.get("x-sub8-token") !== internalToken) return res.status(401).json({ error: "unauthorized" });
   const botId = String(req.body?.botId || "");
@@ -1283,18 +1267,7 @@ app.post("/api/internal/desk-tool", async (req, res) => {
         const job = String(args.job || "").trim();
         const nm = String(args.name || "").trim() || "Worker";
         if (!job) return res.status(400).json({ error: "job required" });
-        let team = await teamForDeskBot(live as IndexBot);
-        if (!team) {
-          team = await teams.saveTeam({
-            name: `${live.name}'s team`,
-            chiefId: live.id,
-            memberIds: [live.id],
-            computerId: live.vm?.computerId || null,
-          });
-          live.teamId = team.id;
-          live.teamRole = live.teamRole || "chief";
-          await store.upsertBot(live);
-        }
+        const team = await teams.ensureTeamForBot(live as IndexBot);
         const { bot: mate } = await teams.addMember(team, {
           name: nm,
           job,
@@ -1641,18 +1614,32 @@ app.post("/api/computers/:id/move-to-cloud", async (req, res) => {
     const ready = await waitCloudDeskReady(deskId);
     const chiefId = account.cloudBotId(ready.id);
     deskImages.patchDiskJob(row.id, { phase: "naming" });
-    await account.livePatchMate({ computerId: ready.id, botId: chiefId, name });
+    const job = String((bot as { description?: string; instructions?: string } | null)?.description || (bot as { instructions?: string } | null)?.instructions || "").trim();
+    await account.livePatchMate({
+      computerId: ready.id,
+      botId: chiefId,
+      name,
+      ...(job ? { job } : {}),
+    });
     deskImages.patchDiskJob(row.id, { phase: "copying" });
     const archiveAbs = path.join(deskImages.imagesDir(dataDir), image.fileName);
-    const files = await copyArchiveToDesk(archiveAbs, async (cmd) => {
+    const runDesk = async (cmd: string) => {
       const out = (await account.liveDeskAction({
         computerId: ready.id,
         action: { action: "shell", text: cmd },
       })) as { ok?: boolean; text?: string };
       return out || {};
-    });
+    };
+    const copied = await copyArchiveToDesk(archiveAbs, runDesk, { fromBotId: bot?.id, toBotId: chiefId });
+    await runDesk(stampAgentsMdShell(identityStamp({ handle: name, personalName: copied.personalName })));
+    if (bot?.id) {
+      const conv = await store.loadConversation(bot.id);
+      if (conv.length) {
+        await account.liveSaveThread({ computerId: ready.id, botId: chiefId, messages: conv });
+      }
+    }
     deskImages.endDiskJob(row.id);
-    res.json({ ok: true, computerId: ready.id, botId: chiefId, name, files, imageId: image.id });
+    res.json({ ok: true, computerId: ready.id, botId: chiefId, name, files: copied.count, imageId: image.id });
   } catch (err) {
     deskImages.endDiskJob(row.id);
     sendAccountError(res, err);
@@ -3067,17 +3054,7 @@ app.post("/api/bots/:id/choice", async (req, res) => {
   const intent = card?.context?.intent;
   const name = card?.context?.name || "Worker";
   if (intent === "create-teammate" && !describe) {
-    let team = bot.teamId ? await teams.getTeam(bot.teamId) : null;
-    if (!team) {
-      team = await teams.saveTeam({
-        name: `${bot.name}'s team`,
-        chiefId: bot.id,
-        memberIds: [bot.id],
-        computerId: bot.vm?.computerId || null,
-      });
-      bot.teamId = team.id;
-      bot.teamRole = bot.teamRole || "chief";
-    }
+    const team = await teams.ensureTeamForBot(bot);
     const { bot: mate, team: saved } = await teams.addMember(team, {
       name,
       job: label,

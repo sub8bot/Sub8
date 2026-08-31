@@ -206,9 +206,20 @@ export async function runCloudTurn({ token, computerId, content, signal, emit, p
   const resolvedBotId = botId || `cloud-${id}`;
   const stored = await loadThread({ token, computerId: id, botId: resolvedBotId }).catch(() => null);
   const seed = stored?.messages ?? (isChiefBotId(resolvedBotId, id) ? runtime.messages : []);
+  let botName = "Bot";
+  try {
+    const team = (await http.cloudApi(`/api/brain/team?computerId=${encodeURIComponent(id)}`, {
+      baseUrl: needBase(),
+      token,
+    })) as { name?: string; members?: { id?: string; name?: string }[] };
+    const mate = (team.members || []).find((m) => m.id === resolvedBotId);
+    botName = String(mate?.name || team.name || "").trim() || "Bot";
+  } catch {
+    /* keep Bot */
+  }
   const bot = {
     id: resolvedBotId,
-    name: "Cloud",
+    name: botName,
     computerId: id,
     place: "cloud",
     // Erase-only. agent.mts requires an `id` on every row it is handed; a Cloud

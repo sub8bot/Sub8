@@ -955,7 +955,12 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     return { content: [{ type: "text", text: vault.redactSecrets(r.output || (r.ok ? "(ok)" : "(failed)"), secrets) }] };
   }
   if (name === "memory") {
-    const bot = await botOrThrow();
+    const live = await store.getBot(botId);
+    const bot = (live || {
+      id: botId || "desk",
+      name: "Bot",
+      vm: { status: "running" },
+    }) as memory.MemoryBot;
     const r = await memory.handleMemory(bot, args);
     await emit("message", {
       id: `tl${Date.now()}mem`,
@@ -1128,16 +1133,17 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
   }
   if (name === "list_teammates") {
     const bot = await store.getBot(botId);
-    if (!bot?.teamId) return { content: [{ type: "text", text: "You are not on a team." }] };
-    const team = await teams.getTeam(bot.teamId);
-    const mates = teams.membersOf(team, await store.loadBots()).filter((b) => b.id !== bot.id);
+    if (!bot) throw new Error("Bot not found");
+    const mates = await teams.listDeskWorkers(bot);
     return {
       content: [
         {
           type: "text",
           text: mates.length
             ? JSON.stringify(mates.map((b) => ({ id: b.id, name: b.name, role: b.teamRole || "member" })), null, 2)
-            : "No teammates.",
+            : bot.teamId
+              ? "No teammates."
+              : "You are not on a team.",
         },
       ],
     };
@@ -1365,18 +1371,7 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
       await emit("message", card);
       return { content: [{ type: "text", text: "asked the user what this Bot should do" }] };
     }
-    let team = bot.teamId ? await teams.getTeam(bot.teamId) : null;
-    if (!team) {
-      team = await teams.saveTeam({
-        name: `${bot.name}'s team`,
-        chiefId: bot.id,
-        memberIds: [bot.id],
-        computerId: bot.vm?.computerId || null,
-      });
-      bot.teamId = team.id;
-      bot.teamRole = bot.teamRole || "chief";
-      await store.upsertBot(bot);
-    }
+    const team = await teams.ensureTeamForBot(bot);
     const { bot: mate } = await teams.addMember(team, {
       name: nm,
       job,
@@ -1448,10 +1443,9 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     const bot = await store.getBot(botId);
     if (!bot) throw new Error("Bot not found");
     const team = bot.teamId ? await teams.getTeam(bot.teamId) : null;
-    if (!team) return { content: [{ type: "text", text: "no team" }], isError: true };
-    const { ids, error } = teams.idsToClose(team, bot.id, args);
+    const { ids, error } = await teams.closeTargetsForBot(bot, args);
     if (error) return { content: [{ type: "text", text: error }], isError: true };
-    // Non-null: `idsToClose` answers either an `error` — returned just above — or
+    // Non-null: `closeTargetsForBot` answers either an `error` — returned just above — or
     // a list, never neither.
     if (!ids!.length) return { content: [{ type: "text", text: "no workers to close" }] };
     const labels = [];
@@ -1472,7 +1466,8 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
       await store.deleteBot(targetId);
       await emit("teammate", { gone: targetId });
     }
-    await teams.removeMembers(team, ids);
+    if (team) await teams.removeMembers(team, ids);
+    await teams.pruneSoloTeams();
     return { content: [{ type: "text", text: `deleted ${labels.join(", ")}` }] };
   }
   if (name === "web_search") {

@@ -78,6 +78,7 @@
     "web/avatar.js",
     "web/brain-setup.mjs",
     "web/chat-merge.mjs",
+    "web/chat-activity.mjs",
     "web/cloud-place.mjs",
     "web/grok-bot.js",
     "web/harness-models.mjs",

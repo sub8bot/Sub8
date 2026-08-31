@@ -19,6 +19,7 @@ export interface MemoryBotVm {
   container?: string;
   status?: string | undefined;
   deskUrl?: string | undefined;
+  deskToken?: string | undefined;
 }
 
 /** As much of a bot as this file reads. Callers pass the whole row, which is wider. */
@@ -34,7 +35,7 @@ export interface MemoryBot {
   routines?: MemoryRoutine[] | undefined;
 }
 
-/** What `hasVm` proves: a computer of its own, with a container to write into. */
+/** What local docker memory used to require: a container to `docker exec` into. */
 export type DeskMemoryBot = MemoryBot & { vm: MemoryBotVm & { container: string } };
 
 /**
@@ -329,11 +330,97 @@ export function mergeMemoryPrecedence(parts: MemoryParts | MemoryLayer[] = {}) {
   };
 }
 
-function hasVm(bot: MemoryBot): bot is DeskMemoryBot {
-  if (bot?.vm?.deskUrl) return false;
-  // `&&` only reaches the right-hand side once `bot.vm.container` was truthy,
-  // which is exactly when `bot.vm` is set.
-  return Boolean(bot?.vm?.container) && bot.vm!.status !== "missing";
+export type MemoryBackend = "fs" | "remote" | "docker" | "none";
+
+/** True when this process is already the desk (Cloud droplet / localbot). */
+export function onDeskFilesystem(): boolean {
+  try {
+    return existsSync("/config/.desk-token") || existsSync("/config/agent-data");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * How memory files are reached. Cloud grok-build used to treat `deskUrl` as
+ * "no computer", so the memory tool always answered "Computer is not running yet."
+ */
+export function memoryBackend(bot: MemoryBot | null | undefined): MemoryBackend {
+  if (onDeskFilesystem()) return "fs";
+  if (bot?.vm?.deskUrl && bot.vm.deskToken) return "remote";
+  if (bot?.vm?.container && bot.vm.status !== "missing") return "docker";
+  return "none";
+}
+
+export function memoryReady(bot: MemoryBot | null | undefined): boolean {
+  return memoryBackend(bot) !== "none";
+}
+
+function boxOf(bot: MemoryBot): string {
+  return bot.vm?.container || "desk";
+}
+
+async function listDeskFiles(dir: string, depth = 0): Promise<string> {
+  const out: string[] = [];
+  async function walk(d: string, n: number): Promise<void> {
+    if (n > 4 || out.length >= 80) return;
+    let ents;
+    try {
+      ents = await fs.readdir(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of ents) {
+      if (out.length >= 80) return;
+      const p = path.posix.join(d, e.name);
+      if (e.isDirectory()) await walk(p, n + 1);
+      else out.push(p);
+    }
+  }
+  await walk(dir, depth);
+  return out.join("\n") || "(empty)";
+}
+
+function memoryIo(bot: MemoryBot): MemoryIo {
+  const kind = memoryBackend(bot);
+  if (kind === "fs") {
+    return {
+      async mkdirpInContainer(_container, dir) {
+        await fs.mkdir(String(dir), { recursive: true });
+      },
+      async readFileFromContainer(_container, dest) {
+        try {
+          return await fs.readFile(dest, "utf8");
+        } catch {
+          return "";
+        }
+      },
+      async writeFileToContainer(_container, dest, text) {
+        await fs.mkdir(path.posix.dirname(dest), { recursive: true });
+        await fs.writeFile(dest, text, "utf8");
+      },
+    };
+  }
+  if (kind === "remote") {
+    return {
+      async mkdirpInContainer(_container, dir) {
+        await vm.shell(bot as never, `mkdir -p ${JSON.stringify(dir)}`);
+      },
+      async readFileFromContainer(_container, dest) {
+        const r = await vm.shell(bot as never, `cat ${JSON.stringify(dest)} 2>/dev/null || true`);
+        return r.output || "";
+      },
+      async writeFileToContainer(_container, dest, text) {
+        const dir = path.posix.dirname(dest);
+        const b64 = Buffer.from(text).toString("base64");
+        await vm.shell(
+          bot as never,
+          `mkdir -p ${JSON.stringify(dir)} && echo ${b64} | base64 -d > ${JSON.stringify(dest)}`,
+        );
+      },
+    };
+  }
+  return vm;
 }
 
 /** Desk identity. Host `bots.json` is an index (id, vm, team, harness, messages). */
@@ -359,16 +446,16 @@ export function applyProfile(bot: MemoryBot, rec: Partial<ProfileRecord> | null 
   return bot;
 }
 
-export async function writeProfile(bot: MemoryBot, io: MemoryIo = vm): Promise<ProfileRecord | null> {
-  if (!hasVm(bot)) return null;
+export async function writeProfile(bot: MemoryBot, io: MemoryIo = memoryIo(bot)): Promise<ProfileRecord | null> {
+  if (!memoryReady(bot)) return null;
   const rec = profileRecord(bot);
-  await io.writeFileToContainer(bot.vm.container, layoutPaths(bot).profileJson, `${JSON.stringify(rec, null, 2)}\n`);
+  await io.writeFileToContainer(boxOf(bot), layoutPaths(bot).profileJson, `${JSON.stringify(rec, null, 2)}\n`);
   return rec;
 }
 
-export async function hydrateFromProfile(bot: MemoryBot, io: MemoryIo = vm): Promise<MemoryBot> {
-  if (!hasVm(bot)) return bot;
-  const raw = await io.readFileFromContainer(bot.vm.container, layoutPaths(bot).profileJson);
+export async function hydrateFromProfile(bot: MemoryBot, io: MemoryIo = memoryIo(bot)): Promise<MemoryBot> {
+  if (!memoryReady(bot)) return bot;
+  const raw = await io.readFileFromContainer(boxOf(bot), layoutPaths(bot).profileJson);
   if (!String(raw || "").trim()) return bot;
   try {
     applyProfile(bot, JSON.parse(raw));
@@ -378,9 +465,9 @@ export async function hydrateFromProfile(bot: MemoryBot, io: MemoryIo = vm): Pro
   return bot;
 }
 
-export async function reconcileProfile(bot: MemoryBot, io: MemoryIo = vm): Promise<ProfileRecord | null> {
-  if (!hasVm(bot)) return null;
-  const raw = await io.readFileFromContainer(bot.vm.container, layoutPaths(bot).profileJson);
+export async function reconcileProfile(bot: MemoryBot, io: MemoryIo = memoryIo(bot)): Promise<ProfileRecord | null> {
+  if (!memoryReady(bot)) return null;
+  const raw = await io.readFileFromContainer(boxOf(bot), layoutPaths(bot).profileJson);
   if (String(raw || "").trim()) {
     try {
       applyProfile(bot, JSON.parse(raw));
@@ -404,9 +491,9 @@ async function writeIfMissing(
   return true;
 }
 
-export async function ensureLayout(bot: MemoryBot, io: MemoryIo = vm): Promise<string | null> {
-  if (!hasVm(bot)) return null;
-  const box = bot.vm.container;
+export async function ensureLayout(bot: MemoryBot, io: MemoryIo = memoryIo(bot)): Promise<string | null> {
+  if (!memoryReady(bot)) return null;
+  const box = boxOf(bot);
   const paths = layoutPaths(bot);
   for (const dir of paths.dirs) await io.mkdirpInContainer(box, dir);
   await writeIfMissing(box, paths.memoryProfile, seedProfile(bot), io);
@@ -444,11 +531,11 @@ export async function ensureLayout(bot: MemoryBot, io: MemoryIo = vm): Promise<s
 export async function ensureProjectLayout(
   bot: MemoryBot,
   slug: unknown,
-  io: MemoryIo = vm,
+  io: MemoryIo = memoryIo(bot),
   meta: ProjectMeta = {},
 ) {
-  if (!hasVm(bot) && io === vm) return null;
-  const box = bot?.vm?.container;
+  if (!memoryReady(bot) && io === vm) return null;
+  const box = boxOf(bot);
   const p = projectLayoutPaths(slug, bot?.id);
   for (const dir of [p.root, p.memoryDir, p.shardsDir, p.shardDir].filter(Boolean)) {
     await io.mkdirpInContainer(box, dir);
@@ -638,13 +725,14 @@ export async function leaveProject(botId: unknown, slug: unknown) {
 }
 
 export async function digest(bot: MemoryBot, { max = 1400 }: { max?: number | undefined } = {}): Promise<string> {
-  if (!hasVm(bot)) return "";
+  if (!memoryReady(bot)) return "";
   try {
-    await ensureLayout(bot);
-    const box = bot.vm.container;
+    const io = memoryIo(bot);
+    await ensureLayout(bot, io);
+    const box = boxOf(bot);
     const root = agentRoot(bot);
-    const profile = await vm.readFileFromContainer(box, `${root}/memory/profile.md`);
-    const log = await vm.readFileFromContainer(box, `${root}/memory/log/${ym()}.md`);
+    const profile = await io.readFileFromContainer(box, `${root}/memory/profile.md`);
+    const log = await io.readFileFromContainer(box, `${root}/memory/log/${ym()}.md`);
     const logTail = String(log || "")
       .trim()
       .split("\n")
@@ -652,7 +740,7 @@ export async function digest(bot: MemoryBot, { max = 1400 }: { max?: number | un
       .join("\n");
     let runs = "";
     for (const r of (bot.routines || []).slice(0, 4)) {
-      const raw = await vm.readFileFromContainer(box, `${root}/automations/${slug(r.name || r.id)}/runs.jsonl`);
+      const raw = await io.readFileFromContainer(box, `${root}/automations/${slug(r.name || r.id)}/runs.jsonl`);
       const last = String(raw || "")
         .trim()
         .split("\n")
@@ -692,12 +780,13 @@ export async function promptBlock(bot: MemoryBot): Promise<string> {
   return lines.join("\n");
 }
 
-export async function appendFile(bot: DeskMemoryBot, dest: string, text: string): Promise<void> {
-  const box = bot.vm.container;
-  const prev = await vm.readFileFromContainer(box, dest);
+export async function appendFile(bot: MemoryBot, dest: string, text: string): Promise<void> {
+  const io = memoryIo(bot);
+  const box = boxOf(bot);
+  const prev = await io.readFileFromContainer(box, dest);
   const next = `${prev || ""}${prev && !String(prev).endsWith("\n") ? "\n" : ""}${text}${String(text).endsWith("\n") ? "" : "\n"}`;
-  await vm.mkdirpInContainer(box, path.posix.dirname(dest));
-  await vm.writeFileToContainer(box, dest, next);
+  await io.mkdirpInContainer(box, path.posix.dirname(dest));
+  await io.writeFileToContainer(box, dest, next);
 }
 
 export async function noteRoutineFire(
@@ -705,11 +794,12 @@ export async function noteRoutineFire(
   routine: MemoryRoutine | null | undefined,
   now = Date.now(),
 ) {
-  if (!hasVm(bot) || !routine) return { n: (routine?.runs || []).length, path: "" };
-  await ensureLayout(bot);
-  const box = bot.vm.container;
+  if (!memoryReady(bot) || !routine) return { n: (routine?.runs || []).length, path: "" };
+  const io = memoryIo(bot);
+  await ensureLayout(bot, io);
+  const box = boxOf(bot);
   const dir = `${agentRoot(bot)}/automations/${slug(routine.name || routine.id)}`;
-  await vm.mkdirpInContainer(box, dir);
+  await io.mkdirpInContainer(box, dir);
   const n = (Array.isArray(routine.runs) ? routine.runs.length : 0) || 1;
   const line = JSON.stringify({
     n,
@@ -729,9 +819,9 @@ export async function recentRuns(
   routine: MemoryRoutine | null | undefined,
   limit = 5,
 ): Promise<string> {
-  if (!hasVm(bot) || !routine) return "";
-  const raw = await vm.readFileFromContainer(
-    bot.vm.container,
+  if (!memoryReady(bot) || !routine) return "";
+  const raw = await memoryIo(bot).readFileFromContainer(
+    boxOf(bot),
     `${agentRoot(bot)}/automations/${slug(routine.name || routine.id)}/runs.jsonl`,
   );
   return String(raw || "")
@@ -776,23 +866,27 @@ export async function routineFirePrompt(
 }
 
 export async function handleMemory(bot: MemoryBot, args: MemoryArgs = {}) {
-  if (!hasVm(bot)) return { text: "Computer is not running yet.", ok: false };
+  if (!memoryReady(bot)) return { text: "Computer is not running yet.", ok: false };
   const action = String(args.action || "read").toLowerCase();
-  await ensureLayout(bot);
+  const io = memoryIo(bot);
+  await ensureLayout(bot, io);
   if (action === "list") {
     const dir = args.path ? resolveMemoryPath(bot, args.path) : agentRoot(bot);
-    const r = await vm.shell(bot, `find ${JSON.stringify(dir)} -maxdepth 4 -type f 2>/dev/null | head -80`);
+    if (memoryBackend(bot) === "fs") {
+      return { text: await listDeskFiles(dir), ok: true };
+    }
+    const r = await vm.shell(bot as never, `find ${JSON.stringify(dir)} -maxdepth 4 -type f 2>/dev/null | head -80`);
     return { text: r.output || "(empty)", ok: r.ok };
   }
   const dest = resolveMemoryPath(bot, args.path);
   if (action === "read") {
-    const text = await vm.readFileFromContainer(bot.vm.container, dest);
+    const text = await io.readFileFromContainer(boxOf(bot), dest);
     return { text: text || "(empty)", ok: true };
   }
   const content = String(args.content ?? "");
   if (action === "write") {
-    await vm.mkdirpInContainer(bot.vm.container, path.posix.dirname(dest));
-    await vm.writeFileToContainer(bot.vm.container, dest, content.endsWith("\n") ? content : `${content}\n`);
+    await io.mkdirpInContainer(boxOf(bot), path.posix.dirname(dest));
+    await io.writeFileToContainer(boxOf(bot), dest, content.endsWith("\n") ? content : `${content}\n`);
     return { text: `wrote ${dest}`, ok: true };
   }
   if (action === "append") {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { conversationId, mentionedMemberIds, wantsCloseTeammates, idsToClose, isGenericWorkerName, jobProgress, newJob, isSoloTeam } from "../server/teams.mjs";
+import { conversationId, mentionedMemberIds, wantsCloseTeammates, idsToClose, isGenericWorkerName, jobProgress, newJob, isSoloTeam, workerIdsOnDesk } from "../server/teams.mjs";
 
 assert.equal(conversationId("abc"), "team-abc");
 
@@ -46,6 +46,22 @@ assert.deepEqual(idsToClose(team, "c1", { bot_id: "w1" }).ids, ["w1"]);
 assert.match(idsToClose(team, "c1", { bot_id: "c1" }).error || "", /cannot delete yourself/);
 assert.equal(idsToClose(team, "c1", { bot_id: "nope" }).error, "that Bot is not on your team");
 assert.match(idsToClose(team, "c1", {}).error || "", /bot_id required/);
+
+const deskChief = { id: "c1", teamId: "", vm: { computerId: "desk" } };
+const mediaone = { id: "m1", teamId: "other", teamRole: "worker", vm: { computerId: "desk" } };
+const mediathree = { id: "m3", teamId: "", teamRole: "", vm: { computerId: "desk" } };
+const elsewhere = { id: "x", teamRole: "worker", vm: { computerId: "other-desk" } };
+assert.deepEqual(
+  workerIdsOnDesk(deskChief, [deskChief, mediaone, mediathree, elsewhere], [
+    { id: "other", chiefId: "c1", memberIds: ["c1", "m1"], computerId: "desk" },
+  ]).sort(),
+  ["m1", "m3"],
+);
+assert.deepEqual(
+  idsToClose(null, "c1", { all_workers: true }, ["m1", "m3"]).ids.sort(),
+  ["m1", "m3"],
+);
+assert.deepEqual(idsToClose(null, "c1", { bot_id: "m1" }, ["m1", "m3"]).ids, ["m1"]);
 
 const finished = newJob({
   title: "Sub bots",

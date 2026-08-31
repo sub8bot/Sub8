@@ -42,7 +42,7 @@ import {
   liveBillingCheckout as cloudLiveBillingCheckout,
   revokeSession as cloudRevokeSession,
 } from "./cloud/index.mjs";
-import { runCloudTurn as cloudRunTurn, appendCloudUser as cloudAppendUser } from "./cloud/turn.mjs";
+import { runCloudTurn as cloudRunTurn, appendCloudUser as cloudAppendUser, liveBrainSaveThread as cloudSaveThread, chatMessages } from "./cloud/turn.mjs";
 
 /**
  * Every throw below is a plain Error with `code` — and sometimes `status` —
@@ -984,6 +984,30 @@ export async function liveDeskAction({
     throw err;
   }
   return cloudLiveDeskAction({ token: row.session.token, computerId: id, action });
+}
+
+export async function liveSaveThread({
+  computerId,
+  botId,
+  messages,
+}: {
+  computerId?: string | undefined;
+  botId?: string | undefined;
+  messages?: unknown[] | undefined;
+} = {}): Promise<unknown> {
+  const row = await requireLiveSession();
+  const id = liveDeskId(computerId, botId);
+  if (!id) {
+    const err = new Error("Desk not ready.") as CloudError;
+    err.code = "NEED_DESK";
+    throw err;
+  }
+  return cloudSaveThread({
+    token: row.session.token,
+    computerId: id,
+    botId,
+    messages: chatMessages(messages as Parameters<typeof chatMessages>[0]),
+  });
 }
 
 export async function livePatchMate({ computerId, botId, name, job, identityId }: MateOptions = {}) {

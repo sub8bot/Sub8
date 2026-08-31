@@ -15,6 +15,7 @@ import {
   projectSlug,
   mergeMemoryPrecedence,
   MEMORY_PRECEDENCE,
+  memoryBackend,
 } from "../server/memory.mjs";
 
 function test(name, fn) {
@@ -123,6 +124,19 @@ test("mergeMemoryPrecedence is own agent → project → user-memory", () => {
     userMemory: { city: "SF" },
   });
   assert.equal(aliased.facts.city, "Austin");
+});
+
+test("memoryBackend treats a Cloud deskUrl as ready, not as 'computer is not running'", () => {
+  assert.equal(
+    memoryBackend({
+      id: "cloud-cmp_x",
+      vm: { deskUrl: "http://10.0.0.1:3001", deskToken: "tok", status: "running" },
+    }),
+    "remote",
+  );
+  assert.equal(memoryBackend({ id: "x", vm: { container: "localbot-x", status: "running" } }), "docker");
+  assert.equal(memoryBackend({ id: "x", vm: { deskUrl: "http://10.0.0.1:3001" } }), "none");
+  assert.equal(memoryBackend({ id: "x" }), "none");
 });
 
 console.log("ok memory");

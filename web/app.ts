@@ -5,6 +5,7 @@ import { listModelsForProvider, modelFieldKind, pickListedModel } from "./harnes
 import { formatChatText } from "./markdown.js";
 import { HARNESS_INSTALL, apiPreset, brainSetupHtml, harnessSetupBannerHtml, needsBrainSetup } from "./brain-setup.mjs";
 import { mergeCloudMessages, mergeCloudDraft, isTransientChatStatus } from "./chat-merge.mjs";
+import { activityLabel, applyChatBusy, liveBusyLabel } from "./chat-activity.mjs";
 import { api } from "./api-client.mjs";
 import { iconAbout, iconBack, iconChevrons, iconClip, iconClock, iconClose, iconCompact, iconComputer, iconExpand, iconGear, iconGitHub, iconGlobe, iconHarness, iconLicense, iconLock, iconMic, iconMonitor, iconPerson, iconPlus, iconRecord, iconSend, iconStop } from "./icons.mjs";
 import * as cloudPlace from "./cloud-place.mjs";
@@ -221,6 +222,12 @@ interface Bot {
   messagesTruncated?: boolean;
   routines?: Routine[];
   busy?: boolean;
+  /** Last busy the server advertised over SSE. Client-only. */
+  serverBusy?: boolean | undefined;
+  /** Local send started a turn the idle SSE has not closed. Client-only. */
+  clientTurn?: boolean | undefined;
+  /** Latest tool tick, including SSE `tool` events before the chat row lands. Client-only. */
+  liveTool?: Message | null | undefined;
   unread?: boolean;
   hidden?: boolean;
   pinned?: boolean;
@@ -2004,8 +2011,15 @@ function adoptBot(next: Bot): Bot {
   next.messages = unionClientMessages(next.messages, prev.messages).filter(
     (m) => !forgottenMessages.has(`${next.id}:${m.id}`),
   );
-  state.bots[i] = { ...prev, ...next, messages: next.messages };
-  if (typeof next.busy === "boolean") state.bots[i]!.busy = next.busy;
+  state.bots[i] = {
+    ...prev,
+    ...next,
+    messages: next.messages,
+    serverBusy: prev.serverBusy,
+    clientTurn: prev.clientTurn,
+    liveTool: prev.liveTool,
+  };
+  if (typeof next.busy === "boolean") applyChatBusy(state.bots[i]!, { type: "bot", busy: next.busy });
   if (next.messagesTruncated || prev.messagesTruncated) state.bots[i]!.messagesTruncated = true;
   trimBotMessages(state.bots[i]);
   return state.bots[i]!;
@@ -2034,7 +2048,7 @@ async function stopTurn(): Promise<void> {
     const computerId = bot.computerId || bot.vm?.computerId || cloudTurns.get(bot.id)?.computerId;
     for (const b of viewBots()) {
       if ((b.computerId || b.vm?.computerId) === computerId) {
-        b.busy = false;
+        applyChatBusy(b, { type: "stop" });
         cloudTurns.delete(b.id);
       }
     }
@@ -2052,7 +2066,7 @@ async function stopTurn(): Promise<void> {
   for (const b of teamBots(team)) ids.add(b.id);
   for (const bid of ids) {
     const b = state.bots.find((x) => x.id === bid);
-    if (b) b.busy = false;
+    if (b) applyChatBusy(b, { type: "stop" });
   }
   if (bot) paintChat(bot);
   await Promise.all([...ids].map((bid) => api(`/api/bots/${bid}/stop`, { method: "POST", body: {} }).catch(() => {})));
@@ -2245,8 +2259,9 @@ function paintChat(bot: Bot | null | undefined): void {
     i += 1;
   }
   if (bot.busy && !liveActivity) {
+    const label = liveBusyLabel({ busy: true, messages: bot.messages, liveTool: bot.liveTool }) || "Starting…";
     html.push(
-      `<div class="working" role="status" aria-live="polite"><span class="working-dot" aria-hidden="true"></span>Working…</div>`,
+      `<div class="working" role="status" aria-live="polite"><span class="working-dot" aria-hidden="true"></span>${escapeHtml(label)}</div>`,
     );
   }
   for (const card of pendingChoices) html.push(renderChoiceCard(card));
@@ -2275,7 +2290,7 @@ function activitySummary(tools: Message[], partCount: number): string {
   if (!n) return "Thought";
   if (partCount <= 1) {
     const first = tools[0]!;
-    const label = first.summary || first.action || first.name || "Working";
+    const label = activityLabel(first);
     return n > 1 ? `${label} ×${n}` : label;
   }
   return `${n} steps`;
@@ -2315,7 +2330,7 @@ function renderActivity(batch: Message[], openLast: boolean): string {
     const first = items[0];
     if (!first) continue;
     const n = items.length;
-    const label = first.summary || first.action || first.name || "Working";
+    const label = activityLabel(first);
     const text = n > 1 ? `${label} ×${n}` : label;
     parts.push(`<div class="tool-row">${toolIcon(first.action || first.name)}<span>${escapeHtml(text)}</span></div>`);
   }
@@ -3225,7 +3240,11 @@ function botBrief(bot: Bot, team: Team | null | undefined): BotBrief {
     .map((l) => l.trim())
     .find(Boolean);
   const routine = (bot.routines || []).find((r) => r && r.enabled !== false);
-  const now = bot.busy ? "Working now" : routine?.name ? `Standing job: ${routine.name}` : "";
+  const now = bot.busy
+    ? liveBusyLabel({ busy: true, messages: bot.messages, liveTool: bot.liveTool }) || "Working now"
+    : routine?.name
+      ? `Standing job: ${routine.name}`
+      : "";
   return {
     who: role && bot.name.toLowerCase() !== role.toLowerCase() ? `${bot.name} · ${role}` : bot.name,
     role,
@@ -8302,7 +8321,7 @@ async function finishTeach(): Promise<void> {
   render();
   if (!bot) return;
   const name = `Taught task ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
-  bot.busy = true;
+  applyChatBusy(bot, { type: "send" });
   // adoptBot() seeds .messages on every bot in state.bots.
   bot.messages!.push({
     id: `pending-${Date.now()}`,
@@ -8314,7 +8333,7 @@ async function finishTeach(): Promise<void> {
   try {
     await api(`/api/bots/${bot.id}/teach`, { method: "POST", body: { name, frames } });
   } catch (err) {
-    bot.busy = false;
+    applyChatBusy(bot, { type: "error" });
     bot.messages!.push({
       id: `e${Date.now()}`,
       role: "assistant",
@@ -8474,7 +8493,7 @@ async function onSend(e: ComposerSubmit): Promise<void> {
   const members = teamBots(team);
   const toIds = mentionedMemberIds(content, members);
   if (bot) {
-    bot.busy = true;
+    applyChatBusy(bot, { type: "send" });
     bot.messages!.push({
       id: `pending-${Date.now()}`,
       role: "user",
@@ -8501,14 +8520,14 @@ async function onSend(e: ComposerSubmit): Promise<void> {
       }) as CloudDraftState;
       state.cloudDraft = snap;
       const live = currentBot();
-      if (live) live.busy = true;
+      if (live) applyChatBusy(live, { type: "send" });
       render();
       const userMessage = snap.userMessage || snap.reply?.userMessage;
       const turnId = snap.turnId || snap.reply?.turnId;
       if (turnId) cloudTurns.set(bot!.id, { turnId, computerId });
       watchCloudTurn(bot!.id, content, userMessage?.id, { turnId, computerId });
     } catch (err) {
-      if (bot) bot.busy = false;
+      if (bot) applyChatBusy(bot, { type: "error" });
       if ((err as CaughtError).code === "NEED_BRAIN" || /connect a brain/i.test((err as CaughtError).message || "")) {
         render();
         return;
@@ -8540,7 +8559,7 @@ async function onSend(e: ComposerSubmit): Promise<void> {
     await api(`/api/bots/${bot!.id}/messages`, { method: "POST", body: { content, images } });
   } catch (err) {
     if (bot) {
-      bot.busy = false;
+      applyChatBusy(bot, { type: "error" });
       bot.messages = (bot.messages || []).filter((m) => !String(m.id || "").startsWith("pending-"));
       bot.messages.push({
         id: `err-${Date.now()}`,
@@ -10657,7 +10676,7 @@ function listen(): void {
         const { botId } = JSON.parse((e as MessageEvent<string>).data);
         const bot = state.bots.find((b) => b.id === botId);
         if (bot) {
-          bot.busy = false;
+          applyChatBusy(bot, { type: "error" });
           if (!isCloudPlace() && botId === state.selected && $("#thread")) paintChat(bot);
         }
       } catch {
@@ -10665,10 +10684,10 @@ function listen(): void {
       }
     });
     es.addEventListener("tool", (e: MessageEvent<string>) => {
-      const { botId, name } = JSON.parse(e.data);
+      const { botId, name, args } = JSON.parse(e.data);
       const bot = state.bots.find((b) => b.id === botId);
       if (!bot || name === "send_message") return;
-      bot.busy = true;
+      applyChatBusy(bot, { type: "tool", name, args });
       if (!isCloudPlace() && botId === state.selected && $("#thread")) paintChat(bot);
     });
     es.addEventListener("teammate", (e: MessageEvent<string>) => {
@@ -10707,6 +10726,7 @@ function listen(): void {
           );
         }
         if (msg.id && !selected!.messages.some((m: Message) => m.id === msg.id)) selected!.messages.push(msg);
+        applyChatBusy(selected!, { type: "message", msg });
         if ($("#thread")) {
           paintChat(selected!);
           paintTeamTabs(selected!);
@@ -10731,6 +10751,7 @@ function listen(): void {
           api(`/api/bots/${botId}`, { method: "PATCH", body: { unread: true } });
         }
       }
+      applyChatBusy(bot, { type: "message", msg });
       if (isCloudPlace()) return;
       if (botId === state.selected && $("#thread")) {
         paintChat(bot);

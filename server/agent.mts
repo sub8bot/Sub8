@@ -1032,7 +1032,7 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
       kind: "tool",
       name: "computer",
       action: "screenshot",
-      summary: `Working via ${harness.provider}`,
+      summary: "Starting on the computer",
       ts: Date.now(),
     };
     bot.messages.push(work);
@@ -1072,7 +1072,7 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
       kind: "tool",
       name: "computer",
       action: "screenshot",
-      summary: "Working on the computer",
+      summary: "Starting on the computer",
       ts: Date.now(),
     };
     bot.messages.push(work);
@@ -1831,10 +1831,7 @@ async function execTool(
       return { text: "sent" };
     }
     if (name === "list_teammates") {
-      if (!bot.teamId) return { text: "You are not on a team." };
-      const team = await teams.getTeam(bot.teamId);
-      const bots = await store.loadBots();
-      const mates = teams.membersOf(team, bots).filter((b) => b.id !== bot.id);
+      const mates = await teams.listDeskWorkers(bot);
       return {
         text: mates.length
           ? JSON.stringify(
@@ -1842,7 +1839,9 @@ async function execTool(
               null,
               2,
             )
-          : "No teammates.",
+          : bot.teamId
+            ? "No teammates."
+            : "You are not on a team.",
       };
     }
     if (name === "message_teammate") {
@@ -2016,18 +2015,7 @@ async function execTool(
         await Promise.resolve(emit("message", card));
         return { text: "asked the user what this Bot should do; wait for their pick" };
       }
-      let team = bot.teamId ? await teams.getTeam(bot.teamId) : null;
-      if (!team) {
-        team = await teams.saveTeam({
-          name: `${bot.name}'s team`,
-          chiefId: bot.id,
-          memberIds: [bot.id],
-          computerId: bot.vm?.computerId || null,
-        });
-        bot.teamId = team.id;
-        bot.teamRole = bot.teamRole || "chief";
-        await store.upsertBot(bot);
-      }
+      const team = await teams.ensureTeamForBot(bot);
       const harness = {
         ...(bot.harness || {}),
         ...(args.harness || args.provider ? { provider: String(args.harness || args.provider) } : {}),
@@ -2101,10 +2089,8 @@ async function execTool(
     }
     if (name === "delete_teammate") {
       const team = bot.teamId ? await teams.getTeam(bot.teamId) : null;
-      if (!team) return { text: "no team" };
-      // `!` twice: `idsToClose` answers with exactly one of `error` / `ids`, and
-      // the line above returned on `error`.
-      const { ids, error } = teams.idsToClose(team, bot.id, args);
+      // `!` twice: `closeTargetsForBot` answers with exactly one of `error` / `ids`.
+      const { ids, error } = await teams.closeTargetsForBot(bot, args);
       if (error) return { text: error };
       if (!ids!.length) return { text: "no workers to close" };
       const labels: string[] = [];
@@ -2115,7 +2101,8 @@ async function execTool(
         await store.deleteBot(targetId);
         emit("teammate", { gone: targetId });
       }
-      await teams.removeMembers(team, ids);
+      if (team) await teams.removeMembers(team, ids);
+      await teams.pruneSoloTeams();
       return { text: `deleted ${labels.join(", ")}` };
     }
     if (name === "list_routines") {

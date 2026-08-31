@@ -179,6 +179,7 @@ assert.match(jsonErr.reply, /Not signed in/);
 console.log("ok desk-harness (grok session UUID)");
 
 assert.ok(CLOUD_STATE_TOOLS.has("create_teammate") && CLOUD_STATE_TOOLS.has("message_teammate"));
+assert.ok(CLOUD_STATE_TOOLS.has("memory"), "Cloud memory must go to the Worker, not in-desk docker");
 const skipped = await tryCloudStateTool("computer", { action: "screenshot" }, { SUB8_CLOUD_CALLBACK_URL: "https://example.test/t" });
 assert.equal(skipped, null, "desk tools must stay local");
 const noCb = await tryCloudStateTool("create_teammate", { name: "A" }, {});

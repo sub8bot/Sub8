@@ -89,6 +89,7 @@ export interface TeamView {
   id?: string | undefined;
   chiefId?: string | null | undefined;
   memberIds?: string[] | undefined;
+  computerId?: unknown;
   /** Never persisted: some tool paths hand these helpers a member-expanded team. */
   members?: TeamMember[] | undefined;
 }
@@ -219,6 +220,91 @@ export async function listTeams(): Promise<Team[]> {
 
 export async function getTeam(id: string | null | undefined): Promise<Team | null> {
   return (await listTeams()).find((t) => t.id === id) || null;
+}
+
+/** The slice of a bot `ensureTeamForBot` needs to find or create its crew. */
+export type TeamChiefBot = {
+  id: string;
+  name?: string | undefined;
+  teamId?: string | undefined;
+  teamRole?: string | undefined;
+  vm?: { computerId?: unknown } | undefined;
+};
+
+function sameComputer(team: Team, bot: TeamChiefBot): boolean {
+  const want = bot.vm?.computerId ? String(bot.vm.computerId) : "";
+  const have = team.computerId ? String(team.computerId) : "";
+  if (!want || !have) return true;
+  return want === have;
+}
+
+function findTeamForChief(rows: Team[], bot: TeamChiefBot): Team | undefined {
+  if (bot.teamId) {
+    const byId = rows.find((t) => t.id === bot.teamId);
+    if (byId) return byId;
+  }
+  const asChief = rows.find((t) => t.chiefId === bot.id && sameComputer(t, bot));
+  if (asChief) return asChief;
+  return rows.find((t) => (t.memberIds || []).includes(bot.id) && sameComputer(t, bot));
+}
+
+/**
+ * Find-or-create the chief's team under the teams.json lock.
+ *
+ * Parallel create_teammate used to each `saveTeam` when `bot.teamId` was empty,
+ * so one request for two workers spawned two teams with the same name and the
+ * first worker sat Unassigned.
+ */
+export async function ensureTeamForBot(bot: TeamChiefBot): Promise<Team> {
+  let dropped: string[] = [];
+  const team = await withFile(async () => {
+    const rows = await readAll();
+    const matches = rows.filter((t) => t.chiefId === bot.id && sameComputer(t, bot));
+    const existing = (bot.teamId && matches.find((t) => t.id === bot.teamId)) || matches[0] || findTeamForChief(rows, bot);
+    if (existing) {
+      const extras = matches.filter((t) => t.id !== existing.id);
+      dropped = extras.map((t) => t.id);
+      existing.memberIds = [
+        ...new Set([...(existing.memberIds || []), bot.id, ...extras.flatMap((t) => t.memberIds || [])]),
+      ];
+      existing.updatedAt = Date.now();
+      const next = extras.length ? rows.filter((t) => !dropped.includes(t.id)) : rows;
+      await writeAll(next);
+      return existing;
+    }
+    const row: Team = {
+      id: randomUUID(),
+      name: `${bot.name || "Bot"}'s team`,
+      chiefId: bot.id,
+      memberIds: [bot.id],
+      computerId: bot.vm?.computerId || null,
+      section: "",
+      pinned: false,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    rows.push(row);
+    await writeAll(rows);
+    return row;
+  });
+  if (dropped.length) {
+    const drop = new Set(dropped);
+    for (const b of await store.loadBots()) {
+      if (b.teamId && drop.has(b.teamId)) {
+        await store.patchBot(b.id, (row) => {
+          row.teamId = team.id;
+          if (!row.teamRole) row.teamRole = "worker";
+        });
+      }
+    }
+  }
+  await store.patchBot(bot.id, (b) => {
+    b.teamId = team.id;
+    b.teamRole = b.teamRole || "chief";
+  });
+  bot.teamId = team.id;
+  bot.teamRole = bot.teamRole || "chief";
+  return team;
 }
 
 export async function saveTeam(partial: TeamPatch): Promise<Team> {
@@ -356,9 +442,12 @@ export async function addMember(
     detached: false,
     hint: src.status === "running" ? "" : "Joining the shared desk…",
   };
+  const mutated = await mutateTeam(team.id, (row) => {
+    row.memberIds = [...new Set([...(row.memberIds || []), bot.id])];
+    if (bot.vm?.computerId && !row.computerId) row.computerId = bot.vm.computerId;
+  });
   await store.upsertBot(bot);
-  const memberIds = [...new Set([...(team.memberIds || []), bot.id])];
-  const saved = await saveTeam({ ...team, memberIds, computerId: bot.vm.computerId || team.computerId });
+  const saved = mutated?.team || (await saveTeam({ ...team, memberIds: [...new Set([...(team.memberIds || []), bot.id])], computerId: bot.vm.computerId || team.computerId }));
   const all = await store.loadBots();
   const mates = membersOf(saved, all);
   vm.applyTeamDisplays(saved as TeamRosterView, mates as DisplayBot[], src.novncPort || null);
@@ -506,24 +595,83 @@ export function idsToClose(
   team: TeamView | null | undefined,
   selfId: string | null | undefined,
   args: CloseArgs = {},
+  deskWorkerIds: readonly string[] = [],
 ): CloseTargets {
   const memberIds = Array.isArray(team?.memberIds)
     ? team.memberIds.filter(Boolean)
     : (team?.members || []).map((m) => m.id).filter(Boolean);
+  const known = [...new Set([...memberIds, ...deskWorkerIds.filter(Boolean)])];
   const chiefId =
     team?.chiefId ||
     (team?.members || []).find((m) => m.role === "chief" || m.teamRole === "chief")?.id ||
     null;
   const all = args.all_workers === true || String(args.bot_id || "").trim().toLowerCase() === "all";
   if (all) {
-    return { ids: memberIds.filter((id) => id && id !== selfId && id !== chiefId) };
+    return { ids: known.filter((id) => id && id !== selfId && id !== chiefId) };
   }
   const targetId = String(args.bot_id || "").trim();
   if (!targetId) return { error: "bot_id required (or all_workers=true to close every worker)" };
   if (targetId === selfId) return { error: "You cannot delete yourself with this tool. Ask the human." };
   if (targetId === chiefId) return { error: "The desk bot stays until you destroy the computer." };
-  if (!memberIds.includes(targetId)) return { error: "that Bot is not on your team" };
+  if (!known.includes(targetId)) return { error: "that Bot is not on your team" };
   return { ids: [targetId] };
+}
+
+/** The slice of a bot `workerIdsOnDesk` needs. */
+export type DeskMateBot = {
+  id: string;
+  teamId?: string | undefined;
+  teamRole?: string | undefined;
+  vm?: unknown;
+};
+
+function computerOf(bot: DeskMateBot | null | undefined): string {
+  const vm = bot?.vm;
+  if (!vm || typeof vm !== "object") return "";
+  const id = (vm as { computerId?: unknown }).computerId;
+  return id ? String(id) : "";
+}
+
+/**
+ * Workers on this chief's desk, including ones stranded on a duplicate team or
+ * with a cleared teamId after the last delete. list/delete_teammate used only
+ * `bot.teamId`, so those orphans stayed in the rail.
+ */
+export function workerIdsOnDesk(
+  self: DeskMateBot | null | undefined,
+  bots: readonly DeskMateBot[] | null | undefined,
+  teamsList: readonly TeamView[] | null | undefined = [],
+): string[] {
+  if (!self?.id) return [];
+  const computer = computerOf(self);
+  const chiefTeams = new Set(
+    (teamsList || [])
+      .filter((t) => t.chiefId === self.id && (!computer || !t.computerId || String(t.computerId) === computer))
+      .map((t) => t.id)
+      .filter(Boolean) as string[],
+  );
+  if (self.teamId) chiefTeams.add(self.teamId);
+  const ids: string[] = [];
+  for (const b of bots || []) {
+    if (!b?.id || b.id === self.id) continue;
+    if (b.teamRole === "chief") continue;
+    const sameTeam = Boolean(b.teamId && chiefTeams.has(b.teamId));
+    const sameDesk = Boolean(computer && computerOf(b) === computer);
+    if (sameTeam || sameDesk) ids.push(b.id);
+  }
+  return [...new Set(ids)];
+}
+
+export async function listDeskWorkers(self: DeskMateBot | null | undefined): Promise<store.Bot[]> {
+  const [bots, teamsList] = await Promise.all([store.loadBots(), listTeams()]);
+  const ids = new Set(workerIdsOnDesk(self, bots, teamsList));
+  return bots.filter((b) => ids.has(b.id));
+}
+
+export async function closeTargetsForBot(self: DeskMateBot | null | undefined, args: CloseArgs = {}): Promise<CloseTargets> {
+  const [bots, teamsList] = await Promise.all([store.loadBots(), listTeams()]);
+  const team = self?.teamId ? await getTeam(self.teamId) : null;
+  return idsToClose(team, self?.id, args, workerIdsOnDesk(self, bots, teamsList));
 }
 
 export async function removeMembers(
