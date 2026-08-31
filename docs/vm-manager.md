@@ -142,6 +142,27 @@ DELETE /api/bots/:id               { keepComputer?: true }
 
 Stats: poll `docker stats --no-stream` every few seconds while the modal is open. Do not stream stats when the modal is closed.
 
+## Snapshots
+
+Local Computers can snapshot and restore a desk’s named volume (files + Chrome profile). Chat history stays in Sub8 and is not part of the archive.
+
+In the Computers detail pane, below Start / Stop / Destroy:
+
+- **Snapshot disk** — pauses the container, tars the volume into `dataDir/desk-images/`, then unpauses. Subtitle: “Saves this Linux desk’s files and Chrome profile. Chat stays in Sub8.”
+- Snapshot list — date, size, note, **Restore**, **Delete**
+- **Restore** confirm: “This replaces the desk’s files with the snapshot. The bot’s chat does not change.” Stops the desk, untars into its volume, starts again.
+
+HTTP (session-gated like other computer routes; Docker missing → `503 { error: "Docker is not running." }`):
+
+```
+GET    /api/computers/:id/images
+POST   /api/computers/:id/images              { note?: string }
+POST   /api/computers/:id/images/:imageId/restore
+DELETE /api/computers/:id/images/:imageId
+```
+
+Never snapshots the golden image; never `docker commit`. Cloud desks do not use this UI.
+
 ## Later (explicitly out)
 
 - Several Bots on one computer (separate browsers / apps)

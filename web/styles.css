@@ -2364,6 +2364,41 @@ form.desk-wait {
 .cdetail .field { max-width: 240px; }
 .cdetail-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
 .cattach { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }
+.csnaps {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+}
+.csnap-head .sub { margin-top: 4px; max-width: 520px; }
+.csnap-list { display: flex; flex-direction: column; gap: 6px; }
+.csnap-empty { margin: 0; font-size: 12px; }
+.csnap-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+}
+.csnap-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: baseline;
+  min-width: 0;
+  flex: 1;
+  font-size: 12px;
+}
+.csnap-when { font-weight: 600; }
+.csnap-size { color: var(--muted); font-variant-numeric: tabular-nums; }
+.csnap-note { color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.csnap-acts { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
 .desk-empty { gap: 14px; }
 .desk-empty-acts { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
 .desk-empty-attach { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }

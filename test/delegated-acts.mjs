@@ -98,6 +98,9 @@ const HANDLED = [
   "delete-bot-go",
   "delete-routine",
   "delete-routine-editor",
+  "desk-image-del",
+  "desk-restore",
+  "desk-snap",
   "desk-start-new",
   "dictate",
   "dismiss-choice",
@@ -237,9 +240,9 @@ assert.deepEqual(extra, [], "data-act values handled that were not before: " + e
 assert.deepEqual(covered, expected);
 
 // Guard the guard: an empty pin would make every assertion above vacuous.
-// 166 -> 169: lol / lol-send / lol-create.
-assert.equal(HANDLED.length, 169);
-assert.equal(covered.length, 169);
+// 169 -> 172: desk-snap / desk-restore / desk-image-del.
+assert.equal(HANDLED.length, 172);
+assert.equal(covered.length, 172);
 
 console.log(
   "ok delegated-acts (" + keys.length + " in ACTIONS, " + new Set(chain).size +

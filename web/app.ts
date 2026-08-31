@@ -270,6 +270,17 @@ interface ComputerStat {
   memBytes?: number;
 }
 
+/** A local desk volume snapshot listed under Computers → Snapshot disk. */
+interface DeskImage {
+  id: string;
+  computerId: string;
+  volume?: string;
+  fileName?: string;
+  bytes?: number;
+  createdAt?: number;
+  note?: string;
+}
+
 interface JobStep {
   botId?: string;
   label?: string;
@@ -725,6 +736,8 @@ interface AppState {
   computers: Computer[];
   computerId: string | null | undefined;
   computerStats: Record<string, ComputerStat>;
+  computerImages: DeskImage[];
+  computerImagesBusy: boolean;
   computerAttach: boolean;
   computerView: string;
   computerSort: string;
@@ -864,6 +877,8 @@ const state: AppState = {
   computers: [],
   computerId: null,
   computerStats: {},
+  computerImages: [],
+  computerImagesBusy: false,
   computerAttach: false,
   computerView: (() => {
     try {
@@ -4819,6 +4834,51 @@ function computerActions(row: Computer): string {
     <button type="button" class="danger" data-act="computer-act" data-do="destroy" data-id="${row.id}">Destroy</button>`;
 }
 
+function formatDeskBytes(n: number | undefined): string {
+  const bytes = Number(n) || 0;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function formatDeskImageWhen(ms: number | undefined): string {
+  if (!ms) return "—";
+  return new Date(ms).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+function computerSnapshotsHtml(row: Computer): string {
+  if (isCloudPlace() || row.kind === "cloud-draft") return "";
+  const busy = state.computerImagesBusy;
+  const images = (state.computerImages || []).filter((img) => img.computerId === row.id);
+  const list = images.length
+    ? images
+        .slice()
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+        .map(
+          (img) => `<div class="csnap-row">
+          <div class="csnap-meta">
+            <span class="csnap-when">${escapeHtml(formatDeskImageWhen(img.createdAt))}</span>
+            <span class="csnap-size">${escapeHtml(formatDeskBytes(img.bytes))}</span>
+            <span class="csnap-note">${escapeHtml(img.note || "")}</span>
+          </div>
+          <div class="csnap-acts">
+            <button type="button" class="pill" data-act="desk-restore" data-id="${escapeHtml(row.id)}" data-image="${escapeHtml(img.id)}" ${busy ? "disabled" : ""}>Restore</button>
+            <button type="button" class="pill danger-pill" data-act="desk-image-del" data-id="${escapeHtml(row.id)}" data-image="${escapeHtml(img.id)}" ${busy ? "disabled" : ""}>Delete</button>
+          </div>
+        </div>`,
+        )
+        .join("")
+    : `<p class="muted csnap-empty">No snapshots yet.</p>`;
+  return `<div class="csnaps">
+    <div class="csnap-head">
+      <button type="button" class="pill" data-act="desk-snap" data-id="${escapeHtml(row.id)}" ${busy ? "disabled" : ""}>${busy ? "Working…" : "Snapshot disk"}</button>
+      <div class="sub">Saves this Linux desk’s files and Chrome profile. Chat stays in Sub8.</div>
+    </div>
+    <div class="csnap-list">${list}</div>
+  </div>`;
+}
+
 function computersHtml(): string {
   const rows = sortedComputers();
   const id = state.computerId || rows[0]?.id || "";
@@ -4870,6 +4930,7 @@ function computersHtml(): string {
         ${row.attachedBotId ? computerBotLink(row) : ""}
         <div class="cdetail-acts">${computerActions(row)}</div>
         ${attachPicker}
+        ${computerSnapshotsHtml(row)}
       </div>`
     : `<p class="muted">No computers yet. Start a Bot and it gets a desk.</p>`;
   return `<div class="overlay">
@@ -6725,6 +6786,7 @@ const ACTIONS: Record<string, ActHandler> = {
       if (!state.computerId) state.computerId = state.computers[0]?.id || null;
       paintModal();
       refreshComputerPreviews();
+      loadComputerImages(state.computerId);
     });
     render();
     return;
@@ -6764,6 +6826,7 @@ const ACTIONS: Record<string, ActHandler> = {
     state.computerId = el.dataset.id;
     state.computerAttach = false;
     paintModal();
+    loadComputerImages(state.computerId);
     return;
   },
   "computer-attach-open": (e, { el }) => {
@@ -6784,6 +6847,19 @@ const ACTIONS: Record<string, ActHandler> = {
       return;
     }
     computerAction(el.dataset.id, doit);
+    return;
+  },
+  "desk-snap": (e, { el }) => {
+    snapshotDesk(el.dataset.id);
+    return;
+  },
+  "desk-restore": (e, { el }) => {
+    if (!confirm("This replaces the desk’s files with the snapshot. The bot’s chat does not change.")) return;
+    restoreDeskImage(el.dataset.id, el.dataset.image);
+    return;
+  },
+  "desk-image-del": (e, { el }) => {
+    deleteDeskImage(el.dataset.id, el.dataset.image);
     return;
   },
   "place": (e, { el }) => {
@@ -9229,6 +9305,70 @@ async function computerAction(id: string | undefined, action: string | undefined
     loadComputerStats();
   } catch (err) {
     window.alert((err as CaughtError | undefined)?.message || "That computer action failed.");
+  }
+}
+
+async function loadComputerImages(computerId: string | null | undefined): Promise<void> {
+  if (!computerId || isCloudPlace()) {
+    state.computerImages = [];
+    if (state.modal === "computers") paintModal();
+    return;
+  }
+  try {
+    const r = await api(`/api/computers/${computerId}/images`) as { images?: DeskImage[] };
+    if (state.computerId !== computerId) return;
+    state.computerImages = r.images || [];
+    if (state.modal === "computers") paintModal();
+  } catch {
+    if (state.computerId !== computerId) return;
+    state.computerImages = [];
+    if (state.modal === "computers") paintModal();
+  }
+}
+
+async function snapshotDesk(computerId: string | undefined): Promise<void> {
+  if (!computerId || state.computerImagesBusy) return;
+  state.computerImagesBusy = true;
+  if (state.modal === "computers") paintModal();
+  try {
+    await api(`/api/computers/${computerId}/images`, { method: "POST", body: {} });
+    await loadComputerImages(computerId);
+  } catch (err) {
+    window.alert((err as CaughtError | undefined)?.message || "Could not snapshot this desk.");
+  } finally {
+    state.computerImagesBusy = false;
+    if (state.modal === "computers") paintModal();
+  }
+}
+
+async function restoreDeskImage(computerId: string | undefined, imageId: string | undefined): Promise<void> {
+  if (!computerId || !imageId || state.computerImagesBusy) return;
+  state.computerImagesBusy = true;
+  if (state.modal === "computers") paintModal();
+  try {
+    await api(`/api/computers/${computerId}/images/${imageId}/restore`, { method: "POST", body: {} });
+    await loadComputers();
+    await loadComputerImages(computerId);
+  } catch (err) {
+    window.alert((err as CaughtError | undefined)?.message || "Could not restore that snapshot.");
+  } finally {
+    state.computerImagesBusy = false;
+    if (state.modal === "computers") paintModal();
+  }
+}
+
+async function deleteDeskImage(computerId: string | undefined, imageId: string | undefined): Promise<void> {
+  if (!computerId || !imageId || state.computerImagesBusy) return;
+  state.computerImagesBusy = true;
+  if (state.modal === "computers") paintModal();
+  try {
+    await api(`/api/computers/${computerId}/images/${imageId}`, { method: "DELETE" });
+    await loadComputerImages(computerId);
+  } catch (err) {
+    window.alert((err as CaughtError | undefined)?.message || "Could not delete that snapshot.");
+  } finally {
+    state.computerImagesBusy = false;
+    if (state.modal === "computers") paintModal();
   }
 }
 
