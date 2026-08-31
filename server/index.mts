@@ -22,6 +22,7 @@ import * as appUpdate from "./update.mjs";
 import * as vault from "./vault.mjs";
 import * as computers from "./computers.mjs";
 import * as deskImages from "./desk-images.mjs";
+import { copyArchiveToDesk } from "./move-to-cloud.mjs";
 import * as hostCli from "./host-cli.mjs";
 import { resolveZone } from "./context.mjs";
 import * as teams from "./teams.mjs";
@@ -1151,6 +1152,25 @@ app.post("/api/cloud/brain/abort", async (req, res) => {
   }
 });
 
+app.post("/api/cloud/brain/desk-action", async (req, res) => {
+  try {
+    if (!(await requireCloudSession(req, res))) return;
+    const raw = req.body?.action;
+    const action =
+      raw && typeof raw === "object" && !Array.isArray(raw)
+        ? (raw as Record<string, unknown>)
+        : { action: req.body?.action, text: req.body?.text };
+    res.json(
+      await account.liveDeskAction({
+        computerId: req.body?.computerId,
+        action,
+      }),
+    );
+  } catch (err) {
+    sendAccountError(res, err);
+  }
+});
+
 app.post("/api/cloud/brain/control", async (req, res) => {
   try {
     if (!(await requireCloudSession(req, res))) return;
@@ -1575,6 +1595,67 @@ app.delete("/api/computers/:id/images/:imageId", async (req, res) => {
     res.json({ ok: true, image: removed });
   } finally {
     deskImages.endDiskJob(row.id);
+  }
+});
+
+async function waitCloudDeskReady(id: string, timeoutMs = 180_000): Promise<{ id: string; ipv4: string; status: string }> {
+  const start = Date.now();
+  let lastStatus = "";
+  while (Date.now() - start < timeoutMs) {
+    const snap = await account.liveSnapshot();
+    const hit = (snap.computers || []).find((c) => c.id === id);
+    lastStatus = String(hit?.status || lastStatus);
+    const ipv4 = String(hit?.ipv4 || "");
+    const status = String(hit?.status || "");
+    const deskId = String(hit?.id || "");
+    if (deskId && ipv4 && (status === "assigned" || status === "warm")) return { id: deskId, ipv4, status };
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  throw new Error(lastStatus ? `Cloud desk stayed ${lastStatus}.` : "Cloud desk did not become ready in time.");
+}
+
+app.post("/api/computers/:id/move-to-cloud", async (req, res) => {
+  if (!(await requireCloudSession(req, res))) return;
+  const row = await computers.getComputer(req.params.id);
+  if (!row) return res.status(404).json({ error: "not found" });
+  const dock = await vm.dockerStatus();
+  if (!dock.ok) return res.status(503).json({ error: "Docker is not running." });
+  const botId = String(req.body?.botId || row.attachedBotId || row.lastBotId || "");
+  const bot = botId ? await store.getBot(botId) : null;
+  const name = String(req.body?.name || (bot && (bot as { name?: string }).name) || row.name || "Bot").trim() || "Bot";
+  req.setTimeout(5 * 60_000);
+  res.setTimeout(5 * 60_000);
+  try {
+    const image = await deskImages.performSnapshot({
+      computerId: row.id,
+      note: `move-to-cloud ${name}`,
+      dataDir,
+      run: deskImages.dockerRunner(),
+      computer: { id: row.id, container: row.container, volume: row.volume },
+    });
+    deskImages.beginDiskJob({ computerId: row.id, action: "snapshot", phase: "creating", bytes: 0, totalBytes: image.bytes || null });
+    const created = await account.liveCreateDesk("vm.4g");
+    const deskId = String((created.computer && created.computer.id) || "");
+    if (!deskId) throw new Error("Cloud did not return a computer.");
+    deskImages.patchDiskJob(row.id, { phase: "waiting" });
+    const ready = await waitCloudDeskReady(deskId);
+    const chiefId = account.cloudBotId(ready.id);
+    deskImages.patchDiskJob(row.id, { phase: "naming" });
+    await account.livePatchMate({ computerId: ready.id, botId: chiefId, name });
+    deskImages.patchDiskJob(row.id, { phase: "copying" });
+    const archiveAbs = path.join(deskImages.imagesDir(dataDir), image.fileName);
+    const files = await copyArchiveToDesk(archiveAbs, async (cmd) => {
+      const out = (await account.liveDeskAction({
+        computerId: ready.id,
+        action: { action: "shell", text: cmd },
+      })) as { ok?: boolean; text?: string };
+      return out || {};
+    });
+    deskImages.endDiskJob(row.id);
+    res.json({ ok: true, computerId: ready.id, botId: chiefId, name, files, imageId: image.id });
+  } catch (err) {
+    deskImages.endDiskJob(row.id);
+    sendAccountError(res, err);
   }
 });
 

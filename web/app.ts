@@ -9450,25 +9450,38 @@ async function moveToCloudFromBot(botId: string | undefined): Promise<void> {
   if (!canMoveToCloud()) return;
   const bot = botById(botId) || state.bots.find((b) => b.id === botId);
   const computerId = bot?.vm?.computerId;
-  const ok = window.confirm(
-    computerId
-      ? "Save a snapshot of this desk, then open Cloud to create a computer? Chat stays in Sub8. Restoring that snapshot onto the Cloud desk is a later step."
-      : "Open Cloud to create a computer? This bot has no local desk to copy.",
-  );
-  if (!ok) return;
+  if (!computerId) {
+    window.alert("This bot has no computer to move.");
+    return;
+  }
+  const name = String(bot?.name || "Bot").trim() || "Bot";
+  if (!window.confirm(`Move “${name}” to Cloud? We’ll snapshot this desk, create a Cloud computer with the same name, and copy its files. Chat stays in Sub8.`)) {
+    return;
+  }
   state.ctx = null;
   paintCtxMenu();
-  if (computerId) {
-    const saved = await snapshotDesk(computerId);
-    if (!saved) return;
-  }
-  await switchPlace("cloud");
-  if (isLiveCloud()) {
-    resetCreateForm();
-    state.createCloudKind = "bot";
-    state.modal = "create";
-    rebuildCreateModal();
-    loadCloudBilling();
+  state.modal = "computers";
+  state.computerId = computerId;
+  state.computerImagesBusy = true;
+  state.computerImageJob = { computerId, action: "snapshot", phase: "pausing", bytes: 0, totalBytes: null };
+  startImageJobPoll(computerId);
+  paintModal();
+  try {
+    const out = (await api(`/api/computers/${computerId}/move-to-cloud`, {
+      method: "POST",
+      body: { botId: bot?.id, name },
+    })) as { computerId?: string; botId?: string; name?: string };
+    await switchPlace("cloud");
+    if (out.botId) rememberSelected(out.botId);
+    state.modal = null;
+    render();
+  } catch (err) {
+    window.alert((err as CaughtError | undefined)?.message || "Could not move this desk to Cloud.");
+  } finally {
+    stopImageJobPoll();
+    state.computerImagesBusy = false;
+    state.computerImageJob = null;
+    if (state.modal === "computers") paintModal();
   }
 }
 
@@ -9480,19 +9493,7 @@ async function moveToCloudFromComputer(computerId: string | undefined): Promise<
     await moveToCloudFromBot(botId);
     return;
   }
-  if (!window.confirm("Save a snapshot of this desk, then open Cloud to create a computer? Chat stays in Sub8. Restoring that snapshot onto the Cloud desk is a later step.")) {
-    return;
-  }
-  const saved = await snapshotDesk(computerId);
-  if (!saved) return;
-  await switchPlace("cloud");
-  if (isLiveCloud()) {
-    resetCreateForm();
-    state.createCloudKind = "bot";
-    state.modal = "create";
-    rebuildCreateModal();
-    loadCloudBilling();
-  }
+  window.alert("Attach this desk to a bot first, then Move to Cloud.");
 }
 
 async function snapshotDesk(computerId: string | undefined): Promise<boolean> {

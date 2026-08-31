@@ -33,6 +33,7 @@ import {
   liveBrainTeam as cloudLiveBrainTeam,
   liveBrainCreateMate as cloudLiveCreateMate,
   liveBrainPatchMate as cloudLivePatchMate,
+  liveDeskAction as cloudLiveDeskAction,
   liveBrainDeleteMate as cloudLiveDeleteMate,
   liveBrainTurn as cloudLiveBrainTurn,
   liveBrainAbort as cloudLiveBrainAbort,
@@ -966,6 +967,23 @@ async function requireLiveSession(): Promise<LiveAccountRow> {
   // sessionLive returned true, so row.session is set. The assertion emits
   // nothing; it only lets the two callers below read row.session.token.
   return row as LiveAccountRow;
+}
+
+export async function liveDeskAction({
+  computerId,
+  action,
+}: {
+  computerId?: string | undefined;
+  action?: Record<string, unknown> | undefined;
+} = {}): Promise<unknown> {
+  const row = await requireLiveSession();
+  const id = liveDeskId(computerId, "");
+  if (!id) {
+    const err = new Error("Desk not ready.") as CloudError;
+    err.code = "NEED_DESK";
+    throw err;
+  }
+  return cloudLiveDeskAction({ token: row.session.token, computerId: id, action });
 }
 
 export async function livePatchMate({ computerId, botId, name, job, identityId }: MateOptions = {}) {

@@ -154,7 +154,7 @@ In the Computers detail pane, below Start / Stop / Destroy, section **Disk snaps
 - **Restore** confirm: “This replaces the desk’s files with the snapshot. The bot’s chat does not change.” Stops the desk, untars into its volume, starts again.
 - **Delete** confirm: “Delete this snapshot? The live desk is unchanged.”
 - Shortcut: right-click a local bot (rail or chrome tab) → **Snapshots…** opens this pane on that bot’s desk.
-- **Move to Cloud…** (same menus, and a button next to Snapshot disk) only when the Cloud product flag is on (`SUB8_CLOUD` ≠ `0`, `account.cloudProduct`). Packaged apps default that flag **off**; unpackaged local dev defaults it **on**. The action snapshots the local disk (if any), then switches to Cloud so you can create a computer. Restoring the tarball onto the droplet is still Gate 2 — this is not a one-click disk copy. Hidden when already in Cloud place, and when the flag is off (release).
+- **Move to Cloud…** (same menus, and a button next to Snapshot disk) only when the Cloud product flag is on (`SUB8_CLOUD` ≠ `0`, `account.cloudProduct`). Packaged apps default that flag **off**; unpackaged local dev defaults it **on**. The action snapshots the local disk, creates a Cloud computer, names the Cloud bot the same, and copies small desk files (`Desktop/`, `MOVE-MARKER*`, root `.txt`/`.md`) onto `/config`. Chrome profile is not streamed through the Worker. Hidden when already in Cloud place, and when the flag is off (release). The local bot stays; Cloud is a second desk with the same name.
 
 HTTP (session-gated like other computer routes; Docker missing → `503 { error: "Docker is not running." }`):
 

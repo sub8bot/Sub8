@@ -296,6 +296,19 @@ export async function liveBrainCreateMate({ token, computerId, name, job }: Live
   });
 }
 
+export async function liveDeskAction({
+  token,
+  computerId,
+  action,
+}: ComputerIdOptions & { action?: Record<string, unknown> | undefined } = {}) {
+  return http.cloudApi("/api/brain/desk-action", {
+    baseUrl: needBase(),
+    token,
+    method: "POST",
+    body: { computerId, ...(action || {}) },
+  });
+}
+
 export async function liveBrainPatchMate({ token, computerId, botId, name, job, identityId }: LiveMateOptions = {}) {
   return http.cloudApi("/api/brain/team", {
     baseUrl: needBase(),
