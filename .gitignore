@@ -96,6 +96,7 @@ plan/
 /server/mcp-desk.mjs
 /server/mcp-sub8.mjs
 /server/memory.mjs
+/server/move-to-cloud.mjs
 /server/paths.mjs
 /server/read-file.mjs
 /server/subagents.mjs
