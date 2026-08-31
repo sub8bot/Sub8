@@ -28,6 +28,7 @@
     { "path": "./packages/web-fetch" },
     { "path": "./packages/desk-ports" },
     { "path": "./packages/desk-runtime" },
+    { "path": "./packages/desk-images" },
     { "path": "./tsconfig.server.json" },
     { "path": "./tsconfig.electron.json" },
     { "path": "./tsconfig.web.json" }

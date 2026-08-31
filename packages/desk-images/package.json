@@ -1,0 +1,28 @@
+{
+  "name": "@sub8/desk-images",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pure docker argv builders for tarring and untarring desk named volumes via an injected runner.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node --test test/desk-images.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3"
+  }
+}
