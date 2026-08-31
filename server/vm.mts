@@ -20,6 +20,7 @@ import {
   resolveStreamPort,
   streamPortForDisplay,
 } from "@sub8/desk-ports";
+import { deskRunArgs, limitsFromRamMb } from "@sub8/desk-runtime";
 
 import type { ChildProcess, SpawnOptions, StdioNull, StdioOptions, StdioPipe } from "node:child_process";
 import type { Server } from "node:net";
@@ -544,49 +545,26 @@ export function deskCreateArgs({
 } = {}): string[] {
   const img = image || resolvedImage || SLIM_IMAGE;
   const mem = deskMemory();
-  const shm = deskShm();
-  const hport = harnessPort || harnessHostPort(port);
-  return [
-    "run",
-    "-d",
-    "--platform",
-    dockerPlatform(),
-    "--name",
-    name!,
-    "--hostname",
-    "computer",
-    "--restart",
-    "unless-stopped",
-    "--dns",
-    "8.8.8.8",
-    "--dns",
-    "1.1.1.1",
-    "--shm-size",
-    shm,
-    "--memory",
-    mem,
-    "--memory-swap",
-    mem,
-    "-e",
-    "PUID=1000",
-    "-e",
-    "PGID=1000",
-    "-e",
-    "TZ=America/New_York",
-    "-e",
-    "TITLE=My Computer",
-    "-e",
-    "SELKIES_MANUAL_WIDTH=1024",
-    "-e",
-    "SELKIES_MANUAL_HEIGHT=768",
-    "-e",
-    "DESK_HARNESS=1",
-    "--add-host",
-    "host.docker.internal:host-gateway",
-    "--label",
-    `${INSTALL_LABEL}=${installId()}`,
-    "-v",
-    `${volume}:/config`,
+  // Map known deskMemory() strings onto rungs; unknown LOCALBOT_MEMORY overlays
+  // memory/memorySwap onto the 2 GB rung (no second memory parser).
+  const ramMb =
+    mem === "1g" ? 1024 :
+    mem === "2g" ? 2048 :
+    mem === "3g" ? 3072 :
+    mem === "4g" ? 4096 :
+    mem === "5g" ? 5120 :
+    mem === "6g" ? 6144 :
+    2048;
+  const limits = { ...limitsFromRamMb(ramMb), memory: mem, memorySwap: mem, shm: deskShm() };
+  // Callers pass a real port; harnessHostPort(port) is null only when port is missing.
+  const hport = (harnessPort || harnessHostPort(port))!;
+  return deskRunArgs({
+    name: name!,
+    volume: volume!,
+    image: img,
+    platform: dockerPlatform(),
+    hostname: "computer",
+    limits,
     // Bind to loopback. Published with no address, Docker Desktop listens on
     // 0.0.0.0, and the container's websockify (desk-init.sh) also binds all
     // interfaces with no auth in front of it -- x11vnc runs -nopw and is
@@ -596,12 +574,23 @@ export function deskCreateArgs({
     // Chrome profile and grok credentials. Nothing legitimate needs these off
     // this machine: the viewer builds http://127.0.0.1:<novncPort> (web/app.ts)
     // and harnessUrlFor is 127.0.0.1 too.
-    "-p",
-    `127.0.0.1:${port}-${port! + DISPLAY_SLOTS - 1}:3000-${3000 + DISPLAY_SLOTS - 1}`,
-    "-p",
-    `127.0.0.1:${hport}:${HARNESS_PORT}`,
-    img,
-  ];
+    publish: { kind: "loopback", novncPort: port!, harnessPort: hport },
+    env: [
+      "PUID=1000",
+      "PGID=1000",
+      "TZ=America/New_York",
+      "TITLE=My Computer",
+      "SELKIES_MANUAL_WIDTH=1024",
+      "SELKIES_MANUAL_HEIGHT=768",
+      "DESK_HARNESS=1",
+    ],
+    extraArgs: [
+      "--dns", "8.8.8.8",
+      "--dns", "1.1.1.1",
+      "--add-host", "host.docker.internal:host-gateway",
+      "--label", `${INSTALL_LABEL}=${installId()}`,
+    ],
+  });
 }
 
 /**
