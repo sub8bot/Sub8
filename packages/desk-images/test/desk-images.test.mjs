@@ -1,6 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { snapshotArgs, restoreArgs, listVolumeArgs } from "../dist/index.js";
+import {
+  snapshotArgs,
+  restoreArgs,
+  listVolumeArgs,
+  snapshotVolume,
+  restoreVolume,
+} from "../dist/index.js";
+
+function recorder() {
+  const calls = [];
+  const run = async (argv) => {
+    calls.push(argv.slice());
+    return { ok: true, out: "", err: "" };
+  };
+  return { calls, run };
+}
 
 test("snapshot tars a named volume into a host path; it does not docker commit", () => {
   const argv = snapshotArgs("localbot-config-deadbeef", "/tmp/desk.tgz");
@@ -65,4 +80,24 @@ test("refuses archive basenames that are empty or contain ..", () => {
     () => snapshotArgs("vol", "/"),
     (err) => err instanceof Error && err.message === "desk-images: bad archive path",
   );
+});
+
+test("snapshotVolume shells the tar argv and throws when docker fails", async () => {
+  const { calls, run } = recorder();
+  await snapshotVolume({ run, volume: "vol-a", archiveAbs: "/tmp/a.tgz" });
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], snapshotArgs("vol-a", "/tmp/a.tgz"));
+  const bad = async () => ({ ok: false, out: "", err: "boom" });
+  await assert.rejects(
+    () => snapshotVolume({ run: bad, volume: "vol-a", archiveAbs: "/tmp/a.tgz" }),
+    /boom/,
+  );
+});
+
+test("restoreVolume creates the volume first, then untars", async () => {
+  const { calls, run } = recorder();
+  await restoreVolume({ run, volume: "vol-a", archiveAbs: "/tmp/a.tgz" });
+  assert.equal(calls[0][0], "volume");
+  assert.equal(calls[0][1], "create");
+  assert.deepEqual(calls[1], restoreArgs("vol-a", "/tmp/a.tgz"));
 });
