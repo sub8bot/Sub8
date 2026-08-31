@@ -939,6 +939,10 @@ function cloudProductOn(): boolean {
   return cloudPlace.cloudProductOn(state);
 }
 
+function canMoveToCloud(): boolean {
+  return cloudPlace.canMoveToCloud(state);
+}
+
 function cloudComingSoon(): boolean {
   return cloudPlace.cloudComingSoon(state);
 }
@@ -3517,6 +3521,7 @@ function ctxIcon(kind: string): string {
   if (kind === "del") return svg(`<path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/>`);
   if (kind === "plus") return svg(`<path d="M12 5v14M5 12h14"/><path d="M4 7h6l2 2"/>`);
   if (kind === "disk") return svg(`<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 4v6h8V4M8 20v-5h8v5"/>`);
+  if (kind === "globe") return svg(`<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/>`);
   return "";
 }
 
@@ -3660,6 +3665,7 @@ function paintCtxMenu(): void {
       ${item(briefOn ? "hide-team-brief" : "show-team-brief", "info", briefOn ? "Hide description" : "Show description")}
       ${item("ctx-edit", "gear", "Open settings")}
       ${isCloudPlace() ? "" : item("ctx-snapshots", "disk", "Snapshots…")}
+      ${canMoveToCloud() ? item("ctx-move-cloud", "globe", "Move to Cloud…") : ""}
       <div class="ctx-sep"></div>
       ${item("ctx-tab-remove", "del", "Remove from team", "ctx-danger")}
     </div>`;
@@ -3721,6 +3727,7 @@ function paintCtxMenu(): void {
       <div class="ctx-sep"></div>
       ${item("ctx-edit", "edit", "Edit Profile")}
       ${item("ctx-snapshots", "disk", "Snapshots…")}
+      ${canMoveToCloud() ? item("ctx-move-cloud", "globe", "Move to Cloud…") : ""}
       ${item("ctx-dup", "dup", "Duplicate")}
       <div class="ctx-sep"></div>
       ${item("ctx-copy", "copy", "Copy conversation ID")}
@@ -4924,7 +4931,10 @@ function computerSnapshotsHtml(row: Computer): string {
       <p class="sub">Saves this Linux desk’s files and Chrome profile. Chat stays in Sub8.</p>
     </div>
     ${busy ? deskJobBarHtml(state.computerImageJob) : ""}
-    <button type="button" class="pill primary" data-act="desk-snap" data-id="${escapeHtml(row.id)}" ${busy ? "disabled" : ""}>Snapshot disk</button>
+    <div class="csnap-actions">
+      <button type="button" class="pill primary" data-act="desk-snap" data-id="${escapeHtml(row.id)}" ${busy ? "disabled" : ""}>Snapshot disk</button>
+      ${canMoveToCloud() ? `<button type="button" class="pill" data-act="computer-move-cloud" data-id="${escapeHtml(row.id)}" ${busy ? "disabled" : ""}>Move to Cloud</button>` : ""}
+    </div>
     <div class="csnap-list">${list}</div>
   </div>`;
 }
@@ -6915,6 +6925,14 @@ const ACTIONS: Record<string, ActHandler> = {
   },
   "ctx-snapshots": (e, { el }) => {
     openSnapshotsForBot(el.dataset.id);
+    return;
+  },
+  "ctx-move-cloud": (e, { el }) => {
+    void moveToCloudFromBot(el.dataset.id);
+    return;
+  },
+  "computer-move-cloud": (e, { el }) => {
+    void moveToCloudFromComputer(el.dataset.id);
     return;
   },
   "place": (e, { el }) => {
@@ -9428,8 +9446,57 @@ async function loadComputerImages(computerId: string | null | undefined): Promis
   }
 }
 
-async function snapshotDesk(computerId: string | undefined): Promise<void> {
-  if (!computerId || state.computerImagesBusy) return;
+async function moveToCloudFromBot(botId: string | undefined): Promise<void> {
+  if (!canMoveToCloud()) return;
+  const bot = botById(botId) || state.bots.find((b) => b.id === botId);
+  const computerId = bot?.vm?.computerId;
+  const ok = window.confirm(
+    computerId
+      ? "Save a snapshot of this desk, then open Cloud to create a computer? Chat stays in Sub8. Restoring that snapshot onto the Cloud desk is a later step."
+      : "Open Cloud to create a computer? This bot has no local desk to copy.",
+  );
+  if (!ok) return;
+  state.ctx = null;
+  paintCtxMenu();
+  if (computerId) {
+    const saved = await snapshotDesk(computerId);
+    if (!saved) return;
+  }
+  await switchPlace("cloud");
+  if (isLiveCloud()) {
+    resetCreateForm();
+    state.createCloudKind = "bot";
+    state.modal = "create";
+    rebuildCreateModal();
+    loadCloudBilling();
+  }
+}
+
+async function moveToCloudFromComputer(computerId: string | undefined): Promise<void> {
+  if (!computerId || !canMoveToCloud()) return;
+  const row = (state.computers || []).find((c) => c.id === computerId);
+  const botId = row?.attachedBotId || row?.lastBotId;
+  if (botId) {
+    await moveToCloudFromBot(botId);
+    return;
+  }
+  if (!window.confirm("Save a snapshot of this desk, then open Cloud to create a computer? Chat stays in Sub8. Restoring that snapshot onto the Cloud desk is a later step.")) {
+    return;
+  }
+  const saved = await snapshotDesk(computerId);
+  if (!saved) return;
+  await switchPlace("cloud");
+  if (isLiveCloud()) {
+    resetCreateForm();
+    state.createCloudKind = "bot";
+    state.modal = "create";
+    rebuildCreateModal();
+    loadCloudBilling();
+  }
+}
+
+async function snapshotDesk(computerId: string | undefined): Promise<boolean> {
+  if (!computerId || state.computerImagesBusy) return false;
   state.computerImagesBusy = true;
   state.computerImageJob = { computerId, action: "snapshot", phase: "pausing", bytes: 0, totalBytes: null };
   startImageJobPoll(computerId);
@@ -9437,8 +9504,10 @@ async function snapshotDesk(computerId: string | undefined): Promise<void> {
   try {
     await api(`/api/computers/${computerId}/images`, { method: "POST", body: {} });
     await loadComputerImages(computerId);
+    return true;
   } catch (err) {
     window.alert((err as CaughtError | undefined)?.message || "Could not snapshot this desk.");
+    return false;
   } finally {
     stopImageJobPoll();
     state.computerImagesBusy = false;

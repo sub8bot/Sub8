@@ -63,6 +63,7 @@ const HANDLED = [
   "computer-act",
   "computer-attach",
   "computer-attach-open",
+  "computer-move-cloud",
   "computer-select",
   "computer-view",
   "computers",
@@ -82,6 +83,7 @@ const HANDLED = [
   "ctx-edit",
   "ctx-hide",
   "ctx-move",
+  "ctx-move-cloud",
   "ctx-move-open",
   "ctx-new-section",
   "ctx-pin",
@@ -241,9 +243,9 @@ assert.deepEqual(extra, [], "data-act values handled that were not before: " + e
 assert.deepEqual(covered, expected);
 
 // Guard the guard: an empty pin would make every assertion above vacuous.
-// 172 -> 173: ctx-snapshots.
-assert.equal(HANDLED.length, 173);
-assert.equal(covered.length, 173);
+// 173 -> 175: ctx-move-cloud / computer-move-cloud.
+assert.equal(HANDLED.length, 175);
+assert.equal(covered.length, 175);
 
 console.log(
   "ok delegated-acts (" + keys.length + " in ACTIONS, " + new Set(chain).size +

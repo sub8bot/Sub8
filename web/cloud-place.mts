@@ -55,6 +55,11 @@ export function cloudProductOn(ctx: PlaceCtx | null | undefined): boolean {
   return cloudOn(ctx) && ctx?.account?.cloudProduct === true;
 }
 
+/** Local "Move to Cloud" — SUB8_CLOUD product flag, and we are not already in Cloud. Packaged builds default the flag off. */
+export function canMoveToCloud(ctx: PlaceCtx | null | undefined): boolean {
+  return cloudProductOn(ctx) && !isCloudPlace(ctx);
+}
+
 export function cloudComingSoon(ctx: PlaceCtx | null | undefined): boolean {
   return cloudOn(ctx) && ctx?.account?.comingSoon === true;
 }

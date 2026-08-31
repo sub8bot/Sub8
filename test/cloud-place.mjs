@@ -10,6 +10,7 @@ import {
   cloudIntervalFromTriggers,
   cloudOn,
   cloudProductOn,
+  canMoveToCloud,
   isCloudChief,
   isCloudPlace,
   isLiveCloud,
@@ -33,6 +34,12 @@ assert.equal(cloudOn(undefined), false, "no state yet must not throw");
 assert.equal(cloudProductOn(ctx({ enabled: true, cloudProduct: true })), true);
 assert.equal(cloudProductOn(ctx({ enabled: false, cloudProduct: true })), false, "cloudProduct alone is not enough");
 assert.equal(cloudProductOn(ctx({ enabled: true })), false);
+
+assert.equal(canMoveToCloud(ctx({ enabled: true, cloudProduct: true, view: "local" })), true, "dev flag on, still local");
+assert.equal(canMoveToCloud(ctx({ enabled: true, cloudProduct: false, view: "local" })), false, "packaged release flag off");
+assert.equal(canMoveToCloud(inCloud), false, "already in Cloud place");
+assert.equal(canMoveToCloud(ctx({ enabled: true, comingSoon: true, cloudProduct: false })), false);
+assert.equal(canMoveToCloud(undefined), false);
 
 assert.equal(cloudComingSoon(ctx({ enabled: true, comingSoon: true })), true);
 assert.equal(cloudComingSoon(ctx({ comingSoon: true })), false);
@@ -138,7 +145,7 @@ assert.doesNotMatch(mod, /\b(document|window|localStorage|fetch)\b/, "these pred
 
 const app = readFileSync(path.join(root, "web", "app.js"), "utf8");
 assert.match(app, /import \* as cloudPlace from "\.\/cloud-place\.mjs";/);
-for (const name of ["cloudOn", "cloudProductOn", "cloudComingSoon", "cloudBrainReady", "isCloudPlace", "isLiveCloud", "cloudDeskReady", "cloudDeskIdOf", "isCloudChief", "normalizeCloudRoutine", "cloudIntervalFromTriggers"]) {
+for (const name of ["cloudOn", "cloudProductOn", "canMoveToCloud", "cloudComingSoon", "cloudBrainReady", "isCloudPlace", "isLiveCloud", "cloudDeskReady", "cloudDeskIdOf", "isCloudChief", "normalizeCloudRoutine", "cloudIntervalFromTriggers"]) {
   assert.match(app, new RegExp(`return cloudPlace\\.${name}\\(`), `app.js must delegate ${name} to cloud-place.mjs`);
 }
 

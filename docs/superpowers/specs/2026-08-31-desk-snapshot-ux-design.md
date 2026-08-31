@@ -32,6 +32,15 @@ Phases: snapshot `pausing` → `copying` (stat the tarball; `totalBytes` = lates
 
 No job → `{ progress: null }`. Unknown computer → 404. Do not fake 0–100 when `totalBytes` is null; show bytes + indeterminate bar.
 
+## Move to Cloud (feature flag)
+
+`canMoveToCloud(ctx)` = `cloudProductOn` and not already `isCloudPlace`.
+
+- Packaged Electron sets `SUB8_CLOUD=0` unless the env overrides it (`electron/main.mts`).
+- Unpackaged local dev leaves `SUB8_CLOUD` empty → product on.
+- UI: **Move to Cloud…** on rail/tab menus; **Move to Cloud** on the Disk snapshots row. Confirm, snapshot if there is a desk, `switchPlace("cloud")`, open create-computer when live.
+- Does not copy the tarball onto a droplet (Gate 2).
+
 ## Out of scope
 
-Move-to-Cloud, note editor, vault, retag `sub8-desk:trixie`, SSE/tar checkpoints.
+Rail restore onto a paying droplet. Notes editor. Vault. Retag `sub8-desk:trixie`. SSE/tar checkpoints.
