@@ -6,6 +6,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import * as Sentry from "@sentry/electron/main";
 import { migrateUserData } from "@sub8/store";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -86,6 +87,13 @@ app.setAboutPanelOptions({
   copyright: "Copyright © 2026 Daniel Farina",
 });
 app.commandLine.appendSwitch("disable-http-cache");
+Sentry.init({
+  dsn: "https://f953dc5ff8f15b4b67ba3fd967ae779e@o4512007301169152.ingest.us.sentry.io/4512007318339584",
+  release: `sub8@${app.getVersion()}`,
+  environment: app.isPackaged ? "production" : "development",
+  tracesSampleRate: app.isPackaged ? 0.2 : 1.0,
+  integrations: [Sentry.startupTracingIntegration()],
+});
 
 function migrateLegacyUserData() {
   const dest = path.join(app.getPath("userData"), "data");

@@ -1,3 +1,4 @@
+import { tagSentryVersion } from "./sentry.js";
 import { animList, bodyList, defaultAvatar, faceList, inferMood, isSleepingMood, randomCreateFace, randomWakeMood, syncAvatars } from "./avatar.js";
 import { AVATAR_COLORS } from "./palette.js";
 import { applyHealthPort, CONNECTING_AFTER_MS, cloudFrameKey, frameKey, healthIframeIsCurrent, novncAutoconnectUrl, shouldKickCloudFrame, shouldMountCloudFrame, shouldShowConnecting } from "./stream-bind.mjs";
@@ -1242,6 +1243,20 @@ function resetCloudMux(wrap: HTMLElement | null | undefined): void {
   wrap.querySelectorAll("iframe.cloud-novnc").forEach((f) => f.remove());
 }
 
+/** Local paint can replace #screen-wrap innerHTML without clearing dataset.cloudMux. */
+function ensureCloudMux(wrap: HTMLElement): HTMLElement {
+  let mux = wrap.querySelector<HTMLElement>(".cloud-mux");
+  if (mux) return mux;
+  wrap.innerHTML = `<div class="cloud-desk-live"><div class="cloud-desk-bar"></div><div class="cloud-mux"></div></div>`;
+  wrap.dataset.cloudMux = "1";
+  mux = wrap.querySelector<HTMLElement>(".cloud-mux");
+  if (mux) return mux;
+  mux = document.createElement("div");
+  mux.className = "cloud-mux";
+  wrap.appendChild(mux);
+  return mux;
+}
+
 function scheduleCloudStreamWatch(ms = 1500): void {
   clearTimeout(cloudWatchTimer);
   cloudWatchTimer = setTimeout(() => {
@@ -1362,10 +1377,7 @@ function attachLiveFrame(bot: Bot | null | undefined): void {
     const keep = isFieldEl(document.activeElement) ? document.activeElement : null;
     // One live noVNC connection per display, kept connected across tab switches —
     // toggling visibility is instant; remounting reconnects VNC every time.
-    if (!wrap.dataset.cloudMux) {
-      wrap.innerHTML = `<div class="cloud-desk-live"><div class="cloud-desk-bar"></div><div class="cloud-mux"></div></div>`;
-      wrap.dataset.cloudMux = "1";
-    }
+    const mux = ensureCloudMux(wrap);
     const bar = wrap.querySelector(".cloud-desk-bar");
     if (bar) {
       const disp = bot?.vm?.display && bot.vm.display !== ":1" ? ` · screen ${bot.vm.display}` : "";
@@ -1373,9 +1385,6 @@ function attachLiveFrame(bot: Bot | null | undefined): void {
       // desk is on hand by the time this line runs.
       bar.textContent = `${desk!.status} · ${desk!.ram || ""} · ${desk!.ipv4 || ""}${disp}`;
     }
-    // The block above writes .cloud-mux whenever dataset.cloudMux is unset, so
-    // one of the two paths has put it in the DOM before this read.
-    const mux = wrap.querySelector<HTMLElement>(".cloud-mux")!;
     let frame = [...mux.querySelectorAll<HTMLIFrameElement>("iframe.cloud-novnc")].find((f) => f.dataset.stream === stream);
     if (!frame) {
       frame = document.createElement("iframe");
@@ -1422,6 +1431,7 @@ function attachLiveFrame(bot: Bot | null | undefined): void {
     restoreFieldFocus(keep);
     return;
   }
+  resetCloudMux(wrap);
   if (dockerMissing()) {
     liveFrameKey = null;
     wrap.innerHTML = `<div class="screen-status desk-empty">${dockerPaneHtml()}</div>`;
@@ -1789,6 +1799,7 @@ function streamUrl(bot: Bot, { bust = false }: { bust?: boolean } = {}): string 
 }
 
 const lastGoodScreen = new Map<string, string>();
+const missingStills = new Set<string>();
 
 function bindStill(img: HTMLImageElement | null | undefined, botId: string): void {
   if (!img) return;
@@ -1813,8 +1824,11 @@ function bindStill(img: HTMLImageElement | null | undefined, botId: string): voi
 
 async function refreshStill(img: HTMLImageElement | null | undefined, botId: string | null | undefined): Promise<void> {
   if (!img || !botId) return;
+  if (isCloudPlace()) return;
+  if (missingStills.has(botId)) return;
   try {
     const res = await fetch(`/api/bots/${botId}/screen?t=${Date.now()}`);
+    if (res.status === 404) missingStills.add(botId);
     if (!res.ok) throw new Error("no still");
     const blob = await res.blob();
     if (!blob.size || blob.size < 80) throw new Error("empty still");
@@ -2811,6 +2825,13 @@ function ensureRailTeamNode(t: RailTeam): HTMLButtonElement {
   return cluster;
 }
 
+function bindPlaceToggle(btn: HTMLElement): void {
+  if (btn.dataset.peekBound) return;
+  btn.dataset.peekBound = "1";
+  btn.addEventListener("pointerenter", () => btn.classList.add("peek"));
+  btn.addEventListener("pointerleave", () => btn.classList.remove("peek"));
+}
+
 function paintPlaceSwitch(): void {
   const host = $("#place-switch");
   if (!host) return;
@@ -2821,9 +2842,25 @@ function paintPlaceSwitch(): void {
   }
   host.hidden = false;
   const onCloud = isCloudPlace() || state.cloudSoonOpen;
-  host.innerHTML = `
-    <button type="button" class="place-btn ${onCloud ? "" : "on"}" data-act="place" data-id="local" title="Local">Local</button>
-    <button type="button" class="place-btn ${onCloud ? "on" : ""}" data-act="place" data-id="cloud" title="Cloud">Cloud</button>`;
+  const next = onCloud ? "local" : "cloud";
+  const title = onCloud ? "Switch to Local" : "Switch to Cloud";
+  let btn = host.querySelector<HTMLButtonElement>(".place-toggle");
+  if (!btn) {
+    host.innerHTML = `<button type="button" class="place-toggle" data-act="place" aria-pressed="false">
+      <span class="place-toggle-inner">
+        <span class="place-face local">${iconComputer()} Local</span>
+        <span class="place-face cloud">${iconGlobe()} Cloud</span>
+      </span>
+    </button>`;
+    btn = host.querySelector<HTMLButtonElement>(".place-toggle");
+    if (btn) bindPlaceToggle(btn);
+  }
+  if (!btn) return;
+  btn.dataset.id = next;
+  btn.classList.toggle("on-cloud", onCloud);
+  btn.setAttribute("aria-pressed", onCloud ? "true" : "false");
+  btn.setAttribute("aria-label", title);
+  btn.title = title;
 }
 
 function paintTeamCluster(cluster: HTMLElement, t: RailTeam, bot: Bot | null | undefined): void {
@@ -6955,6 +6992,7 @@ const ACTIONS: Record<string, ActHandler> = {
     return;
   },
   "place": (e, { el }) => {
+    el.classList.remove("peek");
     switchPlace(el.dataset.id);
     return;
   },
@@ -9907,12 +9945,28 @@ async function switchPlace(id: string | undefined): Promise<void> {
     paintAccountGate();
     return;
   }
+  const view = id === "cloud" ? "cloud" : "local";
+  const prevView = state.account?.view;
+  if (state.account) state.account = { ...state.account, view };
+  if (prevView && prevView !== view) resetChatChrome();
+  paintPlaceSwitch();
+  render();
   try {
-    const next = await api("/api/account/view", { method: "POST", body: { view: id } }) as AccountState;
-    await applyAccount(next);
+    const next = await api("/api/account/view", { method: "POST", body: { view } }) as AccountState;
+    const signedIn = Boolean(next?.signedIn);
+    state.account = next;
+    state.accountBusy = false;
+    if (next?.email) state.accountEmail = next.email;
+    if (signedIn && view === "cloud") await loadCloudDraft();
+    else if (signedIn) loadCloudDraft().catch(() => {});
+    paintAccountGate();
+    if (state.modal === "settings") paintModal();
+    render();
   } catch (err) {
+    if (state.account && prevView) state.account = { ...state.account, view: prevView };
     state.accountError = (err as CaughtError).message || "Could not switch place.";
     paintAccountGate();
+    render();
   }
 }
 
@@ -10797,6 +10851,7 @@ function listen(): void {
     });
     es.addEventListener("screen", (e: MessageEvent<string>) => {
       const { botId, url } = JSON.parse(e.data);
+      if (botId) missingStills.delete(botId);
       if (isCloudPlace() || botId !== state.selected) return;
       const still = $<HTMLImageElement>(".screen-still");
       if (!still) return;
@@ -10918,7 +10973,10 @@ function watchStream(): void {
   try {
   await refreshSettings();
   const ev = await runningAppVersion();
-  if (ev) state.appVersion = ev;
+  if (ev) {
+    state.appVersion = ev;
+    tagSentryVersion(ev);
+  }
   await refresh();
   listen();
   render();
@@ -10974,7 +11032,7 @@ function watchStream(): void {
   window.addEventListener("focus", () => {
     const bot = state.bots.find((b) => b.id === state.selected);
     const still = $<HTMLImageElement>(".screen-still");
-    if (bot?.id && still) refreshStill(still, bot.id);
+    if (bot?.id && still && !isCloudPlace()) refreshStill(still, bot.id);
     if (state.accountBusy || (state.account && !state.account.signedIn)) {
       refreshSettings().catch(() => {});
     }

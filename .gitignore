@@ -51,6 +51,8 @@ plan/
 /web/api-client.mjs
 /web/app.js
 /web/avatar.js
+/web/sentry.js
+/web/chat-activity.mjs
 /web/brain-setup.mjs
 /web/chat-merge.mjs
 /web/cloud-place.mjs

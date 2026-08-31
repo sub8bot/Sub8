@@ -302,10 +302,29 @@ export function syncAvatars(items: AvatarItem[]): void {
     }
   }
   ensureRenderer();
-  if (!looping) {
+  blitViews(0);
+  if (views.size && !looping) {
     looping = true;
     last = performance.now();
     requestAnimationFrame(tick);
+  }
+}
+
+function blitViews(delta: number): void {
+  if (!views.size) return;
+  const gl = ensureRenderer();
+  for (const view of views.values()) {
+    if (!view.el.isConnected) continue;
+    if (delta) view.bot.update(delta);
+    const px = view.canvas.width;
+    if (px !== lastPx) {
+      gl.setSize(px, px, false);
+      lastPx = px;
+    }
+    gl.setViewport(0, 0, px, px);
+    gl.render(view.scene, view.camera);
+    view.ctx.clearRect(0, 0, px, px);
+    view.ctx.drawImage(gl.domElement, 0, 0, px, px);
   }
 }
 
@@ -485,20 +504,7 @@ function tick(now: number): void {
   }
   const delta = Math.min(0.05, (now - last) / 1000);
   last = now;
-  const gl = ensureRenderer();
-  for (const view of views.values()) {
-    if (!view.el.isConnected) continue;
-    view.bot.update(delta);
-    const px = view.canvas.width;
-    if (px !== lastPx) {
-      gl.setSize(px, px, false);
-      lastPx = px;
-    }
-    gl.setViewport(0, 0, px, px);
-    gl.render(view.scene, view.camera);
-    view.ctx.clearRect(0, 0, px, px);
-    view.ctx.drawImage(gl.domElement, 0, 0, px, px);
-  }
+  blitViews(delta);
   requestAnimationFrame(tick);
 }
 

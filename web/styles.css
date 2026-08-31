@@ -206,10 +206,10 @@ body {
 .shell { flex: 1; display: flex; min-height: 0; }
 .place-switch {
   display: flex;
-  gap: 4px;
   width: calc(100% - 16px);
-  padding: 0 2px 4px;
+  padding: 2px 2px 8px;
   flex: 0 0 auto;
+  -webkit-app-region: no-drag;
 }
 .place-btn {
   flex: 1;
@@ -225,6 +225,78 @@ body {
 }
 .place-btn.on { background: var(--seg); color: var(--text); }
 .place-btn:hover { color: var(--text); }
+.place-toggle {
+  position: relative;
+  flex: 1;
+  height: 32px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  overflow: hidden;
+  border-radius: 10px;
+  cursor: pointer;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  -webkit-app-region: no-drag;
+}
+.place-toggle-inner {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 64px;
+  transform: translateY(0);
+  transition: transform 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.place-toggle.on-cloud .place-toggle-inner {
+  transform: translateY(-32px);
+}
+.place-toggle.peek:not(.on-cloud) .place-toggle-inner,
+.place-toggle:focus-visible:not(.on-cloud) .place-toggle-inner {
+  transform: translateY(-32px);
+}
+.place-toggle.peek.on-cloud .place-toggle-inner,
+.place-toggle:focus-visible.on-cloud .place-toggle-inner {
+  transform: translateY(0);
+}
+.place-face {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 0 0 32px;
+  height: 32px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+.place-face svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+}
+.place-face.local {
+  background: var(--seg);
+  color: var(--text);
+}
+.place-face.cloud {
+  color: #eef3ff;
+  background:
+    radial-gradient(120% 90% at 18% -10%, color-mix(in srgb, #bfdbfe 70%, transparent), transparent 58%),
+    linear-gradient(180deg, #4f6fd6 0%, #1e3a8a 100%);
+}
+.place-toggle.peek,
+.place-toggle:focus-visible {
+  box-shadow: 0 6px 16px color-mix(in srgb, #1e3a8a 16%, transparent);
+}
+.place-toggle:active .place-toggle-inner {
+  transition-duration: 0.16s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .place-toggle-inner {
+    transition: none;
+  }
+}
 #cloud-soon-host {
   position: absolute;
   inset: 0;
