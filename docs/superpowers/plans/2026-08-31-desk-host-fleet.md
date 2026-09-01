@@ -1145,13 +1145,13 @@ ALTER TABLE computers ADD COLUMN volume_name TEXT;
 
 Do not implement the host agent HTTP in this task beyond a function `hostDockerRun(ipv4, token, argv)` that tests mock. Production path stays 1:1 until Gate 3.
 
-- [ ] **Step 1: Tests with mocked D1 like `cloud/test/computers.mjs`**
+- [x] **Step 1: Tests with mocked D1 like `cloud/test/computers.mjs`**
 
 When `PACK_SHARED_HOSTS=0`, create still calls `createDroplet` once per computer.
 
 When `PACK_SHARED_HOSTS=1` and two `vm.4g` creates against one mocked host with 32 GB, second create must **not** call `createDroplet`. Third that does not fit does call it.
 
-- [ ] **Step 2–5: implement behind the flag, commit**
+- [x] **Step 2–5: implement behind the flag, commit**
 
 ```bash
 git commit -m "feat: optional shared-host placement behind PACK_SHARED_HOSTS."
@@ -1304,7 +1304,9 @@ New droplets boot the desk from `deskRunArgs` with `-v sub8-config-<id>:/config`
 
 Landed `feat: add @sub8/desk-place host bin-pack.` — `packages/desk-place` with `usableHost`, `hostFits`, `pickHost`, the four constants, README; root tsconfig reference + `file:` dep + lockfile (`npm install` added 1 package). **Spec correction:** the spec's 64 GB example used a 500 GB disk, which its own disk rule bounds at 11 desks, not 15 — the RAM-bound test uses 800 GB and a second test pins the disk-bound 11. **Choice:** a dedicated pairing refuses a host with *any* leftover reservation (disk or cpu, not only `reservedRamMb`), and gets no 1.5× cpu allowance. Tests 9/9 (`node --test`), root typecheck EXIT 0. `npm run test:packages` shows one **pre-existing, unrelated** failure in `packages/harness-auth/test/auth-detection.test.mjs:216` (source identical to HEAD; nothing imports desk-place yet). Not vendored into cloud — that is Task 11. Next: Task 11.
 
-### Task 11 — not started
+### Task 11 — 2026-09-01
+
+Landed cloud `f42db72` `feat: optional shared-host placement behind PACK_SHARED_HOSTS.` Migrations 0006/0007 verbatim; `cloud/src/hosts.ts` (snapshots from D1 → `pickHost`, `provisionHost` at `s-8vcpu-32gb` with a docker-only `hostUserData`, `hostDockerRun` as the mocked seam); `createComputer` gates on `PACK_SHARED_HOSTS=1 ∧ !dedicated`, else byte-identical; `host_id`/`volume_name` through row mapping and `save`. **Choices:** packed desks publish loopback-only (`13000 + 10·slot`) and keep `ipv4`/`stream_url` empty until Task 13's relay; host token stored via `putDeskSecret` keyed by the host id; spec's "32 GB host, third does not fit" is disk-bound in the test (110 GB). Tests: 4 cases RED→GREEN in `cloud/test/computers.mjs`; full chain, typecheck, `wrangler --dry-run` EXIT 0. Deferred: packed-desk destroy does no host `docker rm`; desks placed on a warming host wait for Task 12's cron. Nothing provisioned; flag is `"0"` in wrangler. Next: Task 12.
 
 ### Task 12 — not started
 
