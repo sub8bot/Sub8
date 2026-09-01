@@ -1190,9 +1190,9 @@ git commit -m "feat: warm Docker hosts without a customer desk."
 - Modify: `cloud/src/computers.ts` — refuse `PACK_SHARED_HOSTS=1` for a non-admin if `STREAM_VIA_WORKER !== "1"` (throw 409 `"Shared hosts need the Worker stream proxy."`)
 - No public `-p 3000:3000` on shared hosts. `publish.kind` for packed desks becomes loopback-on-the-host (`127.0.0.1:3000`) plus Worker relay, **or** host ports bound to the droplet's private interface only. Do not ship public websockify.
 
-- [ ] **Step 1: Test the 409**
-- [ ] **Step 2: Implement the guard**
-- [ ] **Step 3: Commit**
+- [x] **Step 1: Test the 409**
+- [x] **Step 2: Implement the guard**
+- [x] **Step 3: Commit**
 
 ```bash
 git commit -m "fix: never pack paying desks without the Worker stream proxy."
@@ -1316,8 +1316,12 @@ Landed cloud `f2cc8cb` `feat: warm Docker hosts without a customer desk.` `WARM_
 
 Bin-pack, `desk_hosts`, flagged placement, and warm hosts are in tests. What is missing is the operator soak (Task 12 Step 3) and a real host agent `/host/docker` route — until B's screenshot survives A's `stress-ng`, packing is not proven and `PACK_SHARED_HOSTS` stays `"0"`. Task 13 also needs `STREAM_VIA_WORKER=1` on prod first. Paused here.
 
-### Task 13 — not started
+### Task 13 — 2026-09-01
 
-### Gate 4 — not passed
+Landed cloud `23089f9` `fix: never pack paying desks without the Worker stream proxy.` `createComputer` (via `attachComputer` and `POST /computers`) refuses a non-admin, non-pool packed create with 409 unless `STREAM_VIA_WORKER === "1"`, before any row or droplet; admin and pool desks may pack (Gate 3 internal soak path); dedicated and flag-off untouched; packed desks stay loopback-only. `docs/authenticated-desk-stream.md` gained **Shared hosts require the proxy**. Dispatched ahead of the soak on purpose: the guard is what makes flipping the flag safe. Tests 4 cases RED→GREEN (the Task 11/12 internal-packing tests now create as admin, which is what they model); chain, typecheck, dry-run EXIT 0. Gap noted in the doc: the relay does not yet dial a packed desk's loopback slot, so packed desks have no stream URL.
+
+### Gate 4 — not passed (operator)
+
+The guard is in. Flipping `PACK_SHARED_HOSTS=1` for `vm.1g`/`vm.2g`/`vm.4g` still needs, in order: the relay proven on a live desk and `STREAM_VIA_WORKER=1` on prod; the Gate 3 soak; a real host agent `/host/docker` route; a relay that dials a packed desk's loopback slot. All four are outside this plan's code tasks. **Every code task in this plan is done as of 2026-09-01.**
 
 `STREAM_VIA_WORKER` still unset in prod wrangler. `PACK_SHARED_HOSTS` does not exist. Paying desks must stay 1:1.

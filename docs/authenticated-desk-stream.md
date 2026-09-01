@@ -214,3 +214,29 @@ Worker route on the same origin (session cookie flows, `SameSite=Lax`, same-site
   `:3000-3008` entirely, leaving only the (password-protected, firewalled) RFB port on the
   public interface. Defer until the baseline is proven — it trades the single-source-of-truth
   asset proxy for a vendored, version-locked copy.
+
+---
+
+## Shared hosts require the proxy (desk host fleet, Task 13)
+
+Packing several customer desks onto one Docker host (`PACK_SHARED_HOSTS=1`)
+puts several websockify fronts on one droplet. Each of them is unauthenticated,
+so a shared host must never publish them on the public interface. Two rules
+enforce that:
+
+- **Packed desks publish on the host's loopback only.** `packedRunArgs` in
+  `cloud/src/hosts.ts` uses `deskRunArgs` with `publish.kind === "loopback"`
+  (base `13000`, ten ports per slot). There is no `-p 3000:3000` on a shared
+  host; the only way to a packed desk's stream is this Worker relay.
+- **Paying desks may not pack until the relay is on.** `createComputer` refuses
+  a non-admin, non-pool create with `409 "Shared hosts need the Worker stream
+  proxy."` when `PACK_SHARED_HOSTS=1` and `STREAM_VIA_WORKER !== "1"`, before
+  any D1 row or droplet exists. Admin and warm-pool (internal) desks may still
+  pack, which is what Gate 3's internal soak uses. Dedicated SKUs (`vm.8g`,
+  `vm.16g`) and the flag-off path are untouched.
+
+Rollout order therefore stays: prove the relay on a live desk → set
+`STREAM_VIA_WORKER=1` on prod → pass the Gate 3 soak → only then
+`PACK_SHARED_HOSTS=1` for `vm.1g` / `vm.2g` / `vm.4g` (Gate 4). The relay for a
+*packed* desk (dialing the host's loopback slot rather than `<ipv4>:5900`) is not
+built yet; until it is, a packed desk has no stream URL at all.
