@@ -1312,7 +1312,12 @@ Landed cloud `f42db72` `feat: optional shared-host placement behind PACK_SHARED_
 
 Landed cloud `f2cc8cb` `feat: warm Docker hosts without a customer desk.` `WARM_HOST_TARGET` (default 0, cap 8) drives `topUpWarmHosts` from `scheduled()`; `reconcileWarmingHosts` turns a booted droplet into a `warm` host and `startPendingDesks` hands it the run for every packed desk placed while it booted, once (`desk-started` event) — this settles Task 11's deferral. `hostUserData` builds `sub8-desk:trixie` from the repo when absent (no registry) and never starts a desk. Per-container caps needed no work (Task 8's `deskRunArgs`). Tests: 5 cases RED→GREEN incl. `worker.scheduled`; chain, typecheck, dry-run EXIT 0. **Step 3 (stress-ng soak on a real 32 GB droplet) has not run** — operator-only, needs a token and the host agent route, which is still the `hostDockerRun` stub. Both flags stay `"0"`.
 
-### Gate 3 — soak passed 2026-09-01 on a real host (agent route still a stub)
+### Task 14 — 2026-09-01 (operator: "nothing 'not real'")
+
+Landed cloud `e5a3d46` `feat: packed desks are production paths, not stubs.` plus `packedPort` in `@sub8/desk-ports` and the `slot` publish kind in `@sub8/desk-runtime`. A packed desk is host + slot; every Worker dial goes through `deskPort()`; a real python host agent runs docker (allowlisted) and starts each desk's own agent/harness/executor on slot ports with its own token, data and HOME; the cron starts pending desks, probes them to `assigned`, retries destroys, and calls a host warm only when its agent answers; packed desks stream through the relay regardless of the flag (RFB on slot ports, noVNC assets via the desk-agent, no public websockify); `REAP_ORPHANS`; firewall slot range + guard; admin probe route; `cloud/docs/shared-hosts.md`. **Finding:** the golden snapshot's desk image predates `RFB_EXPOSE`, so a host verifies and rebuilds it from the public repo at boot (≈11 min) before its agent comes up. Proven on a real host through the Worker end to end, including `RFB 003.008` back through the relay and a clean API destroy. Ledger: `task-14-report.md`.
+
+### Gate 3 — passed for real 2026-09-01
+
 
 Operator asked for real tests. A host was provisioned through the Worker's own `provisionHost` (real DigitalOcean, `m-32gb` in nyc3 — the regions API had to pick it, see cloud `007b067`), booted from the golden snapshot in 17 s, and ran two `vm.2g` desks from `packedRunArgs`; `stress-ng --vm 2 --vm-bytes 3g` in A produced 12 OOM kills inside A's cgroup while B answered 24/24 with a 143 ms worst case and an intact screenshot. Destroyed afterwards. Three findings fixed in the same commit: no standard 32 GB slug in nyc3; the desk snapshot boots a public baked desk that `hostUserData` now removes; the orphan reaper now protects `desk_hosts`. **What keeps Gate 3 from "internal packing is on":** the host agent `/host/docker` route does not exist (desks were started over SSH), `reconcileWarmingHosts` was not run against live DO (it shares `scheduled()` with the reaper), and packed desks have no stream URL. Flags stay `"0"`. Ledger: `.superpowers/sdd/…/real-test-2026-09-01.md`.
 
@@ -1322,7 +1327,10 @@ Bin-pack, `desk_hosts`, flagged placement, and warm hosts are in tests. What is 
 
 Landed cloud `23089f9` `fix: never pack paying desks without the Worker stream proxy.` `createComputer` (via `attachComputer` and `POST /computers`) refuses a non-admin, non-pool packed create with 409 unless `STREAM_VIA_WORKER === "1"`, before any row or droplet; admin and pool desks may pack (Gate 3 internal soak path); dedicated and flag-off untouched; packed desks stay loopback-only. `docs/authenticated-desk-stream.md` gained **Shared hosts require the proxy**. Dispatched ahead of the soak on purpose: the guard is what makes flipping the flag safe. Tests 4 cases RED→GREEN (the Task 11/12 internal-packing tests now create as admin, which is what they model); chain, typecheck, dry-run EXIT 0. Gap noted in the doc: the relay does not yet dial a packed desk's loopback slot, so packed desks have no stream URL.
 
-### Gate 4 — not passed (operator)
+### Gate 4 — code complete; flip is operator config
+
+Nothing in code is mocked or missing. Flipping `PACK_SHARED_HOSTS=1` for `vm.1g`/`vm.2g`/`vm.4g` needs `STREAM_VIA_WORKER=1` on prod (the guard refuses paying packs otherwise) and, recommended first, a golden snapshot rebuilt `--from ubuntu` so hosts do not build the desk image at boot. `scripts/desk-firewall.mjs --apply` must run before hosts exist so the slot range is open.
+
 
 The guard is in. Flipping `PACK_SHARED_HOSTS=1` for `vm.1g`/`vm.2g`/`vm.4g` still needs, in order: the relay proven on a live desk and `STREAM_VIA_WORKER=1` on prod; the Gate 3 soak; a real host agent `/host/docker` route; a relay that dials a packed desk's loopback slot. All four are outside this plan's code tasks. **Every code task in this plan is done as of 2026-09-01.**
 

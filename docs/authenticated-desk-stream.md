@@ -235,8 +235,20 @@ enforce that:
   pack, which is what Gate 3's internal soak uses. Dedicated SKUs (`vm.8g`,
   `vm.16g`) and the flag-off path are untouched.
 
-Rollout order therefore stays: prove the relay on a live desk → set
-`STREAM_VIA_WORKER=1` on prod → pass the Gate 3 soak → only then
-`PACK_SHARED_HOSTS=1` for `vm.1g` / `vm.2g` / `vm.4g` (Gate 4). The relay for a
-*packed* desk (dialing the host's loopback slot rather than `<ipv4>:5900`) is not
-built yet; until it is, a packed desk has no stream URL at all.
+A packed desk streams through this relay **regardless of the flag**: it has no
+direct URL to fall back to. Its RFB is x11vnc inside the container (started with
+`RFB_EXPOSE=1`) published on the host interface at the desk's slot port
+(`packedPort(slot, 5900 + display - 1)`, 20000–23999); `relayVnc` dials
+`deskPort(desk, …)` so a droplet desk and a packed desk look alike. noVNC's
+static files come from the desk's own agent (`GET /assets/<file>?display=n`,
+desk-token authed), which reads the host-loopback websockify — so a shared host
+publishes no websockify at all. The firewall script allows 20000–23999 from the
+Cloudflare sources only (`test/desk-firewall.mjs` checks the whole slot range).
+
+Rollout order for **droplet** desks is unchanged: prove the relay on a live desk →
+set `STREAM_VIA_WORKER=1` on prod → only then `PACK_SHARED_HOSTS=1` for
+`vm.1g` / `vm.2g` / `vm.4g` (Gate 4), because paying packed desks are refused
+without the flag. The golden snapshot of 2026-08-26 carries a desk image that
+predates `RFB_EXPOSE`; a shared host verifies the image at boot and rebuilds it
+from the public repo when it cannot honor the flag, before its agent comes up.
+See `cloud/docs/shared-hosts.md`.

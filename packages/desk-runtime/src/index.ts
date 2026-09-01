@@ -4,6 +4,7 @@ export type {
   DeskRunSpec,
   HostPublish,
   LoopbackPublish,
+  SlotPublish,
 } from "./run.js";
 export { deskRunArgs } from "./run.js";
 export { limitsFromRamMb } from "./limits.js";

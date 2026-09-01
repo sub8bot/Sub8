@@ -126,3 +126,24 @@ test("a remote that never connects hangs up on the client instead of hanging", a
     proxy.close();
   }
 });
+
+test("packedPort maps every standard desk port into its slot's 100-port window", async () => {
+  const { packedPort, PACK_PORT_BASE, PACK_SLOT_STRIDE } = await import("../dist/index.js");
+  assert.equal(PACK_PORT_BASE, 20000);
+  assert.equal(PACK_SLOT_STRIDE, 100);
+  assert.equal(packedPort(0, 80), 20000);
+  assert.equal(packedPort(0, 3000), 20010);
+  assert.equal(packedPort(0, 3001), 20011, "3001 is websockify display 2, never an agent port");
+  assert.equal(packedPort(0, 3007), 20017);
+  assert.equal(packedPort(0, 3010), 20020);
+  assert.equal(packedPort(0, 3011), 20021);
+  assert.equal(packedPort(0, 5900), 20030);
+  assert.equal(packedPort(0, 5907), 20037);
+  assert.equal(packedPort(3, 3011), 20321);
+  // Two slots never share a port.
+  const all = (s) => [80, 3000, 3001, 3002, 3003, 3004, 3005, 3006, 3007, 3010, 3011, 5900, 5901, 5902, 5903, 5904, 5905, 5906, 5907].map((p) => packedPort(s, p));
+  assert.equal(new Set([...all(0), ...all(1)]).size, new Set(all(0)).size * 2);
+  assert.throws(() => packedPort(0, 22), /not a desk port/);
+  assert.throws(() => packedPort(-1, 80), /slot/);
+  assert.throws(() => packedPort(40, 80), /slot/);
+});

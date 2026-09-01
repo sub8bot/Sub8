@@ -19,3 +19,5 @@ export {
 } from "./ports.js";
 
 export { attachHarnessProxy } from "./proxy.js";
+
+export { PACK_MAX_SLOTS, PACK_PORT_BASE, PACK_SLOT_STRIDE, packedPort } from "./ports.js";

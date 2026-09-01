@@ -1,4 +1,4 @@
-import { DISPLAY_SLOTS } from "@sub8/desk-ports";
+import { DISPLAY_SLOTS, packedPort } from "@sub8/desk-ports";
 import { HARNESS_PORT } from "@sub8/harness-protocol";
 import type { DeskLimits } from "./types.js";
 
@@ -13,7 +13,18 @@ export type HostPublish = {
   rfbExpose: boolean;
 };
 
-export type DeskPublish = LoopbackPublish | HostPublish;
+/**
+ * One desk among many on a shared host. websockify lands on the host loopback
+ * (the desk-agent proxies noVNC assets; nothing public), x11vnc RFB lands on the
+ * host interface for the Worker relay. The harness and executor are per-desk
+ * host processes on their own slot ports, so nothing else is published.
+ */
+export type SlotPublish = {
+  kind: "slot";
+  slot: number;
+};
+
+export type DeskPublish = LoopbackPublish | HostPublish | SlotPublish;
 
 export interface DeskRunSpec {
   name: string;
@@ -59,7 +70,11 @@ export function deskRunArgs(spec: DeskRunSpec): string[] {
   if (spec.extraArgs) args.push(...spec.extraArgs);
   for (const e of spec.env) args.push("-e", e);
   args.push("-v", `${spec.volume}:/config`);
-  if (spec.publish.kind === "loopback") {
+  if (spec.publish.kind === "slot") {
+    const slot = spec.publish.slot;
+    for (let d = 0; d < DISPLAY_SLOTS; d++) args.push("-p", `127.0.0.1:${packedPort(slot, 3000 + d)}:${3000 + d}`);
+    for (let d = 0; d < DISPLAY_SLOTS; d++) args.push("-p", `0.0.0.0:${packedPort(slot, 5900 + d)}:${5900 + d}`);
+  } else if (spec.publish.kind === "loopback") {
     const p = spec.publish.novncPort;
     args.push("-p", `127.0.0.1:${p}-${p + DISPLAY_SLOTS - 1}:3000-${3000 + DISPLAY_SLOTS - 1}`);
     args.push("-p", `127.0.0.1:${spec.publish.harnessPort}:${HARNESS_PORT}`);

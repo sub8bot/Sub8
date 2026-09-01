@@ -5,6 +5,34 @@ import type { PortMap } from "./types.js";
 /** How many X displays (and therefore noVNC ports) one desk reserves. */
 export const DISPLAY_SLOTS = 8;
 
+/**
+ * Packed desks on a shared host: the host has one address, so every standard
+ * desk port gets a per-slot host port in a 100-port window. Slot 0 is
+ * 20000-20099, slot 1 is 20100-20199, … The Worker dials these; the container
+ * only ever sees its standard ports.
+ */
+export const PACK_PORT_BASE = 20000;
+export const PACK_SLOT_STRIDE = 100;
+export const PACK_MAX_SLOTS = 40;
+
+function packedOffset(standardPort: number): number | null {
+  if (standardPort === 80) return 0; // desk-agent (its only port on a shared host)
+  if (standardPort >= 3000 && standardPort <= 3007) return 10 + (standardPort - 3000); // websockify per display
+  if (standardPort === 3010) return 20; // executor
+  if (standardPort === HARNESS_PORT) return 21; // harness
+  if (standardPort >= 5900 && standardPort <= 5907) return 30 + (standardPort - 5900); // x11vnc RFB per display
+  return null;
+}
+
+/** Host port for a packed desk's standard port. Throws on a port no desk uses. */
+export function packedPort(slot: number, standardPort: number): number {
+  const s = Number(slot);
+  if (!Number.isInteger(s) || s < 0 || s >= PACK_MAX_SLOTS) throw new Error(`packedPort: slot ${slot} out of range`);
+  const off = packedOffset(Number(standardPort));
+  if (off === null) throw new Error(`packedPort: ${standardPort} is not a desk port`);
+  return PACK_PORT_BASE + s * PACK_SLOT_STRIDE + off;
+}
+
 export function harnessHostPort(novncPort: unknown): number | null {
   const p = Number(novncPort);
   if (!Number.isFinite(p) || p <= 0) return null;

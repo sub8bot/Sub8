@@ -63,3 +63,24 @@ test("loopback run args mount /config, cap cgroups, and never bind 0.0.0.0", () 
   assert.ok(ports.some((p) => p === `127.0.0.1:${13109 + DISPLAY_SLOTS}:${HARNESS_PORT}`));
   assert.ok(!args.includes("--privileged"));
 });
+
+test("slot publish: websockify on the host loopback, RFB on the host interface, nothing else", () => {
+  const args = deskRunArgs({
+    name: "sub8-desk-cmp_1",
+    volume: "sub8-config-cmp_1",
+    image: "sub8-desk:trixie",
+    platform: "linux/amd64",
+    hostname: "computer",
+    limits: limitsFromRamMb(2048),
+    publish: { kind: "slot", slot: 2 },
+    env: ["TITLE=Sub8", "TZ=UTC", "RFB_EXPOSE=1"],
+  });
+  const ports = args.filter((_, i) => args[i - 1] === "-p");
+  // websockify 3000-3007 → 127.0.0.1:20210-20217
+  for (let d = 0; d < 8; d++) assert.ok(ports.includes(`127.0.0.1:${20210 + d}:${3000 + d}`), `web ${d}`);
+  // RFB 5900-5907 → 0.0.0.0:20230-20237 (the Worker relay dials these)
+  for (let d = 0; d < 8; d++) assert.ok(ports.includes(`0.0.0.0:${20230 + d}:${5900 + d}`), `rfb ${d}`);
+  assert.equal(ports.length, 16, "no harness publish: the harness is a per-desk host process");
+  assert.ok(!ports.some((p) => /:3011$/.test(p)));
+  assert.ok(!ports.some((p) => /^0\.0\.0\.0:\d+:300\d$/.test(p)), "never a public websockify on a shared host");
+});
