@@ -123,7 +123,10 @@ export async function startMagic(email: string, { baseUrl }: CloudOptions = {}) 
 
 export async function startX({ baseUrl }: CloudOptions = {}) {
   const base = String(baseUrl || "").replace(/\/+$/, "");
-  const res = await fetch(`${base}/auth/x/start`, { headers: { Accept: "application/json" } });
+  // ?code=1: the cloud shows a confirm page after X consent that asks for the
+  // code we display, so a sign-in only completes for the app the user is
+  // looking at (the pickup token is never released on the state alone).
+  const res = await fetch(`${base}/auth/x/start?code=1`, { headers: { Accept: "application/json" } });
   const json = await readJson(res);
   if (!res.ok) throw apiError(res, json, `X sign-in failed (${res.status})`);
   if (!json.authorizeUrl || !json.state) {
@@ -131,7 +134,7 @@ export async function startX({ baseUrl }: CloudOptions = {}) {
     err.code = "CLOUD";
     throw err;
   }
-  return { authorizeUrl: json.authorizeUrl, state: json.state, signedIn: false, mock: false };
+  return { authorizeUrl: json.authorizeUrl, state: json.state, code: json.code ? String(json.code) : "", signedIn: false, mock: false };
 }
 
 export async function waitX(state?: string | null, { baseUrl }: CloudOptions = {}): Promise<CloudBody> {

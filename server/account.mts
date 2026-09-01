@@ -242,6 +242,8 @@ export interface CloudStartX {
   session?: AccountSessionInput | undefined;
   authorizeUrl?: string | undefined;
   state?: string | undefined;
+  /** Shown to the user; the browser's confirm page asks for it. */
+  code?: string | undefined;
   signedIn?: boolean | undefined;
   mock?: boolean | undefined;
 }
@@ -1433,6 +1435,7 @@ export async function startX() {
     signedIn: false,
     authorizeUrl: started.authorizeUrl,
     state: started.state,
+    code: started.code || "",
   };
 }
 

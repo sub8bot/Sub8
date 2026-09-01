@@ -472,6 +472,8 @@ interface AccountState {
   sent?: boolean;
   authorizeUrl?: string;
   state?: string;
+  /** Sign-in code to confirm in the browser after X consent. */
+  code?: string;
 }
 
 /** The Cloud snapshot: draft desks, their bots, and the brain they share. */
@@ -745,6 +747,8 @@ interface AppState {
   account: AccountState | null;
   accountEmail: string;
   accountBusy: boolean;
+  /** Code to type on the browser's confirm page during an X sign-in. */
+  accountSignInCode: string;
   accountError: string;
   cloudDraft: CloudDraftState;
   selectedCloud: string | null;
@@ -887,6 +891,7 @@ const state: AppState = {
   account: null,
   accountEmail: "",
   accountBusy: false,
+  accountSignInCode: "",
   accountError: "",
   cloudDraft: { computers: [], bots: [] },
   selectedCloud: (localStorage.getItem("selectedCloudBot") || "").replace(/^cloud:/, "cloud-") || null,
@@ -6051,7 +6056,13 @@ function accountHtml(): string {
     <div class="card">
       ${
         a.xLogin
-          ? `<div class="row"><div class="sub">Opens x.com in your browser. Return here after you approve.</div>
+          ? `<div class="row"><div class="sub">${
+              state.accountBusy && state.accountSignInCode
+                ? `After you approve on x.com, the browser asks you to confirm this app — enter code <b style="letter-spacing:.15em">${escapeHtml(state.accountSignInCode)}</b>.`
+                : state.accountBusy
+                  ? "After you approve on x.com, click <b>Yes, sign in the app</b> in the browser."
+                  : "Opens x.com in your browser. Return here after you approve."
+            }</div>
         <button type="button" class="pill primary" data-act="account-x" ${state.accountBusy ? "disabled" : ""}>${
             state.accountBusy ? "Waiting for X…" : "Sign in with X"
           }</button></div>`
@@ -10222,6 +10233,11 @@ async function signInWithX(): Promise<void> {
       return;
     }
     if (!started.authorizeUrl || !started.state) throw new Error("X sign-in did not start.");
+    // After X consent the browser asks the user to confirm this app (and type
+    // the code when one was issued) before the session is released to us.
+    state.accountSignInCode = started.code || "";
+    paintAccountGate();
+    if (state.modal === "settings") paintModal();
     openExternal(started.authorizeUrl);
     const deadline = Date.now() + 5 * 60 * 1000;
     const poll = async () => {
@@ -10251,6 +10267,7 @@ async function signInWithX(): Promise<void> {
   } catch (err) {
     if (xWait !== token) return;
     state.accountBusy = false;
+    state.accountSignInCode = "";
     state.accountError = (err as CaughtError).message || "Sign-in failed.";
     paintAccountGate();
     if (state.modal === "settings") paintModal();
