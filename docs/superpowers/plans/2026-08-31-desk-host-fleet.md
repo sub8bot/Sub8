@@ -1171,7 +1171,7 @@ git commit -m "feat: optional shared-host placement behind PACK_SHARED_HOSTS."
 
 - [x] **Step 2: Cron in existing `scheduled()`: if `WARM_HOST_TARGET>0`, keep that many `desk_hosts` in `warm`**
 
-- [ ] **Step 3: Manual internal soak (operator):** one 32 GB droplet, two internal volumes, two `deskRunArgs` with `vm.2g` limits. Run `stress-ng --vm 2 --vm-bytes 3g` in desk A; desk B screenshot still returns. If B dies, packing is not proven — do not enable for paying SKUs.
+- [x] **Step 3: Manual internal soak (operator):** one 32 GB droplet, two internal volumes, two `deskRunArgs` with `vm.2g` limits. Run `stress-ng --vm 2 --vm-bytes 3g` in desk A; desk B screenshot still returns. If B dies, packing is not proven — do not enable for paying SKUs.
 
 - [x] **Step 4: Commit**
 
@@ -1312,7 +1312,9 @@ Landed cloud `f42db72` `feat: optional shared-host placement behind PACK_SHARED_
 
 Landed cloud `f2cc8cb` `feat: warm Docker hosts without a customer desk.` `WARM_HOST_TARGET` (default 0, cap 8) drives `topUpWarmHosts` from `scheduled()`; `reconcileWarmingHosts` turns a booted droplet into a `warm` host and `startPendingDesks` hands it the run for every packed desk placed while it booted, once (`desk-started` event) — this settles Task 11's deferral. `hostUserData` builds `sub8-desk:trixie` from the repo when absent (no registry) and never starts a desk. Per-container caps needed no work (Task 8's `deskRunArgs`). Tests: 5 cases RED→GREEN incl. `worker.scheduled`; chain, typecheck, dry-run EXIT 0. **Step 3 (stress-ng soak on a real 32 GB droplet) has not run** — operator-only, needs a token and the host agent route, which is still the `hostDockerRun` stub. Both flags stay `"0"`.
 
-### Gate 3 — not passed (code complete 2026-09-01; soak outstanding)
+### Gate 3 — soak passed 2026-09-01 on a real host (agent route still a stub)
+
+Operator asked for real tests. A host was provisioned through the Worker's own `provisionHost` (real DigitalOcean, `m-32gb` in nyc3 — the regions API had to pick it, see cloud `007b067`), booted from the golden snapshot in 17 s, and ran two `vm.2g` desks from `packedRunArgs`; `stress-ng --vm 2 --vm-bytes 3g` in A produced 12 OOM kills inside A's cgroup while B answered 24/24 with a 143 ms worst case and an intact screenshot. Destroyed afterwards. Three findings fixed in the same commit: no standard 32 GB slug in nyc3; the desk snapshot boots a public baked desk that `hostUserData` now removes; the orphan reaper now protects `desk_hosts`. **What keeps Gate 3 from "internal packing is on":** the host agent `/host/docker` route does not exist (desks were started over SSH), `reconcileWarmingHosts` was not run against live DO (it shares `scheduled()` with the reaper), and packed desks have no stream URL. Flags stay `"0"`. Ledger: `.superpowers/sdd/…/real-test-2026-09-01.md`.
 
 Bin-pack, `desk_hosts`, flagged placement, and warm hosts are in tests. What is missing is the operator soak (Task 12 Step 3) and a real host agent `/host/docker` route — until B's screenshot survives A's `stress-ng`, packing is not proven and `PACK_SHARED_HOSTS` stays `"0"`. Task 13 also needs `STREAM_VIA_WORKER=1` on prod first. Paused here.
 
