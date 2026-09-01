@@ -16,6 +16,7 @@ function heartGeometry() {
   s.bezierCurveTo(0.17, 0.125, 0.15, -0.012, 0, -0.12);
   const geo = new THREE.ExtrudeGeometry(s, { depth: 0.04, bevelEnabled: false, curveSegments: 14 });
   geo.translate(0, 0, -0.02);
+  geo.scale(1.3, 1.3, 1.2);
   return geo;
 }
 
@@ -33,6 +34,7 @@ function starGeometry() {
   s.closePath();
   const geo = new THREE.ExtrudeGeometry(s, { depth: 0.036, bevelEnabled: false });
   geo.translate(0, 0, -0.018);
+  geo.scale(1.3, 1.3, 1.2);
   return geo;
 }
 
@@ -221,6 +223,8 @@ export interface BodySpec {
   tall?: number;
   belly?: number;
   crown?: number;
+  /** Sideways girth for the mantle form; 1 is the default silhouette. */
+  width?: number;
   /** Read by _evenArms; no entry in BODIES sets either. See the note there. */
   flareAt?: number;
   hangAt?: number;
@@ -265,6 +269,7 @@ interface EyeGeos {
   spiral: THREE.BufferGeometry;
   wide: THREE.BufferGeometry;
   pupil: THREE.BufferGeometry;
+  glint?: THREE.BufferGeometry;
   blush?: THREE.BufferGeometry;
   tear?: THREE.BufferGeometry;
 }
@@ -335,22 +340,22 @@ function face(label: string, extra: Partial<FaceSpec> = {}): FaceSpec {
 export const EXPRESSIONS: FaceCatalog = {
   neutral: face('😐 Neutral', { mouth: 'dash' }),
   slight: face('🙂 Slight', { eyeY: 1, mouth: 'small', feel: 'happy' }),
-  happy: face('😊 Happy', { spacing: 0.34, elevation: 0.08, eyeY: 0.82, mouth: 'smile', blush: true, feel: 'happy' }),
-  blush: face('☺️ Blush', { spacing: 0.32, elevation: 0.05, eyeY: 0.22, eyeX: 1.35, mouth: 'small', blush: true, feel: 'happy' }),
-  grin: face('😁 Grin', { spacing: 0.3, elevation: 0.06, eyeY: 0.26, eyeX: 1.4, mouth: 'grin', feel: 'happy' }),
+  happy: face('😊 Happy', { spacing: 0.34, elevation: 0.08, eye: 'crescent', eyeX: 1.1, mouth: 'smile', blush: true, feel: 'happy' }),
+  blush: face('☺️ Blush', { spacing: 0.32, elevation: 0.05, eye: 'crescent', eyeX: 1.2, eyeY: 0.95, mouth: 'small', blush: true, feel: 'happy' }),
+  grin: face('😁 Grin', { spacing: 0.32, elevation: 0.06, eye: 'crescent', eyeX: 1.15, mouth: 'grin', feel: 'happy' }),
   beam: face('😄 Beam', { spacing: 0.36, elevation: 0.1, eye: 'round', mouth: 'grin', feel: 'happy' }),
   laugh: face('😆 Laugh', { spacing: 0.3, elevation: 0.04, eyeY: 0.12, eyeX: 1.5, mouth: 'grin', feel: 'happy' }),
-  joy: face('😂 Joy', { spacing: 0.3, elevation: 0.03, eyeY: 0.12, eyeX: 1.5, mouth: 'grin', tears: 2, feel: 'happy' }),
-  rofl: face('🤣 ROFL', { spacing: 0.26, elevation: 0.0, eyeY: 0.1, eyeX: 1.55, mouth: 'oh', feel: 'happy' }),
+  joy: face('😂 Joy', { spacing: 0.32, elevation: 0.04, eye: 'crescent', eyeX: 1.2, mouth: 'grin', tears: 2, feel: 'happy' }),
+  rofl: face('🤣 ROFL', { spacing: 0.36, elevation: 0.0, eyeY: 0.1, eyeX: 1.25, mouth: 'oh', feel: 'happy' }),
 
   wink: face('😉 Wink', { spacing: 0.33, elevation: 0.09, winkL: true, mouth: 'smile', feel: 'wink' }),
   smirk: face('😏 Smirk', { spacing: 0.32, elevation: 0.1, lTilt: -0.12, rTilt: 0.28, eyeY: 0.72, mouth: 'smirk', feel: 'smirk' }),
   love: face('😍 Love', { spacing: 0.44, elevation: 0.1, eye: 'heart', mouth: 'smile', feel: 'love' }),
-  hearts: face('🥰 Hearts', { spacing: 0.32, elevation: 0.06, eyeY: 0.2, eyeX: 1.35, mouth: 'smile', blush: true, feel: 'love' }),
+  hearts: face('🥰 Hearts', { spacing: 0.32, elevation: 0.06, eye: 'crescent', eyeX: 1.15, mouth: 'smile', blush: true, feel: 'love' }),
   kiss: face('😘 Kiss', { spacing: 0.32, elevation: 0.09, winkL: true, mouth: 'kiss', blush: true, feel: 'wink' }),
   star: face('🤩 Star', { spacing: 0.44, elevation: 0.13, eye: 'star', mouth: 'grin', feel: 'wow' }),
 
-  yum: face('😋 Yum', { spacing: 0.3, elevation: 0.05, eyeY: 0.28, eyeX: 1.25, mouth: 'tongue', blush: true, feel: 'happy' }),
+  yum: face('😋 Yum', { spacing: 0.3, elevation: 0.05, eye: 'crescent', eyeX: 1.1, mouth: 'tongue', blush: true, feel: 'happy' }),
   tongue: face('😛 Tongue', { spacing: 0.34, elevation: 0.1, eye: 'round', mouth: 'tongue', feel: 'happy' }),
   winkTongue: face('😜 Wink tongue', { spacing: 0.32, elevation: 0.09, winkL: true, mouth: 'tongue', feel: 'wink' }),
   zany: face('🤪 Zany', {
@@ -376,12 +381,12 @@ export const EXPRESSIONS: FaceCatalog = {
   grimace: face('😬 Grimace', { spacing: 0.34, elevation: 0.1, eyeY: 0.85, eyeX: 1.15, mouth: 'grimace', feel: 'scared' }),
   shush: face('🤫 Shush', { spacing: 0.32, elevation: 0.09, winkR: true, mouth: 'dash', feel: 'wink' }),
   oops: face('🤭 Oops', { spacing: 0.32, elevation: 0.08, eyeY: 0.45, mouth: 'oh', blush: true, feel: 'happy' }),
-  cool: face('😎 Cool', { spacing: 0.32, elevation: 0.08, eyeY: 0.14, eyeX: 1.65, mouth: 'smirk', feel: 'smirk' }),
+  cool: face('😎 Cool', { spacing: 0.36, elevation: 0.08, eyeY: 0.5, eyeX: 1.5, mouth: 'smirk', feel: 'smirk' }),
 
   sleepy: face('😪 Sleepy', { spacing: 0.32, elevation: 0.05, eyeY: 0.38, eyeX: 1.2, mouth: 'dash', tears: 1, blink: false, feel: 'sleepy' }),
   sleep: face('😴 Sleep', { spacing: 0.3, elevation: 0.02, eyeY: 0.08, eyeX: 1.45, mouth: 'dash', blink: false, feel: 'sleepy' }),
   yawn: face('🥱 Yawn', { spacing: 0.32, elevation: 0.03, eyeY: 0.1, eyeX: 1.4, mouth: 'oh', blink: false, feel: 'sleepy' }),
-  relieved: face('😌 Relieved', { spacing: 0.32, elevation: 0.06, eyeY: 0.5, mouth: 'small', feel: 'sleepy' }),
+  relieved: face('😌 Relieved', { spacing: 0.32, elevation: 0.06, eye: 'crescent', eyeY: 0.9, mouth: 'small', feel: 'sleepy' }),
   drool: face('🤤 Drool', { spacing: 0.32, elevation: 0.02, eyeY: 0.14, eyeX: 1.35, mouth: 'tongue', blink: false, feel: 'sleepy' }),
 
   sad: face('😢 Sad', { spacing: 0.3, elevation: 0.06, lTilt: 0.16, rTilt: -0.16, eye: 'round', mouth: 'frown', tears: 1, feel: 'sad' }),
@@ -389,7 +394,7 @@ export const EXPRESSIONS: FaceCatalog = {
   disappointed: face('😞 Down', { spacing: 0.32, elevation: 0.02, eyeY: 0.55, mouth: 'frown', feel: 'sad' }),
   cry: face('😭 Cry', { spacing: 0.3, elevation: 0.03, eyeY: 0.14, eyeX: 1.4, mouth: 'oh', tears: 2, feel: 'sad' }),
   weary: face('😩 Weary', { spacing: 0.3, elevation: 0.06, lTilt: 0.4, rTilt: -0.4, eyeY: 0.45, eyeX: 1.2, mouth: 'oh', feel: 'sad' }),
-  pleading: face('🥺 Plead', { spacing: 0.46, elevation: 0.16, eye: 'round', eyeX: 1.35, eyeY: 1.35, mouth: 'small', blush: true, feel: 'sad' }),
+  pleading: face('🥺 Plead', { spacing: 0.46, elevation: 0.16, eye: 'wide', eyeX: 1.3, eyeY: 1.3, mouth: 'small', blush: true, feel: 'sad' }),
   worried: face('😟 Worry', { spacing: 0.36, elevation: 0.1, lTilt: 0.22, rTilt: -0.22, eyeY: 1.05, mouth: 'frown', feel: 'sad' }),
   confused: face('😕 Confused', { spacing: 0.4, elevation: 0.2, eyeY: 0.7, lTilt: 0.38, rTilt: -0.06, mouth: 'frown', feel: 'confused' }),
 
@@ -464,8 +469,8 @@ function octoShape(label: string, extra: Partial<BodySpec> = {}): BodySpec {
     form: extra.form || 'round',
     attach: [0.4, -0.88, 0.82],
     into: -0.88,
-    r0: 0.2,
-    r1: 0.05,
+    r0: 0.22,
+    r1: 0.058,
     arms: 8,
     skipFront: 0.78,
     segs: 48,
@@ -482,7 +487,7 @@ function mantle(label: string, extra: Partial<BodySpec> = {}): BodySpec {
   return octoShape(label, {
     form: 'mantle',
     attach: [0.32, -0.92, 0.88],
-    curve: [0.18, -0.24, 0.16, 0.38, -0.48, 0.28, 0.42, -0.12, 0.34],
+    curve: [0.18, -0.24, 0.16, 0.4, -0.5, 0.3, 0.46, -0.26, 0.44],
     tall: 1.04,
     belly: 0.08,
     crown: 0.03,
@@ -492,26 +497,28 @@ function mantle(label: string, extra: Partial<BodySpec> = {}): BodySpec {
 
 export const BODIES: BodyCatalog = {
   mantle: mantle('Mantle'),
-  tall: mantle('Tall', { tall: 1.14, belly: 0.06, crown: 0.04, attach: [0.3, -0.93, 0.88] }),
+  tall: mantle('Tall', { tall: 1.2, belly: 0.05, crown: 0.05, width: 0.94, attach: [0.3, -0.93, 0.88] }),
   chubby: mantle('Chubby', {
-    tall: 1.0,
-    belly: 0.16,
+    tall: 0.96,
+    belly: 0.22,
     crown: 0.02,
+    width: 1.12,
     r0: 0.24,
     r1: 0.06,
     attach: [0.36, -0.9, 0.86],
   }),
-  slim: mantle('Slim', { tall: 1.1, belly: 0.04, crown: 0.04, r0: 0.17, attach: [0.28, -0.93, 0.88] }),
-  soft: mantle('Soft', { tall: 1.02, belly: 0.08, crown: 0.01, attach: [0.34, -0.9, 0.86] }),
+  slim: mantle('Slim', { tall: 1.12, belly: 0.03, crown: 0.04, width: 0.86, r0: 0.17, attach: [0.28, -0.93, 0.88] }),
+  soft: mantle('Soft', { tall: 0.98, belly: 0.13, crown: 0.01, width: 1.04, attach: [0.34, -0.9, 0.86] }),
   rounder: mantle('Rounder', { tall: 1.0, belly: 0.04, crown: 0.0, attach: [0.34, -0.9, 0.86] }),
   short: mantle('Short', {
-    tall: 1.02,
+    tall: 0.88,
     crown: 0.02,
+    width: 1.06,
     attach: [0.34, -0.9, 0.88],
-    curve: [0.16, -0.18, 0.14, 0.3, -0.34, 0.22, 0.32, -0.06, 0.26],
+    curve: [0.16, -0.18, 0.14, 0.3, -0.36, 0.24, 0.36, -0.18, 0.32],
   }),
   long: mantle('Long', {
-    tall: 1.04,
+    tall: 1.08,
     attach: [0.3, -0.93, 0.88],
     curve: [0.16, -0.3, 0.16, 0.32, -0.68, 0.26, 0.28, -0.42, 0.28],
   }),
@@ -522,7 +529,8 @@ export const BODIES: BodyCatalog = {
   }),
   plush: mantle('Plush', {
     tall: 1.02,
-    belly: 0.14,
+    belly: 0.2,
+    width: 1.08,
     crown: 0.02,
     r0: 0.26,
     r1: 0.068,
@@ -741,23 +749,24 @@ export class GrokBot extends THREE.Group {
       round: new THREE.SphereGeometry(r * 0.11, 20, 16),
       crescent: new THREE.TubeGeometry(
         new THREE.QuadraticBezierCurve3(
-          new THREE.Vector3(-0.085, 0.026, 0),
-          new THREE.Vector3(0, -0.062, 0),
-          new THREE.Vector3(0.085, 0.026, 0),
+          new THREE.Vector3(-0.105, -0.03, 0),
+          new THREE.Vector3(0, 0.085, 0),
+          new THREE.Vector3(0.105, -0.03, 0),
         ),
         14,
-        0.024,
+        0.032,
         8,
         false,
       ),
       line: new THREE.CapsuleGeometry(r * 0.018, r * 0.12, 4, 8),
       heart: heartGeometry(),
       star: starGeometry(),
-      x: new THREE.CapsuleGeometry(r * 0.016, r * 0.12, 4, 8),
+      x: new THREE.CapsuleGeometry(r * 0.026, r * 0.13, 4, 8),
       dot: new THREE.SphereGeometry(r * 0.05, 12, 10),
       spiral: new THREE.TorusGeometry(r * 0.05, r * 0.016, 8, 18),
       wide: new THREE.SphereGeometry(r * 0.11, 16, 12),
       pupil: new THREE.SphereGeometry(r * 0.044, 12, 10),
+      glint: new THREE.SphereGeometry(r * 0.045, 10, 8),
     };
     this.eyeL = this._makeEye('L');
     this.eyeR = this._makeEye('R');
@@ -768,8 +777,16 @@ export class GrokBot extends THREE.Group {
     const g = new THREE.Group();
     g.name = `GrokBot_Eye${side}`;
     const styles: Record<string, THREE.Object3D> = {};
-    styles.stadium = new THREE.Mesh(this._eyeGeos.stadium, this.eyeMaterial);
-    styles.round = new THREE.Mesh(this._eyeGeos.round, this.eyeMaterial);
+    // A tiny catchlight makes the solid eyes read alive instead of flat.
+    const glint = (parent: THREE.Object3D, x: number, y: number, z: number, s = 1) => {
+      const dot = new THREE.Mesh(this._eyeGeos.glint!, this.whiteMaterial);
+      dot.position.set(x, y, z);
+      dot.scale.setScalar(s);
+      parent.add(dot);
+      return parent;
+    };
+    styles.stadium = glint(new THREE.Mesh(this._eyeGeos.stadium, this.eyeMaterial), 0.05, 0.08, 0.115);
+    styles.round = glint(new THREE.Mesh(this._eyeGeos.round, this.eyeMaterial), 0.038, 0.042, 0.085, 0.8);
     styles.crescent = new THREE.Mesh(this._eyeGeos.crescent, this.eyeMaterial);
     styles.line = new THREE.Mesh(this._eyeGeos.line, this.eyeMaterial);
     styles.heart = new THREE.Mesh(this._eyeGeos.heart, this.accentMaterial);
@@ -786,7 +803,9 @@ export class GrokBot extends THREE.Group {
     const wide = new THREE.Group();
     wide.add(new THREE.Mesh(this._eyeGeos.wide, this.whiteMaterial));
     const pupil = new THREE.Mesh(this._eyeGeos.pupil, this.pupilMaterial);
-    pupil.position.set(0, 0.008, 0.055);
+    // Forward enough to clear the sclera even under the eye group z-flatten.
+    pupil.position.set(0, 0.008, 0.1);
+    glint(pupil, 0.014, 0.016, 0.036, 0.42);
     wide.add(pupil);
     styles.wide = wide;
     for (const [key, mesh] of Object.entries(styles)) {
@@ -822,7 +841,7 @@ export class GrokBot extends THREE.Group {
 
     this.tears = new THREE.Group();
     this.tears.name = 'GrokBot_Tears';
-    const tearGeo = new THREE.SphereGeometry(r * 0.038, 10, 8);
+    const tearGeo = new THREE.SphereGeometry(r * 0.05, 10, 8);
     this._eyeGeos.tear = tearGeo;
     this.tearL = new THREE.Mesh(tearGeo, this.tearMaterial);
     this.tearR = new THREE.Mesh(tearGeo, this.tearMaterial);
@@ -855,80 +874,80 @@ export class GrokBot extends THREE.Group {
     this.add(this.mouths);
 
     const r = opts.radius;
-    const dashR = r * 0.022;
-    const dashLen = Math.max(0.001, r * 0.14 - dashR * 2);
+    const dashR = r * 0.024;
+    const dashLen = Math.max(0.001, r * 0.175 - dashR * 2);
     this._geos = {
       dash: new THREE.CapsuleGeometry(dashR, dashLen, 6, 16),
       smile: new THREE.TubeGeometry(
         new THREE.QuadraticBezierCurve3(
-          new THREE.Vector3(-0.16, 0.026, 0),
-          new THREE.Vector3(0, -0.11, 0),
-          new THREE.Vector3(0.16, 0.026, 0),
+          new THREE.Vector3(-0.19, 0.03, 0),
+          new THREE.Vector3(0, -0.128, 0),
+          new THREE.Vector3(0.19, 0.03, 0),
         ),
         20,
-        0.022,
+        0.026,
         8,
         false,
       ),
       frown: new THREE.TubeGeometry(
         new THREE.QuadraticBezierCurve3(
-          new THREE.Vector3(-0.15, -0.024, 0),
-          new THREE.Vector3(0, 0.11, 0),
-          new THREE.Vector3(0.15, -0.024, 0),
+          new THREE.Vector3(-0.175, -0.028, 0),
+          new THREE.Vector3(0, 0.125, 0),
+          new THREE.Vector3(0.175, -0.028, 0),
         ),
         20,
-        0.022,
+        0.026,
         8,
         false,
       ),
       smirk: new THREE.TubeGeometry(
         new THREE.QuadraticBezierCurve3(
-          new THREE.Vector3(-0.03, 0.014, 0),
-          new THREE.Vector3(0.07, -0.065, 0),
-          new THREE.Vector3(0.16, 0.04, 0),
+          new THREE.Vector3(-0.038, 0.016, 0),
+          new THREE.Vector3(0.085, -0.078, 0),
+          new THREE.Vector3(0.19, 0.048, 0),
         ),
         16,
-        0.016,
+        0.02,
         8,
         false,
       ),
-      oh: new THREE.SphereGeometry(0.07, 16, 12),
+      oh: new THREE.SphereGeometry(0.085, 16, 12),
       grin: new THREE.TubeGeometry(
         new THREE.QuadraticBezierCurve3(
-          new THREE.Vector3(-0.2, 0.036, 0),
-          new THREE.Vector3(0, -0.14, 0),
-          new THREE.Vector3(0.2, 0.036, 0),
+          new THREE.Vector3(-0.23, 0.04, 0),
+          new THREE.Vector3(0, -0.16, 0),
+          new THREE.Vector3(0.23, 0.04, 0),
         ),
         22,
-        0.024,
+        0.028,
         8,
         false,
       ),
-      grimace: new THREE.CapsuleGeometry(0.024, 0.22, 6, 16),
-      tongue: new THREE.CapsuleGeometry(0.036, 0.07, 6, 12),
-      kiss: new THREE.SphereGeometry(0.04, 12, 10),
+      grimace: new THREE.CapsuleGeometry(0.028, 0.26, 6, 16),
+      tongue: new THREE.CapsuleGeometry(0.044, 0.085, 6, 12),
+      kiss: new THREE.SphereGeometry(0.056, 12, 10),
       openFill: new THREE.SphereGeometry(0.1, 16, 12),
       small: new THREE.TubeGeometry(
         new THREE.QuadraticBezierCurve3(
-          new THREE.Vector3(-0.1, 0.016, 0),
-          new THREE.Vector3(0, -0.058, 0),
-          new THREE.Vector3(0.1, 0.016, 0),
+          new THREE.Vector3(-0.125, 0.02, 0),
+          new THREE.Vector3(0, -0.07, 0),
+          new THREE.Vector3(0.125, 0.02, 0),
         ),
         14,
-        0.016,
+        0.02,
         8,
         false,
       ),
-      teeth: new THREE.BoxGeometry(0.17, 0.038, 0.024),
+      teeth: new THREE.BoxGeometry(0.2, 0.044, 0.024),
       wavy: new THREE.TubeGeometry(
         new THREE.CubicBezierCurve3(
-          new THREE.Vector3(-0.14, 0.026, 0),
-          new THREE.Vector3(-0.04, -0.07, 0),
-          new THREE.Vector3(0.04, 0.07, 0),
-          new THREE.Vector3(0.14, -0.026, 0),
+          new THREE.Vector3(-0.17, 0.03, 0),
+          new THREE.Vector3(-0.05, -0.08, 0),
+          new THREE.Vector3(0.05, 0.08, 0),
+          new THREE.Vector3(0.17, -0.03, 0),
         ),
         22,
-        0.018,
+        0.022,
         8,
         false,
       ),
@@ -979,7 +998,7 @@ export class GrokBot extends THREE.Group {
     this._seatMouthMesh(this.mouthOpenFill, -0.155, 'oh');
     this._seatMouthMesh(this.mouthSmall, -0.145, 'curve');
     this._seatMouthMesh(this.mouthWavy, -0.15, 'curve');
-    this._seatMouthMesh(this.mouthTeeth, -0.145, 'oh');
+    this._seatMouthMesh(this.mouthTeeth, -0.16, 'oh');
     this.mouth = this.mouthDash;
   }
 
@@ -1052,8 +1071,9 @@ export class GrokBot extends THREE.Group {
       const belly = THREE.MathUtils.smoothstep(-ny, 0, 0.85);
       const crown = THREE.MathUtils.smoothstep(ny, 0.4, 1);
       const s = 1 + bellyAmt * belly - crownAmt * crown;
-      v.x *= s;
-      v.z *= s;
+      const width = spec!.width ?? 1;
+      v.x *= s * width;
+      v.z *= s * (1 + (width - 1) * 0.55);
       v.y *= tall + 0.015 * ny;
       return v;
     }
@@ -1238,6 +1258,9 @@ export class GrokBot extends THREE.Group {
     this.autoBlink = exp.blink !== false;
     this.autoMouth = false;
     this.setMouthShape(exp.mouth || 'none');
+    // The confused feel reseats the shared frown lower each frame; put it back
+    // so sad/angry/worried do not inherit the dropped, rotated mouth.
+    if (this.mouthFrown) this._seatMouthMesh(this.mouthFrown, -0.15, 'curve');
     this._setEyeStyle(this.eyeL, exp.lEye || exp.eye || 'stadium');
     this._setEyeStyle(this.eyeR, exp.rEye || exp.eye || 'stadium');
     if (this.blush) this.blush.visible = !!exp.blush;
@@ -1277,6 +1300,7 @@ export class GrokBot extends THREE.Group {
     const active = map[this._mouthShape] || null;
     this.mouth = active || this.mouthDash;
     const s = this._mouth;
+    this.mouthTeeth.visible = false;
     for (const [key, mesh] of Object.entries(map)) {
       const on = mesh === active && s > 0.02;
       mesh.visible = on;
@@ -1289,6 +1313,11 @@ export class GrokBot extends THREE.Group {
     if (this._mouthShape === 'tongue' && s > 0.02) {
       this.mouthSmile.visible = true;
       this.mouthSmile.scale.set(s * 0.85, s * 0.85, s * 0.85);
+    }
+    if (this._mouthShape === 'grimace' && s > 0.02) {
+      // Gritted teeth: the cream bar pops through the dark outline capsule.
+      this.mouthTeeth.visible = true;
+      this.mouthTeeth.scale.set(s, s, this._flatten * s * 2.6);
     }
   }
 
@@ -1810,7 +1839,32 @@ export class GrokBot extends THREE.Group {
         wiggle = wave * 0.14;
       } else if (anim === 'spin' || anim === 'twirl') splay = 0.22;
       else if (anim === 'shake' || anim === 'shiver') wiggle = Math.sin(t * 12 + arm.index) * 0.16;
-      else if (anim === 'idle' || anim === 'float' || anim === 'sway') {
+      else if (anim === 'bounce' || anim === 'hop' || anim === 'excited' || anim === 'cheer') {
+        // Follow-through: splat out on the crouch, throw the arms on the hop.
+        const lift = Math.max(0, this.position.y / this.radius);
+        const crouch = Math.max(0, 1 - this.scale.y);
+        splay = 0.05 + crouch * 0.55;
+        droop = -lift * (anim === 'cheer' ? 1.1 : 0.55);
+        wiggle = wave * 0.05 + lift * Math.sin(phase * 2.2) * 0.12;
+        tip = lift * 0.25;
+      } else if (anim === 'stretch') {
+        // Arms pull long and down while the body reaches up.
+        const tall = Math.min(1, Math.max(0, this.scale.y - 1) * 6);
+        splay = 0.06 + tall * 0.16;
+        droop = tall * 0.35;
+        wiggle = wave * 0.03;
+      } else if (anim === 'float') {
+        // Languid jellyfish trail, slower and wider than idle.
+        splay = 0.1;
+        droop = -0.06;
+        tip = Math.sin(phase * 0.6) * 0.16;
+        wiggle = Math.sin(t * 0.9 + arm.index * 0.9) * 0.08;
+      } else if (anim === 'talk') {
+        // Small conversational gestures.
+        splay = 0.07;
+        tip = Math.sin(phase * 1.3) * 0.1;
+        wiggle = wave * 0.09;
+      } else if (anim === 'idle' || anim === 'sway') {
         splay = 0.06;
         tip = wave * 0.08;
       }
