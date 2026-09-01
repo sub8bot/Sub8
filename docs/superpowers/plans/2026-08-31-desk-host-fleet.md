@@ -1074,7 +1074,7 @@ export const CPU_OVERSUBSCRIBE = 1.5;
 
 `pickHost`: filter `hostFits`, sort remaining RAM ascending (tightest fit), return first. Empty → `null`.
 
-- [ ] **Step 1: Tests**
+- [x] **Step 1: Tests**
 
 ```js
 test("a 64 GB host packs fifteen 4 GB desks and rejects the sixteenth", () => {
@@ -1099,7 +1099,7 @@ test("pickHost returns null when every host is full", () => {
 });
 ```
 
-- [ ] **Step 2–5: implement, pass, commit**
+- [x] **Step 2–5: implement, pass, commit**
 
 ```bash
 git commit -m "feat: add @sub8/desk-place host bin-pack."
@@ -1300,7 +1300,9 @@ Landed cloud `25ca6b2` `feat: admin volume-import stub and restore runbook.` plu
 
 New droplets boot the desk from `deskRunArgs` with `-v sub8-config-<id>:/config` and cpu/pid caps; an admin can name an assigned droplet's volume and follow the scp runbook to restore a local snapshot onto it. Still one droplet per computer; paying UX is still "create a Cloud computer"; `createSizeForSku` unchanged. Not verified against a live droplet. **Do not start Task 10 (Gate 3, packing) until the operator asks.** `STREAM_VIA_WORKER` still unset.
 
-### Task 10 — not started
+### Task 10 — 2026-09-01
+
+Landed `feat: add @sub8/desk-place host bin-pack.` — `packages/desk-place` with `usableHost`, `hostFits`, `pickHost`, the four constants, README; root tsconfig reference + `file:` dep + lockfile (`npm install` added 1 package). **Spec correction:** the spec's 64 GB example used a 500 GB disk, which its own disk rule bounds at 11 desks, not 15 — the RAM-bound test uses 800 GB and a second test pins the disk-bound 11. **Choice:** a dedicated pairing refuses a host with *any* leftover reservation (disk or cpu, not only `reservedRamMb`), and gets no 1.5× cpu allowance. Tests 9/9 (`node --test`), root typecheck EXIT 0. `npm run test:packages` shows one **pre-existing, unrelated** failure in `packages/harness-auth/test/auth-detection.test.mjs:216` (source identical to HEAD; nothing imports desk-place yet). Not vendored into cloud — that is Task 11. Next: Task 11.
 
 ### Task 11 — not started
 

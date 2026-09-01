@@ -1,0 +1,28 @@
+{
+  "name": "@sub8/desk-place",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pure host bin-packing for Sub8 desks: does this host have room for this reservation. No provisioner, no billing.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node --test test/desk-place.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3"
+  }
+}

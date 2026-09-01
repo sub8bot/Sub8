@@ -29,6 +29,7 @@
     { "path": "./packages/desk-ports" },
     { "path": "./packages/desk-runtime" },
     { "path": "./packages/desk-images" },
+    { "path": "./packages/desk-place" },
     { "path": "./tsconfig.server.json" },
     { "path": "./tsconfig.electron.json" },
     { "path": "./tsconfig.web.json" }
