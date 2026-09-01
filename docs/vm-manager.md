@@ -168,6 +168,28 @@ DELETE /api/computers/:id/images/:imageId
 
 Never snapshots the golden image; never `docker commit`. Cloud desks do not use this UI.
 
+### Restore onto a cloud desk (operator runbook)
+
+Gate 2 of the desk host fleet plan. Cloud desks boot with the named volume `sub8-config-<computerId>` mounted at `/config` (both boot scripts run `deskRunArgs`), so a local snapshot tarball is the portable image. v1 moves it with `scp`: nothing streams through the Worker, and it is not a button.
+
+1. **Find the tarball.** `data/desk-images/<fileName>` — the catalog is `data/desk-images/desk-images.json`; `archivePath(root, image)` in `server/desk-images.mts` is the same join. It is `tar -czf` of the volume root (`.`), the exact argv in `@sub8/desk-images`.
+2. **Ask the Worker for the slot** (admin session): `POST /api/computers/<id>/volume-import` → `202 { ok, computerId, volume, container, host, runbook }`. `403` non-admin, `404` unknown computer, `409` when the desk is not `assigned` (warm-pool and dying desks are not targets). No credential rides in the reply.
+3. **Copy it:** `scp data/desk-images/<fileName> root@<host>:/tmp/config.tgz`
+4. **On the droplet** — mirror of `restoreArgs`; stop first, because untarring under a live Chrome corrupts the profile:
+
+   ```
+   docker stop sub8-desk
+   docker run --rm -v <volume>:/to -v /tmp:/from alpine:3.20 tar -C /to -xzf /from/config.tgz .
+   docker run --rm -v <volume>:/to alpine:3.20 rm -f /to/.desk-token
+   docker start sub8-desk
+   rm /tmp/config.tgz
+   ```
+
+   `.desk-token` is the local MCP credential the desktop writes into `/config`; it must not live on a public droplet. The cloud desk-token is `/var/lib/sub8/desk-token` on the host and is untouched.
+5. **What does not move:** chat (Worker KV, not the volume), the bot id (`cloud-<computerId>`), the vault. The container user is `abc` (uid 1000) in `sub8-desk:trixie` on both sides, so ownership carries over.
+
+Never `docker commit`. Never retag `sub8-desk:trixie`.
+
 ## Later (explicitly out)
 
 - Several Bots on one computer (separate browsers / apps)

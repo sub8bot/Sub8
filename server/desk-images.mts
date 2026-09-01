@@ -105,6 +105,11 @@ export function catalogPath(root: string = defaultDataDir): string {
   return path.join(imagesDir(root), "desk-images.json");
 }
 
+/** Absolute path of a catalog row's tarball. The cloud restore runbook scp's this file. */
+export function archivePath(root: string, image: Pick<DeskImage, "fileName">): string {
+  return path.join(imagesDir(root), image.fileName);
+}
+
 /** Ensure desk-images/ + empty catalog exist. Returns the data root. */
 export function createCatalog(root: string): string {
   const dir = imagesDir(root);
@@ -166,7 +171,7 @@ export function removeImageRow(root: string, imageId: string): DeskImage | null 
   writeCatalog(root, rows);
   if (removed?.fileName) {
     try {
-      fs.unlinkSync(path.join(imagesDir(root), removed.fileName));
+      fs.unlinkSync(archivePath(root, removed));
     } catch {
       /* archive may already be gone */
     }
@@ -234,7 +239,7 @@ export async function performSnapshot(opts: {
 
   const id = randomUUID();
   const fileName = `${id}.tgz`;
-  const archiveAbs = path.join(imagesDir(root), fileName);
+  const archiveAbs = archivePath(root, { fileName });
 
   const pause = opts.control?.pause || defaultPause;
   const unpause = opts.control?.unpause || defaultUnpause;
@@ -294,7 +299,7 @@ export async function performRestore(opts: {
   const image = readCatalog(root).find((r) => r.id === opts.imageId && r.computerId === desk.id);
   if (!image) throw notFound();
 
-  const archiveAbs = path.join(imagesDir(root), image.fileName);
+  const archiveAbs = archivePath(root, image);
   if (!fs.existsSync(archiveAbs)) throw notFound();
 
   const stop = opts.control?.stop || defaultStop;

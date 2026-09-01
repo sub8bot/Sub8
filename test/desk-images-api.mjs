@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createCatalog, addImageRow, readCatalog, removeImageRow, performSnapshot, performRestore, beginDiskJob, getDiskJob, endDiskJob, patchDiskJob, watchFileSize } from "../server/desk-images.mjs";
+import { archivePath, createCatalog, addImageRow, readCatalog, removeImageRow, performSnapshot, performRestore, beginDiskJob, getDiskJob, endDiskJob, patchDiskJob, watchFileSize } from "../server/desk-images.mjs";
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "desk-img-"));
 process.env.SUB8BOT_DATA = dir;
@@ -199,6 +199,10 @@ await test("performSnapshot publishes copying job then clears it", async () => {
   assert.equal(during.action, "snapshot");
   assert.equal(during.phase, "copying");
   assert.equal(getDiskJob("comp-job"), null);
+});
+
+await test("archivePath is the catalog row's tarball inside desk-images/", () => {
+  assert.equal(archivePath(dir, { fileName: "cmp-1.tar.gz" }), path.join(dir, "desk-images", "cmp-1.tar.gz"));
 });
 
 const failed = results.filter((r) => !r.ok);
