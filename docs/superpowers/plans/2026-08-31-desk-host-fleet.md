@@ -921,7 +921,7 @@ SKU field defaults (do not change prices):
 
 `dedicated` is ignored until Task 11. `createSizeForSku` does not change in this task.
 
-- [ ] **Step 1: Failing cloud test**
+- [x] **Step 1: Failing cloud test**
 
 In `cloud/test/computers.mjs` or a new `cloud/test/desk-run.mjs`:
 
@@ -939,9 +939,9 @@ assert.match(sh, /--name sub8-desk/);
 
 Worker tests that import `.ts` already do this style in `cloud/test/*`.
 
-- [ ] **Step 2: Fail because there is no `-v`**
+- [x] **Step 2: Fail because there is no `-v`**
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `cloud/src/desk-limits.ts`:
 
@@ -971,11 +971,11 @@ export function limitsForSku(skuId: string, { dedicated }: { dedicated: boolean 
 }
 ```
 
-- [ ] **Step 4: `cd cloud && node scripts/sync-orchestration.mjs && npm test`**
+- [x] **Step 4: `cd cloud && node scripts/sync-orchestration.mjs && npm test`**
 
 Expected: PASS. Snapshot bake tests still see `sub8-desk:trixie`.
 
-- [ ] **Step 5: Commit** (cloud submodule and parent if both dirty)
+- [x] **Step 5: Commit** (cloud submodule and parent if both dirty)
 
 ```bash
 git add cloud/src/digitalocean.ts cloud/src/desk-limits.ts cloud/src/billing/catalog.ts cloud/scripts/sync-orchestration.mjs cloud/vendor/desk-runtime cloud/test
@@ -1288,7 +1288,9 @@ Operator can snapshot/restore a local desk volume from the Computers panel once 
 
 Paused. Resume phrase: “continue desk host fleet” (Gate 2 = Tasks 8–9).
 
-### Task 8 — not started
+### Task 8 — 2026-09-01
+
+Landed cloud `44cd81d` `feat: cloud desks mount a named /config volume from deskRunArgs.` (the cloud submodule carried 27 files of operator WIP before this task; committed first as `894aed1`, octopus characters as `59155f5`). Re-vendoring also refreshed `vendor/harness-protocol` to the current dist. `cloud/src/desk-limits.ts` adds `limitsForSku(sku, { dedicated })` with the 1g/2g/3g/6g/12g overlay kept out of the package. `Sku` gains `diskGb` / `milliCpus` / `dedicated` (prices untouched). Both `deskUserData*` now emit `docker volume create sub8-config-<id>` then `docker ${deskRunArgs(...)}` with `publish.kind === "host"`; `dockerPortFlags` is gone (map pinned by `cloud/test/desk-run.mjs`). **Divergence:** `desk-runtime` imports `@sub8/desk-ports` and `@sub8/harness-protocol`, so `sync-orchestration.mjs` now vendors transitive `@sub8/*` deps and rewrites bare specifiers to `../<name>/index.js` — `vendor/desk-ports/` is new (the before-note listed only orchestration + harness-protocol). Tests: `desk-run.mjs` RED→GREEN; `cd cloud && npm test` EXIT 0; `npm run typecheck` EXIT 0; `wrangler deploy --dry-run` EXIT 0 with the argv in the bundle. Wire: vm.4g still `--memory 3g`, vm.16g still `12g`; new `--cpus`, `--pids-limit`, `-v sub8-config-<id>:/config`. Only new droplets affected; nothing provisioned. `dedicated: true` hard-coded until Task 11. Next: Task 9.
 
 ### Task 9 — not started
 
