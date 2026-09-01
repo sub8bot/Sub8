@@ -15,12 +15,22 @@ SIGN_ONLY=""
 for a in "$@"; do [ "$a" = "--sign-only" ] && SIGN_ONLY=1; done
 
 IDENTITY="${SUB8BOT_SIGN_IDENTITY:-${OCTOBOT_SIGN_IDENTITY:-}}"
-PROFILE="${SUB8BOT_NOTARY_PROFILE:-${OCTOBOT_NOTARY_PROFILE:-}}"
+if [ -z "$IDENTITY" ]; then
+  IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null | awk -F'"' '/Developer ID Application/{print $2; exit}')"
+fi
+# Same Apple account as Xplor / Xnative / GrokTerm.
+PROFILE="${SUB8BOT_NOTARY_PROFILE:-${OCTOBOT_NOTARY_PROFILE:-${XNATIVE_NOTARY_PROFILE:-xplorer-notary}}}"
 ENTITLEMENTS="$ROOT/build/entitlements.mac.plist"
 
 NOTARY_KEY="${SUB8BOT_NOTARY_KEY:-${OCTOBOT_NOTARY_KEY:-${XPLORER_NOTARY_KEY:-}}}"
 NOTARY_KEY_ID="${SUB8BOT_NOTARY_KEY_ID:-${OCTOBOT_NOTARY_KEY_ID:-${XPLORER_NOTARY_KEY_ID:-}}}"
 NOTARY_ISSUER="${SUB8BOT_NOTARY_ISSUER:-${OCTOBOT_NOTARY_ISSUER:-${XPLORER_NOTARY_ISSUER:-}}}"
+DEFAULT_KEY="$HOME/.appstoreconnect/private_keys/AuthKey_YBARNDQVXS.p8"
+if [ -z "$NOTARY_KEY" ] && [ -f "$DEFAULT_KEY" ]; then
+  NOTARY_KEY="$DEFAULT_KEY"
+  NOTARY_KEY_ID="${NOTARY_KEY_ID:-YBARNDQVXS}"
+  NOTARY_ISSUER="${NOTARY_ISSUER:-9576b918-20c9-4fd9-8b1b-9201381136aa}"
+fi
 
 if [ -z "$IDENTITY" ]; then
   echo "Set SUB8BOT_SIGN_IDENTITY to your Developer ID Application name." >&2
