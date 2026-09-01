@@ -1167,13 +1167,13 @@ git commit -m "feat: optional shared-host placement behind PACK_SHARED_HOSTS."
 - Modify: `cloud/src/digitalocean.ts` — host user_data: install docker, pull `sub8-desk:trixie`, **do not** start a customer container
 - Add cgroup flags already produced by `deskRunArgs` (Task 2). No extra work if Task 8 landed.
 
-- [ ] **Step 1: Test warm host refill does not create customer `computers` rows**
+- [x] **Step 1: Test warm host refill does not create customer `computers` rows**
 
-- [ ] **Step 2: Cron in existing `scheduled()`: if `WARM_HOST_TARGET>0`, keep that many `desk_hosts` in `warm`**
+- [x] **Step 2: Cron in existing `scheduled()`: if `WARM_HOST_TARGET>0`, keep that many `desk_hosts` in `warm`**
 
 - [ ] **Step 3: Manual internal soak (operator):** one 32 GB droplet, two internal volumes, two `deskRunArgs` with `vm.2g` limits. Run `stress-ng --vm 2 --vm-bytes 3g` in desk A; desk B screenshot still returns. If B dies, packing is not proven — do not enable for paying SKUs.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git commit -m "feat: warm Docker hosts without a customer desk."
@@ -1308,9 +1308,13 @@ Landed `feat: add @sub8/desk-place host bin-pack.` — `packages/desk-place` wit
 
 Landed cloud `f42db72` `feat: optional shared-host placement behind PACK_SHARED_HOSTS.` Migrations 0006/0007 verbatim; `cloud/src/hosts.ts` (snapshots from D1 → `pickHost`, `provisionHost` at `s-8vcpu-32gb` with a docker-only `hostUserData`, `hostDockerRun` as the mocked seam); `createComputer` gates on `PACK_SHARED_HOSTS=1 ∧ !dedicated`, else byte-identical; `host_id`/`volume_name` through row mapping and `save`. **Choices:** packed desks publish loopback-only (`13000 + 10·slot`) and keep `ipv4`/`stream_url` empty until Task 13's relay; host token stored via `putDeskSecret` keyed by the host id; spec's "32 GB host, third does not fit" is disk-bound in the test (110 GB). Tests: 4 cases RED→GREEN in `cloud/test/computers.mjs`; full chain, typecheck, `wrangler --dry-run` EXIT 0. Deferred: packed-desk destroy does no host `docker rm`; desks placed on a warming host wait for Task 12's cron. Nothing provisioned; flag is `"0"` in wrangler. Next: Task 12.
 
-### Task 12 — not started
+### Task 12 — 2026-09-01 (code; soak pending)
 
-### Gate 3 — not passed
+Landed cloud `f2cc8cb` `feat: warm Docker hosts without a customer desk.` `WARM_HOST_TARGET` (default 0, cap 8) drives `topUpWarmHosts` from `scheduled()`; `reconcileWarmingHosts` turns a booted droplet into a `warm` host and `startPendingDesks` hands it the run for every packed desk placed while it booted, once (`desk-started` event) — this settles Task 11's deferral. `hostUserData` builds `sub8-desk:trixie` from the repo when absent (no registry) and never starts a desk. Per-container caps needed no work (Task 8's `deskRunArgs`). Tests: 5 cases RED→GREEN incl. `worker.scheduled`; chain, typecheck, dry-run EXIT 0. **Step 3 (stress-ng soak on a real 32 GB droplet) has not run** — operator-only, needs a token and the host agent route, which is still the `hostDockerRun` stub. Both flags stay `"0"`.
+
+### Gate 3 — not passed (code complete 2026-09-01; soak outstanding)
+
+Bin-pack, `desk_hosts`, flagged placement, and warm hosts are in tests. What is missing is the operator soak (Task 12 Step 3) and a real host agent `/host/docker` route — until B's screenshot survives A's `stress-ng`, packing is not proven and `PACK_SHARED_HOSTS` stays `"0"`. Task 13 also needs `STREAM_VIA_WORKER=1` on prod first. Paused here.
 
 ### Task 13 — not started
 
