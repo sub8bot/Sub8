@@ -2187,7 +2187,7 @@ function namedBubble(m: Message, assistant: boolean): string {
   const body = fromWorker
     ? `<div class="bubble mate-card">${escapeHtml(first.slice(0, 140))}${first.length > 140 ? "…" : ""}
         ${openBtn}</div>`
-    : `<div class="bubble">${assistant ? formatChatText(m.content) : escapeHtml(m.content)}${openBtn}</div>`;
+    : `<div class="bubble">${formatChatText(m.content)}${openBtn}</div>`;
   return `<div class="msg ${assistant ? "asst" : "mate"}" data-mid="${escapeHtml(m.id || "")}">
     ${avatar}
     <div class="msg-col">
@@ -2206,6 +2206,8 @@ function renderTeamChannel(thread: HTMLElement, team: Team): void {
   }
   thread.innerHTML = head + msgs.slice(-100).map((m) => namedBubble(m, m.speakerRole !== "user")).join("");
   thread.scrollTop = thread.scrollHeight;
+  const input = $<HTMLTextAreaElement>('textarea[name="q"]');
+  if (input) input.placeholder = `Message # ${team.name} channel · @name to wake a teammate`;
 }
 
 function paintChat(bot: Bot | null | undefined): void {
@@ -3415,9 +3417,10 @@ function paintTeamTabs(bot: Bot): void {
   const channelTab = `<button type="button" class="chrome-tab channel-tab ${chOn ? "on" : ""}" data-act="team-channel" data-id="${team.id}" title="Shared team channel"><span class="chrome-tab-title"># Channel</span></button>`;
   host.innerHTML = channelTab + members
     .map((b) => {
+      const memberOn = !chOn && b.id === bot.id;
       const role = b.teamRole === "chief" ? "Chief" : b.teamRole === "worker" ? "Worker" : "";
       const title = role && b.name.toLowerCase() !== role.toLowerCase() ? `${b.name} · ${role}` : b.name;
-      return `<button type="button" class="chrome-tab ${b.id === bot.id ? "on" : ""} ${b.busy ? "busy" : ""}" data-act="team-tab" data-id="${b.id}" title="${escapeHtml(title)}">
+      return `<button type="button" class="chrome-tab ${memberOn ? "on" : ""} ${b.busy ? "busy" : ""}" data-act="team-tab" data-id="${b.id}" title="${escapeHtml(title)}">
         <span class="chrome-tab-ico" data-avatar="${b.id}" data-avatar-slot="tab" data-avatar-size="22" data-avatar-framing="body"></span>
         <span class="chrome-tab-title">${escapeHtml(b.name)}</span>
       </button>`;
@@ -3492,10 +3495,13 @@ function paintChatPane(bot: Bot | null): void {
     const input = $<SendForm>("#send")?.q;
     const team = teamOf(bot);
     const mates = teamBots(team).filter((b) => b.id !== bot.id);
+    const inChannel = Boolean(state.channelTeamId && team && team.id === state.channelTeamId);
     if (input) {
-      input.placeholder = mates.length
-        ? `Message ${bot.name} · @name to ping a teammate`
-        : `Message ${bot.name}`;
+      input.placeholder = inChannel
+        ? `Message # ${team!.name} channel · @name to wake a teammate`
+        : mates.length
+          ? `Message ${bot.name} · @name to ping a teammate`
+          : `Message ${bot.name}`;
     }
     const hn = $(".chat-head-name");
     if (hn) hn.textContent = bot.name;
@@ -6812,8 +6818,7 @@ const ACTIONS: Record<string, ActHandler> = {
     return;
   },
   "team-channel": (_e, { el }) => {
-    const id = el.dataset.id || "";
-    state.channelTeamId = state.channelTeamId === id ? null : id;
+    state.channelTeamId = el.dataset.id || "";
     const b = viewBots().find((x) => x.id === state.selected) || viewBots()[0];
     if (b) {
       paintChat(b);
@@ -6821,6 +6826,7 @@ const ACTIONS: Record<string, ActHandler> = {
     }
   },
   "team-tab": (e, { el }) => {
+    state.channelTeamId = null;
     // Cloud teammates live in cloudDraft.bots, not state.bots.
     const b = viewBots().find((x) => x.id === el.dataset.id);
     if (b) {
@@ -8567,6 +8573,38 @@ async function onSend(e: ComposerSubmit): Promise<void> {
   const content = [text, names && !text ? `Attached ${names}` : names && text ? `(attached ${names})` : "", extras]
     .filter(Boolean)
     .join(" ");
+  // Channel view: the message belongs to the shared team channel, not the
+  // selected bot. Local posts to the team channel (with @mention wake); cloud
+  // has no channel backend yet, so it routes to the team's chief to coordinate.
+  const channelTeam = state.channelTeamId ? teamOf(bot) : null;
+  if (channelTeam && channelTeam.id === state.channelTeamId) {
+    ((channelTeam.messages ||= []) as Message[]).push({
+      id: `pending-${Date.now()}`, role: "user", content, ts: Date.now(), speakerId: "user", speakerName: "You",
+    });
+    if (bot) paintChat(bot);
+    try {
+      if (isCloudPlace()) {
+        const chief = teamBots(channelTeam).find((b) => b.teamRole === "chief") || bot;
+        if (chief) {
+          const computerId = chief.computerId || chief.vm?.computerId;
+          const snap = await api(`/api/cloud/draft/bots/${chief.id}/messages`, {
+            method: "POST",
+            body: { computerId, botId: chief.id, content, identityId: workerCloudIdentityId(chief.identityId || "") },
+          }) as CloudDraftState;
+          state.cloudDraft = snap;
+          const turnId = snap.turnId || snap.reply?.turnId;
+          if (turnId) cloudTurns.set(chief.id, { turnId, computerId });
+        }
+      } else {
+        const toIds = mentionedMemberIds(content, teamBots(channelTeam));
+        await api(`/api/teams/${channelTeam.id}/messages`, { method: "POST", body: { content, images, toIds } });
+      }
+    } catch (err) {
+      console.error("channel send", err);
+    }
+    return;
+  }
+
   const team = isCloudPlace() ? null : teamOf(bot);
   const members = teamBots(team);
   const toIds = mentionedMemberIds(content, members);
