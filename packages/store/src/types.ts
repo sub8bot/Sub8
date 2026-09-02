@@ -96,6 +96,10 @@ export interface Bot {
   hidden?: boolean | undefined;
   teamId?: string | undefined;
   teamRole?: string | undefined;
+  /** Words (beyond name/role) this bot wakes on in the team channel. */
+  channelKeywords?: readonly string[] | undefined;
+  /** Team-channel coordination state; "hold" = parked by the chief. */
+  channelState?: "active" | "hold" | undefined;
   [key: string]: unknown;
 }
 
@@ -116,6 +120,10 @@ export interface BotSeed {
   hidden?: boolean | undefined;
   teamId?: string | undefined;
   teamRole?: string | undefined;
+  /** Words (beyond name/role) this bot wakes on in the team channel. */
+  channelKeywords?: readonly string[] | undefined;
+  /** Team-channel coordination state; "hold" = parked by the chief. */
+  channelState?: "active" | "hold" | undefined;
   [key: string]: unknown;
 }
 

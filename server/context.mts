@@ -196,15 +196,17 @@ export async function teamDeskPrompt(bot: ContextBot | null | undefined): Promis
   const rows = mates
     // Annotated rather than inferred: teams.membersOf is still JavaScript, so
     // its return is implicitly any until that module converts.
-    .map((b: { id?: string | undefined; name?: string | undefined; teamRole?: string | undefined }) => {
+    .map((b: { id?: string | undefined; name?: string | undefined; teamRole?: string | undefined; channelKeywords?: readonly string[] | undefined; channelState?: string | undefined }) => {
       const you = b.id === bot.id ? " ← you" : "";
-      return `- ${b.teamRole || "member"} ${b.name} (${b.id})${you}`;
+      const kw = (b.channelKeywords || []).length ? ` · wakes on: ${(b.channelKeywords || []).join(", ")}` : "";
+      const held = b.channelState === "hold" ? " · ON HOLD" : "";
+      return `- ${b.teamRole || "member"} ${b.name} (${b.id})${you}${kw}${held}`;
     })
     .join("\n");
   const mine = bot.vm?.display || ":1";
   const job =
     role === "chief"
-      ? "set_job first with one step per piece the user asked for — include a step for any piece you keep (your bot id). Assign with message_teammate (that also creates the bar). That worker's tab name becomes the job-step label. Do not invent extra files as deliverables; update_task detail is the report. Do not re-do a worker's search. list_tasks; compile from those details (latest) for EVERY non-Summary step including yours; send_message that list; update_task Summary done; stop. One-shot jobs are not routines. Google URLs: add &hl=en&gl=us&curr=USD. Closing/removing bots is not a job: delete_teammate (all_workers=true or each worker id). Never set_job or message_teammate a worker to close bots."
+      ? "set_job first with one step per piece the user asked for — include a step for any piece you keep (your bot id). Assign with message_teammate (that also creates the bar), or @mention a teammate in send_message for a directive the whole team sees. That worker's tab name becomes the job-step label. Do not invent extra files as deliverables; update_task detail is the report. Do not re-do a worker's search. list_tasks; compile from those details (latest) for EVERY non-Summary step including yours; send_message that list; update_task Summary done; stop. One-shot jobs are not routines. Google URLs: add &hl=en&gl=us&curr=USD. Closing/removing bots is not a job: delete_teammate (all_workers=true or each worker id). Never set_job or message_teammate a worker to close bots."
       : `Your screen is display ${mine}. update_task running when you start, done (or blocked) when finished — detail is one line. message_teammate the chief ONE short line. Do not send_message a report. Do not write a report file unless asked. Long notes stay in your own chat. browser for pages; computer for pixels. Do not upsert_routine for a one-shot search. Google URLs: add &hl=en&gl=us&curr=USD.`;
   return [
     "",
@@ -217,7 +219,12 @@ export async function teamDeskPrompt(bot: ContextBot | null | undefined): Promis
     job,
     "Teammates:",
     rows || "- (none)",
-    "User messages in this thread are the team chat. send_message is visible to the human and the team. message_teammate starts the other Bot's turn. If you need the user to confirm, pick an option, or grant access, call ask_user and wait.",
+    "This thread is the TEAM CHANNEL: every teammate sees your send_message, and so does the human.",
+    "To pull a teammate in, @mention them by name inside send_message (e.g. @" + (mates.find((m: { id?: string }) => m.id !== bot.id)?.name || "Name") + ") — that WAKES them to act. A teammate also wakes when their role or a subscribed keyword (listed above) appears. A send_message with no @mention is a visible broadcast that wakes no one.",
+    "message_teammate is a silent 1:1 handoff that starts only that Bot's turn — use it when you do not want the whole team pulled in.",
+    "Discipline: when a teammate @mentions you with an ask, acknowledge in ONE line, then do it. Each step has one owner — defer to them on their area, and only correct the shared record with a fact, not an opinion.",
+    "A chief can put a worker ON HOLD (hold_teammate); a held worker stops acting on channel traffic until resume_teammate. If you are on hold, do not act on channel messages.",
+    "If you need the user to confirm, pick an option, or grant access, call ask_user and wait.",
     "",
   ].join("\n");
 }

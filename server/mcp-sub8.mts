@@ -632,6 +632,16 @@ export const TOOLS: ToolSpec[] = [
     },
   },
   {
+    name: "hold_teammate",
+    description: "Park a teammate: pause them so they stop acting on team-channel @mentions/keywords until you resume_teammate them. Chief use. Pass bot_id from list_teammates.",
+    inputSchema: { type: "object", properties: { bot_id: { type: "string", description: "Worker id from list_teammates." } }, required: ["bot_id"] },
+  },
+  {
+    name: "resume_teammate",
+    description: "Un-park a teammate paused with hold_teammate so they wake on channel traffic again. Pass bot_id.",
+    inputSchema: { type: "object", properties: { bot_id: { type: "string", description: "Worker id from list_teammates." } }, required: ["bot_id"] },
+  },
+  {
     name: "delete_teammate",
     description:
       "Close/remove worker bots when the user asks (close all bots, delete teammates, etc). all_workers=true closes every worker except you. Or pass bot_id from list_teammates. Never delete yourself. This is not a job — do not set_job or message_teammate someone to close bots.",
@@ -1461,6 +1471,16 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     // Non-null: `prior` is only set on the same return that fills `changed`.
     if (patched.prior) notes.push(`previous ${patched.changed!.join("/")} kept on the record as priorIdentity: ${JSON.stringify(patched.prior)}`);
     return { content: [{ type: "text", text: `updated ${target.name}${notes.length ? `. ${notes.join(". ")}` : ""}` }] };
+  }
+  if (name === "hold_teammate" || name === "resume_teammate") {
+    const toId = String(args.bot_id || "");
+    if (!toId) return { content: [{ type: "text", text: "bot_id required" }], isError: true };
+    const target = await store.getBot(toId);
+    if (!target) return { content: [{ type: "text", text: "bot not found" }], isError: true };
+    const state = name === "hold_teammate" ? "hold" : "active";
+    await teams.setChannelState(toId, state);
+    await emit("teammate", { bot: { id: target.id, name: target.name, teamId: target.teamId, teamRole: target.teamRole, channelState: state } });
+    return { content: [{ type: "text", text: `${target.name} is ${state === "hold" ? "on hold" : "active"}` }] };
   }
   if (name === "delete_teammate") {
     const bot = await store.getBot(botId);

@@ -2099,6 +2099,16 @@ async function execTool(
       if (patched.prior) notes.push(`previous ${patched.changed!.join("/")} kept on the record as priorIdentity: ${JSON.stringify(patched.prior)}`);
       return { text: `updated ${target.name} (${target.id})${notes.length ? `. ${notes.join(". ")}` : ""}` };
     }
+    if (name === "hold_teammate" || name === "resume_teammate") {
+      const toId = String(args.bot_id || "");
+      if (!toId) return { text: "bot_id required" };
+      const target = await store.getBot(toId);
+      if (!target) return { text: "bot not found" };
+      const state = name === "hold_teammate" ? "hold" : "active";
+      await teams.setChannelState(toId, state);
+      emit("teammate", { bot: { id: target.id, name: target.name, teamId: target.teamId, teamRole: target.teamRole, channelState: state } });
+      return { text: `${target.name} is ${state === "hold" ? "on hold" : "active"}` };
+    }
     if (name === "delete_teammate") {
       const team = bot.teamId ? await teams.getTeam(bot.teamId) : null;
       // `!` twice: `closeTargetsForBot` answers with exactly one of `error` / `ids`.

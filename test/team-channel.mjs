@@ -1,6 +1,6 @@
 // Stage 1: the group-channel router — broadcast visibility, targeted wake.
 import assert from "node:assert/strict";
-import { routeChannelMessage, channelKeywordsFor, mentionedMemberIds } from "../server/teams.mjs";
+import { routeChannelMessage, channelKeywordsFor, mentionedMemberIds, deriveChannelKeywords } from "../server/teams.mjs";
 
 const members = [
   { id: "chief", name: "Job Hunter Lead", teamRole: "chief" },
@@ -60,6 +60,21 @@ t("channelKeywordsFor lowercases and dedupes", () => {
 
 t("name prefix @mention still works (existing behavior preserved)", () => {
   assert.deepEqual(mentionedMemberIds("@FDE hello", members), ["scout"]);
+});
+
+t("deriveChannelKeywords: name words >=3 chars, role, deduped, stopwords dropped", () => {
+  assert.deepEqual(deriveChannelKeywords("Pipeline Ops", "worker").sort(), ["ops", "pipeline"]);
+  assert.deepEqual(deriveChannelKeywords("FDE Scout", "worker").sort(), ["fde", "scout"]);
+  assert.deepEqual(deriveChannelKeywords("New Bot", "worker"), [], "stopwords 'new'/'bot' dropped, nothing left");
+  assert.ok(deriveChannelKeywords("Warm Outreach", "researcher").includes("researcher"), "a real role word is a keyword");
+});
+
+t("a derived keyword actually wakes the member via the router", () => {
+  const m = [
+    { id: "chief", name: "Lead", teamRole: "chief" },
+    { id: "ops", name: "Pipeline Ops", teamRole: "worker", channelKeywords: deriveChannelKeywords("Pipeline Ops", "worker") },
+  ];
+  assert.deepEqual(routeChannelMessage({ authorId: "chief", text: "update the pipeline please", members: m }).wake, ["ops"]);
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

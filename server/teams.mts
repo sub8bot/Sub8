@@ -427,8 +427,9 @@ export async function addMember(
   const chief = bots.find((b) => b.id === team.chiefId) || bots.find((b) => b.teamId === team.id);
   const role = spec.role === "chief" ? "chief" : "worker";
   const job = String(spec.job || spec.description || spec.instructions || "").trim();
+  const mateName = String(spec.name || role).trim() || role;
   const bot = store.newBot({
-    name: String(spec.name || role).trim() || role,
+    name: mateName,
     description: job,
     instructions: job,
     harness: spec.harness && typeof spec.harness === "object" ? spec.harness : chief?.harness || { provider: "default" },
@@ -436,6 +437,8 @@ export async function addMember(
     teamRole: role,
     color: spec.color,
     avatar: spec.avatar,
+    channelKeywords: role === "worker" ? deriveChannelKeywords(mateName, role) : [],
+    channelState: "active",
   });
   const src: store.BotVm = chief?.vm || {};
   bot.vm = {
@@ -750,6 +753,31 @@ export function mentionedMemberIds(text: unknown, members: readonly TeamMember[]
 /** The words that wake a member when they appear in a channel message: their
  * own name, their role, and any opted-in keywords. Name/role are matched by the
  * @mention router; this returns the extra keyword set, lowercased. */
+/** Default wake keywords for a new teammate, derived from its name (words >=3
+ * chars). So a "Pipeline Ops" worker wakes on "pipeline"/"ops" in the channel
+ * even without an @mention. Opt-in extra words can be added later. */
+/** Park or resume a teammate on the channel. A held worker does not wake on
+ * channel @mentions/keywords (routeChannelMessage skips it) until resumed. */
+export async function setChannelState(botId: unknown, state: "active" | "hold"): Promise<store.Bot | null> {
+  const id = String(botId || "");
+  const bot = await store.getBot(id);
+  if (!bot) return null;
+  (bot as store.Bot & { channelState?: string }).channelState = state;
+  await store.upsertBot(bot);
+  return bot;
+}
+
+export function deriveChannelKeywords(name: unknown, role?: unknown): string[] {
+  const stop = new Set(["the", "and", "bot", "for", "with", "team", "new"]);
+  const words = String(name || "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length >= 3 && !stop.has(w));
+  const r = String(role || "").trim().toLowerCase();
+  if (r && r !== "worker" && r !== "chief" && r.length >= 3) words.push(r);
+  return [...new Set(words)];
+}
+
 export function channelKeywordsFor(member: TeamMember | null | undefined): string[] {
   const out = new Set<string>();
   for (const k of member?.channelKeywords || []) {
