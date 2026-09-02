@@ -636,7 +636,10 @@ export function botFromComputer(c: LiveComputer): CloudBot {
     instructions: "",
     avatar: { expression: "think", animation: "look", body: "rounder", color: "#8f4fba" },
     harness: { provider: "grok-build", model: "grok-4.6" },
-    identityId: defaultCloudIdentityId(null),
+    // Unpinned: the chief of a desk with no team row follows the ACCOUNT
+    // default (resolved when the draft is assembled). Seeding "cloud-grok"
+    // here made that default unreachable — the row already had a value.
+    identityId: "",
     messages: [],
     routines: [],
     computerId: desk.id,
@@ -664,6 +667,12 @@ function workerCloudIdentityId(identityId: string | undefined): string {
 }
 
 function defaultCloudIdentityId(brain: CloudBrain | null | undefined): string {
+  // The account-wide default (Settings → Identities / POST /api/brain/identity)
+  // wins. Deriving it from the brain row's provider pinned every cloud chief
+  // to Grok — Dan's "hi" from the desktop went to a Grok with no credit while
+  // the account said cloud-claude.
+  const chosen = workerCloudIdentityId(String((brain as { identityId?: unknown } | null | undefined)?.identityId || ""));
+  if (chosen) return chosen;
   const provider = String(brain?.provider || "");
   if (provider === "claude" || /^claude/i.test(provider)) return "cloud-claude";
   if (brain?.grokSignedIn || provider === "grok-oauth" || provider === "grok-build") return "cloud-grok";
@@ -679,8 +688,8 @@ function harnessForCloudIdentity(
   if (id === "cloud-claude") {
     return {
       provider: "claude",
-      model: "haiku",
-      signedIn: Boolean(brain?.claudeCredentials || brain?.claudeSubscription),
+      model: "claude-sonnet-5",
+      signedIn: Boolean(brain?.claudeCredentials),
       apiKeySet: Boolean(brain?.apiKeySet),
     };
   }
