@@ -110,3 +110,4 @@ plan/
 /server/update.mjs
 /server/vault.mjs
 /server/vm.mjs
+agent-test-suite/
