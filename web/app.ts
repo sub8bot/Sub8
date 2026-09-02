@@ -3346,7 +3346,9 @@ function renderChoiceCard(m: Message): string {
             // Cloud path has a real destination for secrets (see resume.md), say
             // what actually happens.
             isCloudPlace()
-            ? `<div class="choice-picked">Sent. Heads up: on Cloud this answer is part of the chat — rotate it if it was a real credential.</div>`
+            ? (m as { secretTarget?: { connector?: string } }).secretTarget?.connector === "claude-auth"
+              ? `<div class="choice-picked">Code sent to the Claude sign-in. It is not in this chat.</div>`
+              : `<div class="choice-picked">Sent. Heads up: on Cloud this answer is part of the chat — rotate it if it was a real credential.</div>`
             : `<div class="choice-picked">Credential saved. It is not in this chat.</div>`
           : "";
   return `<div class="choice-card" data-mid="${escapeHtml(m.id || "")}">
@@ -8936,14 +8938,34 @@ async function submitChoice(messageId: string | undefined, choiceId: string | un
       card.pending = false;
       card.selected = { id: "custom", label: "Sent" };
       paintChat(bot);
+      const reopen = async (note: string) => {
+        // The parked login on the desk expired (or a later turn replaced it):
+        // start a fresh one and refresh THIS card's link in place — no modal,
+        // no hunting for a newer card.
+        let url = "";
+        try {
+          const st = (await api("/api/cloud/brain/claude/auth/start", { method: "POST", body: { computerId: tgt.computerId || "" } })) as { url?: string };
+          url = String(st?.url || "");
+        } catch {
+          /* fall through to the plain note */
+        }
+        card.pending = true;
+        card.selected = null;
+        (card as { hint?: string }).hint = url ? `${note} Approve again, then paste the new code. ${url}` : `${note} Open Identities → Claude → Sign in.`;
+        paintChat(bot);
+      };
       try {
         const r = (await api("/api/cloud/brain/claude/auth/code", { method: "POST", body: { computerId: tgt.computerId || "", code: custom } })) as { loggedIn?: boolean; error?: string };
-        if (!r?.loggedIn) { window.alert(r?.error || "Claude sign-in did not complete. Try the link again."); return; }
+        if (!r?.loggedIn) {
+          const msg = String(r?.error || "");
+          await reopen(/no login in progress|start again|expired/i.test(msg) ? "That link expired — here is a fresh one." : `Sign-in did not complete (${msg || "check the code"}).`);
+          return;
+        }
         const form = $<SendForm>("#send");
         const q = form?.q;
         if (q && tgt.retry) { q.value = tgt.retry; await onSend({ preventDefault() {}, target: form }); }
       } catch (err) {
-        window.alert((err as CaughtError | undefined)?.message || "Claude sign-in failed.");
+        await reopen(`Sign-in failed (${(err as CaughtError | undefined)?.message || "network"}).`);
       }
       return;
     }
