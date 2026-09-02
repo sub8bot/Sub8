@@ -181,6 +181,11 @@ interface CloudTurnReply {
 interface TurnOptions {
   persistUser?: boolean | undefined;
   replyTo?: string | null | undefined;
+  /** What started the turn: a user message ("user", the default) or a
+   * teammate's report ("report"). A chief's plain reply is mirrored into the
+   * team channel only for user turns — the user already sees the worker's
+   * reply, so a report turn speaks only via send_message. */
+  source?: "user" | "report" | undefined;
 }
 
 /**
@@ -2184,6 +2189,11 @@ app.post("/api/teams/:id/messages", async (req, res) => {
   // which turned a plain "hi" into a three-step job card.
   const deliver = targets.length ? targets : ([team.chiefId || team.memberIds?.[0]].filter(Boolean) as string[]);
   for (const id of deliver) {
+    if (id === team.chiefId) {
+      // The lead reads its messages when it gets to them — see scheduleLeadTurn.
+      scheduleLeadTurn(id, { posted, images });
+      continue;
+    }
     await store.patchBot(id, (b) => {
       b.messages = b.messages || [];
       b.messages.push({ ...posted, role: "user" });
@@ -2191,7 +2201,7 @@ app.post("/api/teams/:id/messages", async (req, res) => {
     broadcast("message", { botId: id, ...posted });
     // `appendMessage` answers a stored row, whose `content` sits under
     // @sub8/store's index signature; this route wrote it as a string one call up.
-    enqueueTurn(id, () => runUserTurn(id, posted.content as string, false, images, { persistUser: false }));
+    enqueueTurn(id, () => runUserTurn(id, posted.content as string, false, images, { persistUser: false, source: "user" }));
   }
   res.json({ ok: true, message: posted, toIds: deliver });
 });
@@ -2697,6 +2707,46 @@ const turnAbort = new Map<string, AbortController>();
 const inflightTurns = new Map<string, { nudges: string[] }>();
 
 /**
+ * Team-channel messages waiting for the lead. A message is posted to the
+ * channel the moment it arrives (the user sees it), but the lead's OWN copy is
+ * held here and delivered when its turn starts. Pushing it into the lead's
+ * thread immediately meant the turn for message 1 already saw message 2 in
+ * context and acted on it — and then the turn for message 2 did it again (the
+ * double "→ Pixel: Say a random number"). Draining at turn start also folds a
+ * burst into ONE turn, which is how the lead "handles several requests".
+ */
+type PendingChannelMsg = { posted: store.Message; images: string[] };
+const pendingForLead = new Map<string, PendingChannelMsg[]>();
+const leadTurnQueued = new Set<string>();
+
+function scheduleLeadTurn(botId: string, msg: PendingChannelMsg): void {
+  (pendingForLead.get(botId) || pendingForLead.set(botId, []).get(botId)!).push(msg);
+  if (leadTurnQueued.has(botId)) return; // the queued turn will drain this too
+  leadTurnQueued.add(botId);
+  enqueueTurn(
+    botId,
+    async () => {
+      leadTurnQueued.delete(botId);
+      const batch = pendingForLead.get(botId) || [];
+      pendingForLead.set(botId, []);
+      if (!batch.length) return;
+      await store.patchBot(botId, (b) => {
+        b.messages = b.messages || [];
+        for (const { posted } of batch) b.messages.push({ ...posted, role: "user" });
+      });
+      for (const { posted } of batch) broadcast("message", { botId, ...posted });
+      const images = batch.flatMap((m) => m.images);
+      const text =
+        batch.length === 1
+          ? String(batch[0]!.posted.content || "")
+          : `The user sent ${batch.length} messages in the team channel. Handle all of them:\n${batch.map((m, i) => `${i + 1}. ${String(m.posted.content || "")}`).join("\n")}`;
+      return runUserTurn(botId, text, false, images, { persistUser: false, source: "user" });
+    },
+    () => leadTurnQueued.delete(botId),
+  );
+}
+
+/**
  * Merge a change into bot.vm UNDER the store lock.
  *
  * `bot` on these routes was read at entry, before a Docker call that can take
@@ -2785,6 +2835,23 @@ function enqueueTurn(botId: string, fn: () => unknown, onSkipped?: () => void): 
 }
 
 const notifiedThisTurn = new Set<string>();
+
+/**
+ * Per lead: the teammates it has handed work to and not yet heard back from,
+ * and the replies gathered so far. The lead's report turn runs ONCE, when the
+ * set is complete (or after REPORT_FLUSH_MS) — not on every reply. Per-reply
+ * turns raced the still-working teammates: Nova's "hello" woke the lead, which
+ * saw Pixel outstanding and handed Pixel the same thing again. Batched, the
+ * lead sees every answer together and can combine them or stay silent.
+ */
+const REPORT_FLUSH_MS = 3 * 60 * 1000;
+const outstandingFor = new Map<string, Set<string>>();
+const repliesFor = new Map<string, { name: string; text: string }[]>();
+const reportFlushTimer = new Map<string, NodeJS.Timeout>();
+
+function noteHandedOff(chiefId: string, workerId: string): void {
+  (outstandingFor.get(chiefId) || outstandingFor.set(chiefId, new Set()).get(chiefId)!).add(workerId);
+}
 function notifyKey(fromId: string | undefined, toId: string | null | undefined): string {
   return `${fromId || ""}->${toId || ""}`;
 }
@@ -2799,6 +2866,7 @@ function dispatchToTeammate(toId: string, content: unknown, from: DispatchFrom |
   }
   const who = from?.name || "a teammate";
   const role = from?.teamRole || "teammate";
+  if (from?.id) noteHandedOff(from.id, toId);
   const run = async () => {
     const live = await store.getBot(toId) as IndexBot | null;
     if (!live) return;
@@ -2848,13 +2916,20 @@ async function shortStepPing(bot: IndexBot | null | undefined): Promise<string> 
  * dedup by speaker+content against the recent log: mirror only what isn't
  * there yet, never double a message the chief posted on purpose.
  */
-async function mirrorChiefReplyToChannel(bot: IndexBot | null | undefined, last: { content?: unknown } | null | undefined): Promise<void> {
+async function mirrorChiefReplyToChannel(bot: IndexBot | null | undefined, last: { content?: unknown } | null | undefined, since = 0): Promise<void> {
   if (bot?.teamRole !== "chief" || !bot.teamId || !last) return;
   const content = String(last.content || "").trim();
-  if (!content) return;
+  if (!content || teammate.isSilentReply(content)) return;
   const recent = (await teams.loadMessages(bot.teamId)).slice(-30);
-  const dup = recent.some((m) => m.speakerId === bot.id && String(m.content || "").trim() === content);
+  // Same line already posted THIS turn (send_message) → not doubled. Scoped to
+  // the turn so an honest repeat of an old line is not swallowed.
+  const dup = recent.some((m) => m.speakerId === bot.id && (since <= 0 || Number(m.ts || 0) >= since) && String(m.content || "").trim() === content);
   if (dup) return;
+  // The lead already spoke in the channel during this turn — a delegation
+  // ("→ Nova: say hello") or a send_message. That line IS the reply; a plain
+  // final line after it is almost always mechanics ("Message sent. Waiting…").
+  const spokeThisTurn = since > 0 && recent.some((m) => m.speakerId === bot.id && Number(m.ts || 0) >= since);
+  if (spokeThisTurn) return;
   const posted = await teams.appendMessage(bot.teamId, {
     role: "assistant",
     speakerId: bot.id,
@@ -2903,10 +2978,116 @@ async function deliverTeammateReply(toId: string | null | undefined, from: Dispa
   broadcast("message", { botId: toId, ...incoming });
   const team = from?.teamId ? await teams.getTeam(from.teamId) : (to?.teamId ? await teams.getTeam(to.teamId) : null);
   const followUp = to?.teamRole === "chief" && teams.isChiefFollowUpReport(team?.job);
-  const llm = to?.teamRole === "chief" ? teammate.chiefReportLlm(from?.name, short, { followUp }) : stored;
-  const live = inflightTurns.get(toId);
-  if (live) live.nudges.push(llm);
-  else enqueueTurn(toId, () => runUserTurn(toId, llm, false, [], { persistUser: false }));
+  // Make the report self-contained: what the lead handed this worker, and the
+  // user's request that led to it. Both live in the lead's own thread — the
+  // "To Nova: …" note and the channel message pushed before it.
+  let asked = "";
+  let userAsk = "";
+  const handed: string[] = [];
+  if (to?.teamRole === "chief" && from?.id) {
+    const rows = to.messages || [];
+    const strip = (c: unknown) => String(c || "").replace(/^To [^:]+:\s*/i, "").trim();
+    const noteAt = rows.map((m, i) => ({ m, i })).reverse().find(({ m }) => m.toId === from.id && m.role === "assistant");
+    if (noteAt) {
+      asked = strip(noteAt.m.content);
+      const askIdx = rows.slice(0, noteAt.i).map((m, i) => ({ m, i })).reverse().find(({ m }) => m.role === "user" && (m.speakerRole === "user" || !m.speakerRole));
+      userAsk = String(askIdx?.m.content || "").trim();
+      // Every delegation since that ask (to anyone), so the lead never hands
+      // the same thing out twice while a teammate is still working on it.
+      for (const m of rows.slice(askIdx ? askIdx.i : 0)) {
+        if (m.role === "assistant" && m.toId && m.toName) handed.push(`${m.toName}: ${strip(m.content)}`);
+      }
+    }
+  }
+  const runReport = (llm: string) => {
+    const live = inflightTurns.get(toId);
+    if (live) live.nudges.push(llm);
+    else enqueueTurn(toId, () => runUserTurn(toId, llm, false, [], { persistUser: false, source: "report" }));
+  };
+  if (to?.teamRole !== "chief") {
+    runReport(stored);
+    return;
+  }
+  // Batch: gather this reply; run the lead's report turn only when every
+  // teammate it handed work to has answered (or the flush timer fires).
+  const pending = outstandingFor.get(toId);
+  if (from?.id && pending) pending.delete(from.id);
+  const gathered = repliesFor.get(toId) || repliesFor.set(toId, []).get(toId)!;
+  gathered.push({ name: String(from?.name || "Teammate"), text: short });
+  const flush = () => {
+    const t = reportFlushTimer.get(toId);
+    if (t) clearTimeout(t);
+    reportFlushTimer.delete(toId);
+    const replies = repliesFor.get(toId) || [];
+    repliesFor.set(toId, []);
+    outstandingFor.set(toId, new Set());
+    if (!replies.length) return;
+    const only = replies.length === 1 ? replies[0]! : null;
+    runReport(
+      teammate.chiefReportLlm(only ? only.name : "Your teammates", only ? only.text : "", {
+        followUp,
+        asked: only ? asked : "",
+        userAsk,
+        handed: [...new Set(handed)],
+        replies: only ? undefined : replies,
+      }),
+    );
+  };
+  if (!pending || pending.size === 0) {
+    flush();
+    return;
+  }
+  if (!reportFlushTimer.has(toId)) reportFlushTimer.set(toId, setTimeout(flush, REPORT_FLUSH_MS));
+}
+
+/**
+ * A worker finished a turn the lead started. Its ANSWER — the actual final
+ * reply, not a job-step ping — goes two places: the team channel, as the
+ * worker's own bubble (this is "Nova: hello"), and the lead's thread as a
+ * report so the lead can combine or take the next step. The old path sent
+ * only shortStepPing ("done") unless the worker remembered a tool, which is
+ * how a worker could say hello and the lead hear nothing.
+ */
+async function deliverWorkerAnswer(chiefId: string, worker: IndexBot | null | undefined, fallback: string, since = 0): Promise<void> {
+  if (!worker || !chiefId) return;
+  if (worker.teamId) {
+    // If the worker already spoke in the channel during this turn (it
+    // send_message'd its answer), THAT is its answer: report it to the lead
+    // and do not append its trailing plain text ("Done.") as a second bubble —
+    // which also fed the lead "Done." as the reply and made it re-ask.
+    const recent = (await teams.loadMessages(worker.teamId)).slice(-30);
+    const spoke = recent.filter((m) => m.speakerId === worker.id && !m.toId && Number(m.ts || 0) >= since && String(m.content || "").trim());
+    if (since > 0 && spoke.length) {
+      await deliverTeammateReply(chiefId, worker, String(spoke[spoke.length - 1]!.content).trim());
+      return;
+    }
+  }
+  const last = [...(worker.messages || [])]
+    .reverse()
+    .find((m) => m.role === "assistant" && String(m.content || "").trim() && !m.kind && !m.toId);
+  const answer = String(last?.content || "").trim() || fallback;
+  if (!answer) return;
+  if (worker.teamId) {
+    // A worker that already posted this exact line THIS turn is not doubled.
+    // Scoped to the turn: across turns a repeat is legitimate — a worker asked
+    // twice for a random number said "42" both times, and the second was
+    // silently dropped as a duplicate of the first.
+    const recent = (await teams.loadMessages(worker.teamId)).slice(-30);
+    const already = recent.some((m) => m.speakerId === worker.id && Number(m.ts || 0) >= since && String(m.content || "").trim() === answer);
+    if (already) {
+      await deliverTeammateReply(chiefId, worker, answer);
+      return;
+    }
+    const posted = await teams.appendMessage(worker.teamId, {
+      role: "assistant",
+      speakerId: worker.id,
+      speakerName: worker.name,
+      speakerRole: worker.teamRole || "worker",
+      content: answer,
+    });
+    broadcast("team-message", { teamId: worker.teamId, ...posted });
+  }
+  await deliverTeammateReply(chiefId, worker, answer);
 }
 
 setTeamDispatch(dispatchToTeammate);
@@ -3352,6 +3533,7 @@ async function talkWhileWorking(botId: string, text: string): Promise<void> {
 }
 
 async function runUserTurn(botId: string, text: string, hidden: boolean, images: string[] = [], opts: TurnOptions = {}): Promise<void> {
+  const turnStart = Date.now();
   const ac = new AbortController();
   turnAbort.set(botId, ac);
   busyIds.add(botId);
@@ -3469,15 +3651,20 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
     } as RunTurnOptions);
     if (opts.replyTo && !settings.__didReply && !notifiedThisTurn.has(notifyKey(botId, opts.replyTo))) {
       const latest = await store.getBot(botId) as IndexBot | null;
+      // The worker's real answer reaches the lead and the channel; the
+      // job-step ping is only the fallback when it produced no reply at all.
       const ping = await shortStepPing(latest);
-      await deliverTeammateReply(opts.replyTo, latest, ping);
+      await deliverWorkerAnswer(opts.replyTo, latest, ping, turnStart);
     }
     {
       const latest = await store.getBot(botId) as IndexBot | null;
       const last = [...(latest?.messages || [])].reverse().find((m) => m.role === "assistant" && String(m.content || "").trim() && m.kind !== "choices");
       if (last && latest?.teamRole === "chief") {
         await finalizeChiefJob(latest);
-        await mirrorChiefReplyToChannel(latest, last);
+        // A report turn speaks only via send_message — the user already sees
+        // the worker's reply; mirroring the lead's reaction is the narration
+        // ("Pixel has reported completion…") we are removing.
+        if (opts.source !== "report") await mirrorChiefReplyToChannel(latest, last, turnStart);
       }
     }
     // Don't let a long turn resurrect routines/vm state deleted while it ran.

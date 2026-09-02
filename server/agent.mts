@@ -29,7 +29,7 @@ import * as deskClient from "./desk-client.mjs";
 import { ensureLocalHarness } from "./desk-harness/local.mjs";
 import * as bgShell from "@sub8/shell-exec";
 import { enqueueWake } from "@sub8/wakes";
-import { sendToAgent, sendToAgentContent } from "./teammate.mjs";
+import { sendToAgent, sendToAgentContent, isSilentReply } from "./teammate.mjs";
 
 bgShell.setOnCompleteWake((w) => {
   try {
@@ -1786,6 +1786,10 @@ async function execTool(
     }
     if (name === "send_message") {
       if (bot.awaitingUserSelection) return { text: AWAITING_BLOCKED };
+      // The lead's "nothing to add" result after a teammate report: dropped,
+      // never shown. Gives the harness its one send_message without inventing
+      // "standing by" for the user to read.
+      if (isSilentReply(args.content)) return { text: "ok — nothing sent" };
       // `as unknown as`: from here the card is a chat row. @sub8/choice models it
       // as an interface, which carries no implicit index signature and so does not
       // overlap the open JSON row type this file and @sub8/store share — the two
@@ -1861,8 +1865,10 @@ async function execTool(
       // Same redaction as send_message: sendToAgentContent only trims and
       // truncates, so a secret would land verbatim in the teammate's wake
       // queue, the room and the persisted team history.
-      const content = vault.redactSecrets(sendToAgentContent(args.content), await vault.listSecrets());
-      if (!content) return { text: "empty message" };
+      // Same sibling-field tolerance as mcp-sub8: content / message / text / detail.
+      const rawBody = [args.content, args.message, args.text, args.detail].map((v) => String(v || "").trim()).find(Boolean) || "";
+      const content = vault.redactSecrets(sendToAgentContent(rawBody), await vault.listSecrets());
+      if (!content) return { text: "empty message — pass the note in `content`" };
       const room = await channels.getChannel(toId).catch(() => null);
       if (room) {
         // `as`: `sendToAgent` answers a `channel | peer` union that this branch
@@ -1873,16 +1879,24 @@ async function execTool(
       }
       const team = bot.teamId ? await teams.getTeam(bot.teamId) : null;
       const bots = await store.loadBots();
-      const mate = team ? teams.membersOf(team, bots).find((b) => b.id === toId) : null;
+      const members = team ? teams.membersOf(team, bots) : [];
+      // A name or an id prefix resolves too — see teams.resolveTeammate.
+      const mate = teams.resolveTeammate(toId, members);
       if (!mate) {
-        const target = bots.find((b) => b.id === toId) || (await store.getBot(toId));
-        if (!target) return { text: "bot not found" };
+        const target = teams.resolveTeammate(toId, members, bots) || (await store.getBot(toId));
+        if (!target) {
+          const names = members.filter((b) => b.id !== bot.id).map((b) => b.name).filter(Boolean).join(", ");
+          return { text: `bot not found: "${toId}". Pass bot_id from list_teammates${names ? ` (your teammates: ${names})` : ""}.` };
+        }
         // `as`: the peer arm of the same union — the target resolved to a bot.
-        const routed = await sendToAgent(bot.id, toId, content) as { queued: number; botId: string };
+        const routed = await sendToAgent(bot.id, target.id, content) as { queued: number; botId: string };
         return { text: `queued to ${routed.botId}` };
       }
       // `!` here and on the two `bot.teamId` reads below: `mate` is only non-null
       // when `team` was, and `team` is only non-null when this bot has a teamId.
+      if (bot.teamRole === "chief" && (await teams.isDuplicateHandoff(bot.teamId!, bot.id, mate.id, content))) {
+        return { text: `already handed to ${mate.name}; they are working on it — wait for their reply` };
+      }
       const posted = await teams.appendMessage(bot.teamId!, {
         role: "assistant",
         speakerId: bot.id,

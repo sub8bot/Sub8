@@ -47,9 +47,12 @@ const WORDS = ["flights", "hotel", "visa", "insurance", "currency", "packing", "
 async function teamWithSteps(owners) {
   const id = `t${++n}`;
   await teams.saveTeam({ id, name: `team${n}`, memberIds: ["chief", ...owners], chiefId: "chief" });
-  for (const [i, botId] of owners.entries()) {
-    await teams.patchTeamStep(id, { botId, label: WORDS[i], status: "pending" });
-  }
+  // Jobs come from the chief's set_job; a worker's update_task only moves a
+  // step in a job that already exists (it no longer seeds one).
+  await teams.setTeamJob(id, {
+    title: `team${n}`,
+    steps: owners.map((botId, i) => ({ label: WORDS[i], bot_id: botId, status: "pending" })),
+  });
   const built = await teams.getTeam(id);
   const mine = (built.job?.steps || []).filter((s) => owners.includes(s.botId));
   assert.equal(mine.length, owners.length, `fixture is wrong: ${labels(built).join(", ")}`);
@@ -146,7 +149,7 @@ await fs.rm(tmp, { recursive: true, force: true });
 await test("a one-step worker rewording its label updates that step, not a new one", async () => {
   const id = `t${++n}`;
   await teams.saveTeam({ id, name: "one-step", memberIds: ["chief", "w"], chiefId: "chief" });
-  await teams.patchTeamStep(id, { botId: "w", label: "Compare travel insurance", status: "pending" });
+  await teams.setTeamJob(id, { title: "one-step", steps: [{ label: "Compare travel insurance", bot_id: "w", status: "pending" }] });
   const before = (await teams.getTeam(id)).job.steps.length;
 
   await teams.patchTeamStep(id, { botId: "w", label: "done comparing insurance quotes", status: "done" });

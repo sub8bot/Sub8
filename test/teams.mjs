@@ -79,3 +79,36 @@ assert.equal(isSoloTeam({ chiefId: "c1", memberIds: ["c1", "w1"] }), false);
 assert.equal(isSoloTeam({ chiefId: "c1", memberIds: ["c1", "w1"] }, [{ id: "c1" }]), true);
 
 console.log("ok teams");
+
+// A model that passes a teammate's NAME (or an id prefix) instead of the UUID
+// still reaches them — "bot not found" was the lead telling the user its team
+// was unreachable.
+{
+  const teams = await import("../server/teams.mjs");
+  const members = [
+    { id: "aa9dbae1-11ea-49fb-8f11-332e1302b316", name: "Bot" },
+    { id: "46c894f9-bba3-4488-bf5d-7be93cc3f7e2", name: "Nova" },
+    { id: "3f5f3a1a-0000-4000-8000-000000000000", name: "Pixel" },
+  ];
+  assert.equal(teams.resolveTeammate("46c894f9-bba3-4488-bf5d-7be93cc3f7e2", members)?.name, "Nova", "exact id");
+  assert.equal(teams.resolveTeammate("pixel", members)?.name, "Pixel", "name, case-insensitive");
+  assert.equal(teams.resolveTeammate(" Nova ", members)?.name, "Nova", "name, trimmed");
+  assert.equal(teams.resolveTeammate("3f5f3a1a", members)?.name, "Pixel", "id prefix");
+  assert.equal(teams.resolveTeammate("nobody", members), null, "unknown");
+  assert.equal(teams.resolveTeammate("", members), null, "empty");
+  console.log("PASS resolveTeammate accepts id, name, or id prefix");
+}
+
+// The lead re-issuing the exact same handoff while the worker is still on it
+// is a retry: suppressed. Once the worker answers, the same text is new work.
+{
+  const teams = await import("../server/teams.mjs");
+  const id = "t-dup";
+  await teams.saveTeam({ id, name: "dup", memberIds: ["c", "w"], chiefId: "c" });
+  await teams.appendMessage(id, { role: "assistant", speakerId: "c", speakerName: "C", speakerRole: "chief", toId: "w", toName: "W", content: "Say a random number" });
+  assert.equal(await teams.isDuplicateHandoff(id, "c", "w", "Say a random number"), true, "same text, no reply yet → duplicate");
+  assert.equal(await teams.isDuplicateHandoff(id, "c", "w", "Say hello"), false, "different text → not a duplicate");
+  await teams.appendMessage(id, { role: "assistant", speakerId: "w", speakerName: "W", speakerRole: "worker", content: "42" });
+  assert.equal(await teams.isDuplicateHandoff(id, "c", "w", "Say a random number"), false, "worker answered → the same text is new work");
+  console.log("PASS isDuplicateHandoff suppresses only an in-flight exact repeat");
+}

@@ -960,7 +960,7 @@ Web pages: browser action=navigate / snapshot / click (ref from snapshot) / fill
 Pixels and native UI: computer screenshot and left_click.
 To type text or a URL: computer action=type (pastes exactly, including ://). computer action=key is Return / ctrl+l / Escape — never put a URL in key.
 To sign in: vault_fill. Never print a password.
-Talk to teammates with message_teammate (one short line; pass their bot id from list_teammates). Each Bot has its own Chrome tab on its display. Workers: update_task then one-line the chief — do not send a long report. Chief: set_job with a step per user-requested piece (including any you keep). list_tasks, send_message a short compiled list of EVERY non-Summary step including yours, update_task Summary done. Do not invent extra files. Do not print a user-visible sentence between every click — tools until done, then one result. Google URLs: &hl=en&gl=us&curr=USD. If you need a yes/no, a pick, or confirmation from the user, call send_message type=widget (ask_user is an alias) and stop — do not guess.
+Teammates are Sub8 bots on this computer. They are not sessions, agents, subagents, or peers of your own harness, and no harness-native session/agent/peer messaging feature reaches them — the ONLY way to reach a teammate is the sub8 tool message_teammate (bot id from list_teammates). Each Bot has its own Chrome tab on its display. Worker: when the lead hands you something, do it and make your final message the answer itself — it reaches the lead and the team channel on its own; never end with a status like "sent", "notified", or "standing by"; update_task only if a tracked step actually changed. Chief: hand a piece of work to a teammate with message_teammate in the user's words, then stop — the delegation is your result; no "message sent", no "waiting", no "done", no confirmation of any kind; when their replies come back, speak only to combine them or take the next step. set_job only for multi-step work the user will track, never for a one-line ask, and never mention whether a job exists. Do not invent extra files. Do not print a user-visible sentence between every click — tools until done, then one result. Google URLs: &hl=en&gl=us&curr=USD. If you need a yes/no, a pick, or confirmation from the user, call send_message type=widget (ask_user is an alias) and stop — do not guess.
 Do not drive Chrome with xdotool, wmctrl, octo-click, CDP, or host Bash. Call the sub8 tools. If the desktop is sick, shell desk-doctor. Do not announce tools are missing unless a tool call returned an error.
 `;
   const sessionId = cliSessionId(bot) || bot.id;
@@ -1009,6 +1009,14 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
       "--strict-mcp-config",
       "--mcp-config",
       mcpFile,
+      // --strict-mcp-config only fences MCP servers; Claude Code's built-in
+      // peer-messaging stays on. A worker told "your reply reaches the lead"
+      // would find another Claude session on this Mac and SendMessage its
+      // answer there — the answer vanished from the team channel and landed
+      // in the developer's terminal as a held peer message. No peers here.
+      "--disallowedTools",
+      "SendMessage",
+      "ListAgents",
       "--append-system-prompt",
       rules,
       "--session-id",

@@ -30,7 +30,7 @@ import * as channels from "@sub8/store/channels";
 import { syncChannelDesk } from "./channel-desk.mjs";
 import * as subagents from "./subagents.mjs";
 import { cardFromSendMessageArgs, AWAITING_BLOCKED } from "@sub8/choice";
-import { sendToAgent, sendToAgentContent } from "./teammate.mjs";
+import { sendToAgent, sendToAgentContent, isSilentReply } from "./teammate.mjs";
 import * as bgShell from "@sub8/shell-exec";
 import * as mcpRemote from "@sub8/web-fetch/mcp-remote";
 
@@ -1162,6 +1162,9 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     const bot = await store.getBot(botId) as McpBot | null;
     if (!bot) throw new Error("Bot not found");
     if (bot.awaitingUserSelection) return { content: [{ type: "text", text: AWAITING_BLOCKED }], isError: true };
+    // The lead's "nothing to add" result after a teammate report: dropped,
+    // never shown (see agent.mts — same rule on both tool paths).
+    if (isSilentReply(args.content)) return { content: [{ type: "text", text: "ok — nothing sent" }] };
     const card = cardFromSendMessageArgs(bot, args);
     if (card) {
       await store.patchBot(botId, (b) => {
@@ -1231,8 +1234,12 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     // Same redaction as send_message above: sendToAgentContent only trims and
     // truncates, so a secret would land verbatim in the teammate's queue,
     // the room and team history.
-    const content = vault.redactSecrets(sendToAgentContent(args.content), await vault.listSecrets());
-    if (!content) return { content: [{ type: "text", text: "empty message" }], isError: true };
+    // The body may arrive under a sibling field (message / text / detail) when
+    // the model reaches for the wrong name; "empty message" was the lead
+    // reporting its own call as a tool failure. Take the first non-empty.
+    const rawBody = [args.content, args.message, args.text, args.detail].map((v) => String(v || "").trim()).find(Boolean) || "";
+    const content = vault.redactSecrets(sendToAgentContent(rawBody), await vault.listSecrets());
+    if (!content) return { content: [{ type: "text", text: "empty message — pass the note in `content`" }], isError: true };
     const room = await channels.getChannel(toId).catch(() => null);
     if (room) {
       const routed: RoutedSend = await sendToAgent(bot?.id || botId, toId, content);
@@ -1240,17 +1247,25 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     }
     const team = bot?.teamId ? await teams.getTeam(bot.teamId) : null;
     const allBots = await store.loadBots();
-    const mate = team ? teams.membersOf(team, allBots).find((b) => b.id === toId) : null;
+    const members = team ? teams.membersOf(team, allBots) : [];
+    // A name or an id prefix resolves too — see teams.resolveTeammate.
+    const mate = teams.resolveTeammate(toId, members);
     if (!mate) {
-      const target = allBots.find((b) => b.id === toId) || (await store.getBot(toId));
-      if (!target) return { content: [{ type: "text", text: "bot not found" }], isError: true };
-      const routed: RoutedSend = await sendToAgent(bot?.id || botId, toId, content);
+      const target = teams.resolveTeammate(toId, members, allBots) || (await store.getBot(toId));
+      if (!target) {
+        const names = members.filter((b) => b.id !== bot?.id).map((b) => b.name).filter(Boolean).join(", ");
+        return { content: [{ type: "text", text: `bot not found: "${toId}". Pass bot_id from list_teammates${names ? ` (your teammates: ${names})` : ""}.` }], isError: true };
+      }
+      const routed: RoutedSend = await sendToAgent(bot?.id || botId, target.id, content);
       return { content: [{ type: "text", text: `queued to ${routed.botId}` }] };
     }
     // `mate` is non-null only when `team` was, and `team` is non-null only when
     // `bot?.teamId` was truthy — so both the bot record and its team id are proven
     // from here down. TypeScript cannot carry that through `teams.membersOf`, and
     // the assertions below emit nothing.
+    if (bot!.teamRole === "chief" && (await teams.isDuplicateHandoff(bot!.teamId!, bot!.id, mate.id, content))) {
+      return { content: [{ type: "text", text: `already handed to ${mate.name}; they are working on it — wait for their reply` }] };
+    }
     const posted = await teams.appendMessage(bot!.teamId!, {
       role: "assistant",
       speakerId: bot!.id,

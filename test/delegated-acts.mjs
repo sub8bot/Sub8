@@ -177,6 +177,7 @@ const HANDLED = [
   "stop-turn",
   "take-control",
   "teach-task",
+  "team-channel",
   "team-tab",
   "test-harness",
   "test-routine",
@@ -244,8 +245,9 @@ assert.deepEqual(covered, expected);
 
 // Guard the guard: an empty pin would make every assertion above vacuous.
 // 173 -> 175: ctx-move-cloud / computer-move-cloud.
-assert.equal(HANDLED.length, 175);
-assert.equal(covered.length, 175);
+// 175 -> 176: team-channel (the lead's tab is the team channel).
+assert.equal(HANDLED.length, 176);
+assert.equal(covered.length, 176);
 
 console.log(
   "ok delegated-acts (" + keys.length + " in ACTIONS, " + new Set(chain).size +

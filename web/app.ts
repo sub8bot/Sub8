@@ -123,6 +123,8 @@ interface Message extends CodeAgentSession {
   speakerName?: string;
   speakerRole?: string;
   toId?: string;
+  /** Set on a directed team message (message_teammate): who it was handed to. */
+  toName?: string;
   action?: string;
   name?: string;
   summary?: string;
@@ -2187,14 +2189,19 @@ function namedBubble(m: Message, assistant: boolean): string {
     : `<span class="msg-ava msg-ava-empty"></span>`;
   const raw = String(m.content || "").trim();
   const first = (raw.split("\n").find((l) => l.trim()) || "").replace(/^To [^:]+:\s*/i, "");
-  const fromWorker = m.speakerRole === "worker" || Boolean(m.toId);
+  // The lead handing a teammate a task reads as a delegation line — "→ Nova:
+  // say hello" — not as the lead saying "say hello" to the user.
+  const delegation = m.speakerRole === "chief" && Boolean(m.toId) && Boolean(m.toName);
+  const fromWorker = !delegation && (m.speakerRole === "worker" || Boolean(m.toId));
   const openBtn = aid && aid !== state.selected
     ? `<button type="button" class="mate-open" data-act="team-tab" data-id="${escapeHtml(aid)}">Open ${name}</button>`
     : "";
-  const body = fromWorker
-    ? `<div class="bubble mate-card">${escapeHtml(first.slice(0, 140))}${first.length > 140 ? "…" : ""}
+  const body = delegation
+    ? `<div class="bubble delegation">→ <b>${escapeHtml(String(m.toName))}</b>: ${escapeHtml(first.slice(0, 200))}${first.length > 200 ? "…" : ""}</div>`
+    : fromWorker
+      ? `<div class="bubble mate-card">${escapeHtml(first.slice(0, 140))}${first.length > 140 ? "…" : ""}
         ${openBtn}</div>`
-    : `<div class="bubble">${formatChatText(m.content)}${openBtn}</div>`;
+      : `<div class="bubble">${formatChatText(m.content)}${openBtn}</div>`;
   return `<div class="msg ${assistant ? "asst" : "mate"}" data-mid="${escapeHtml(m.id || "")}">
     ${avatar}
     <div class="msg-col">
@@ -3563,7 +3570,9 @@ function paintChatPane(bot: Bot | null): void {
 }
 
 function mentionChipsHtml(team: Team | null | undefined): string {
-  const members = teamBots(team);
+  // You are already talking to the lead in this channel; the chips are for
+  // reaching a teammate directly.
+  const members = teamBots(team).filter((b) => b.teamRole !== "chief");
   if (!members.length) return "";
   return `<div class="mention-chips">${members
     .map((b) => `<button type="button" class="mention-chip" data-act="mention" data-name="${escapeHtml(b.name)}">@${escapeHtml(b.name)}</button>`)

@@ -701,8 +701,13 @@ export async function removeMembers(
   // became unremovable. Kept explicit so it is not re-added as if it ran.
   const chiefId = team.chiefId;
   const leftover = memberIds.filter(Boolean);
-  const solo = leftover.length < 2 || Boolean(chiefId && leftover.every((id) => id === chiefId));
-  if (!leftover.length || solo) {
+  // A lead alone is still a team: they open workers again later, and their
+  // channel history must not vanish because the last worker was closed (the
+  // rail already shows a one-bot team as just that bot, so nothing twins).
+  // Only a team with NO lead dissolves when it drops below two.
+  const leadStays = Boolean(chiefId && leftover.includes(chiefId));
+  const dissolve = !leftover.length || (!leadStays && leftover.length < 2);
+  if (dissolve) {
     await removeTeam(team.id);
     const bots = await store.loadBots();
     for (const b of bots) {
@@ -718,10 +723,16 @@ export async function removeMembers(
   return saveTeam({ ...team, memberIds, chiefId });
 }
 
-/** Drop chief-only leftovers so Local does not show a group plus a solo twin. */
+/**
+ * Drop leftover teams that have no lead: a lone worker whose chief is gone is
+ * not a team. A chief-only team is kept on purpose — the lead persists alone
+ * and opens workers again later (its channel history survives).
+ */
 export async function pruneSoloTeams(): Promise<void> {
   const [rows, bots] = await Promise.all([listTeams(), store.loadBots()]);
   for (const t of rows) {
+    const leadAlive = Boolean(t.chiefId && bots.some((b) => b.id === t.chiefId && b.teamId === t.id));
+    if (leadAlive) continue;
     if (isSoloTeam(t, bots)) {
       await removeTeam(t.id);
       for (const b of bots) {
@@ -734,6 +745,66 @@ export async function pruneSoloTeams(): Promise<void> {
       }
     }
   }
+}
+
+/**
+ * Resolve what a model passed as a teammate reference — the exact bot id, the
+ * teammate's name (case-insensitive), or an id prefix — to a member. A lead
+ * that wrote bot_id:"Pixel" got "bot not found" and told the user its
+ * teammates were unreachable; a name is an unambiguous reference and should
+ * just work. Team members are searched first, then every bot.
+ */
+export function resolveTeammate<T extends { id: string; name?: string | undefined }>(
+  ref: unknown,
+  members: readonly T[] | null | undefined,
+  allBots: readonly T[] | null | undefined = null,
+): T | null {
+  const want = String(ref || "").trim();
+  if (!want) return null;
+  const pools = [members || [], allBots || []];
+  for (const pool of pools) {
+    const exact = pool.find((b) => b.id === want);
+    if (exact) return exact;
+  }
+  const lower = want.toLowerCase();
+  for (const pool of pools) {
+    const byName = pool.find((b) => String(b.name || "").trim().toLowerCase() === lower);
+    if (byName) return byName;
+  }
+  if (want.length >= 8) {
+    for (const pool of pools) {
+      const hits = pool.filter((b) => b.id.startsWith(want));
+      if (hits.length === 1) return hits[0]!;
+    }
+  }
+  return null;
+}
+
+/**
+ * The lead is handing a teammate the SAME text it handed them moments ago,
+ * and that teammate has not replied since: a retry, not a new task (a slow
+ * tool result, a nudged turn re-issuing its plan). Suppress it — a second
+ * delegation line and a second worker turn were the only effect. Exact match,
+ * bounded window, cleared the moment the worker answers: no intent-guessing.
+ */
+export async function isDuplicateHandoff(
+  teamId: string,
+  chiefId: string,
+  workerId: string,
+  content: unknown,
+  windowMs = 3 * 60 * 1000,
+): Promise<boolean> {
+  const text = String(content || "").trim();
+  if (!teamId || !chiefId || !workerId || !text) return false;
+  const rows = (await loadMessages(teamId)).slice(-40);
+  const cutoff = Date.now() - windowMs;
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const m = rows[i]!;
+    if (Number(m.ts || 0) < cutoff) break;
+    if (m.speakerId === workerId && !m.toId) return false; // they answered since
+    if (m.speakerId === chiefId && m.toId === workerId && String(m.content || "").trim() === text) return true;
+  }
+  return false;
 }
 
 export function mentionedMemberIds(text: unknown, members: readonly TeamMember[] | null | undefined): string[] {
@@ -1171,6 +1242,10 @@ export async function onWorkerAssigned(
   const team = await getTeam(teamId);
   const bot = await store.getBot(workerId);
   if (!team || !bot || bot.teamRole === "chief") return { team, bot, step: null, renamed: [] };
+  // A handoff is just a message. It tracks a step only in a job the lead
+  // already set up (set_job); it never creates one — that made every "say
+  // hello" spawn a job card with a Summary step.
+  if (!team.job) return { team, bot, step: null, renamed: [] };
   const existing =
     findStep(team.job, { botId: workerId, label, stepId }) || (team.job ? pickOwnedStep(team.job, workerId) : null);
   const job = upsertJobStep(team.job, {
@@ -1244,6 +1319,9 @@ export async function patchTeamStep(teamId: string, patch: StepPatch): Promise<T
       ({ job, step } = applyStepUpdate(job, patch));
       if (!step) return { job, step: null, applied: false };
     } else {
+      // update_task only moves a step in a job that exists; with no job it is a
+      // no-op rather than the seed of one (jobs come from set_job).
+      if (!job) return { job: null, step: null, applied: false };
       job = upsertJobStep(job, {
         botId: patch.botId,
         label: patch.label,

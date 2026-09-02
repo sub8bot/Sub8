@@ -73,7 +73,7 @@ const arm = (label, re) =>
 
 await arm("browser", /return \{ content: \[\{ type: "text", text: vault\.redactSecrets\(r\.text/);
 await arm("send_message", /const content = vault\.redactSecrets\(String\(args\.content/);
-await arm("message_teammate", /const content = vault\.redactSecrets\(sendToAgentContent\(args\.content\)/);
+await arm("message_teammate", /const content = vault\.redactSecrets\(sendToAgentContent\(rawBody\)/);
 
 await arm("memory", /const memText = vault\.redactSecrets\(r\.text/);
 await arm("read", /vault\.redactSecrets\(raw, await vault\.listSecrets\(\)\)/);
@@ -119,7 +119,7 @@ const armAgent = (label, re) =>
   });
 
 await armAgent("browser", /return \{ text: vault\.redactSecrets\(r\.text \|\| ""/);
-await armAgent("message_teammate", /const content = vault\.redactSecrets\(sendToAgentContent\(args\.content\)/);
+await armAgent("message_teammate", /const content = vault\.redactSecrets\(sendToAgentContent\(rawBody\)/);
 await armAgent("memory", /return \{ text: vault\.redactSecrets\(r\.text \|\| "", await vault\.listSecrets\(\)\) \}/);
 await armAgent("read", /if \(r\.kind === "text"\) return \{ text: vault\.redactSecrets\(r\.text!, secrets\) \}/);
 

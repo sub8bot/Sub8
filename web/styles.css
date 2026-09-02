@@ -1185,6 +1185,9 @@ h2.md-h { font-size: 16px; }
 .job-step-name { font-weight: 600; }
 .job-step-meta { color: var(--muted); max-width: 9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mate-card { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+/* The lead handing a teammate a task: a quiet one-liner, not a full reply. */
+.bubble.delegation { background: transparent; color: var(--muted, #6b7280); font-size: 0.93em; padding: 2px 0; }
+.bubble.delegation b { color: inherit; font-weight: 600; }
 .mate-open {
   border: 0;
   background: transparent;
