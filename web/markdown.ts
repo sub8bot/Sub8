@@ -50,6 +50,9 @@ function renderInline(s: string): string {
   s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, `<a href="$2" target="_blank" rel="noreferrer">$1</a>`);
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^\w*])\*([^*\n]+)\*(?=$|[^\w*])/g, "$1<em>$2</em>");
+  // Team-channel @mentions (text is already escaped): highlight so it's clear
+  // who a message wakes. Not inside an email (must follow start/space).
+  s = s.replace(/(^|\s)@([A-Za-z][\w-]{0,40})/g, '$1<span class="mention">@$2</span>');
   return autolinkUrls(s);
 }
 

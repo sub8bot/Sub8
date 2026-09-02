@@ -770,6 +770,7 @@ interface AppState {
   previewTick: number;
   chatFollow: boolean;
   chatFollowBot: string | null;
+  channelTeamId: string | null;
   chatExtra: number;
   activityOpen: Record<string, boolean>;
   teamBriefHidden: Record<string, boolean>;
@@ -925,6 +926,7 @@ const state: AppState = {
   previewTick: 0,
   chatFollow: true,
   chatFollowBot: null,
+  channelTeamId: null,
   chatExtra: 0,
   activityOpen: {},
   teamBriefHidden: (() => {
@@ -2195,6 +2197,17 @@ function namedBubble(m: Message, assistant: boolean): string {
   </div>`;
 }
 
+function renderTeamChannel(thread: HTMLElement, team: Team): void {
+  const msgs = ((team.messages || []) as Message[]).filter((m) => !m.hidden);
+  const head = `<div class="channel-head"># ${escapeHtml(team.name)} · team channel<span class="channel-sub">Everyone sees this. @mention a teammate to wake them.</span></div>`;
+  if (!msgs.length) {
+    thread.innerHTML = head + `<div class="empty">No channel messages yet. @mention a teammate in a message to coordinate.</div>`;
+    return;
+  }
+  thread.innerHTML = head + msgs.slice(-100).map((m) => namedBubble(m, m.speakerRole !== "user")).join("");
+  thread.scrollTop = thread.scrollHeight;
+}
+
 function paintChat(bot: Bot | null | undefined): void {
   const thread = $("#thread");
   if (!thread || !bot) return;
@@ -2217,6 +2230,11 @@ function paintChat(bot: Bot | null | undefined): void {
   }
   bindActivityFold(thread);
   if (!Array.isArray(bot.messages)) bot.messages = [];
+  const chTeam = teamOf(bot);
+  if (state.channelTeamId && chTeam && chTeam.id === state.channelTeamId) {
+    renderTeamChannel(thread, chTeam);
+    return;
+  }
   if (state.chatFollowBot !== bot.id) {
     state.chatFollowBot = bot.id;
     state.chatFollow = true;
@@ -3393,7 +3411,9 @@ function paintTeamTabs(bot: Bot): void {
   }
   host.hidden = false;
   host.closest(".chat-head")?.classList.add("has-tabs");
-  host.innerHTML = members
+  const chOn = state.channelTeamId === team.id;
+  const channelTab = `<button type="button" class="chrome-tab channel-tab ${chOn ? "on" : ""}" data-act="team-channel" data-id="${team.id}" title="Shared team channel"><span class="chrome-tab-title"># Channel</span></button>`;
+  host.innerHTML = channelTab + members
     .map((b) => {
       const role = b.teamRole === "chief" ? "Chief" : b.teamRole === "worker" ? "Worker" : "";
       const title = role && b.name.toLowerCase() !== role.toLowerCase() ? `${b.name} · ${role}` : b.name;
@@ -6790,6 +6810,15 @@ const ACTIONS: Record<string, ActHandler> = {
       sizeComposer();
     }
     return;
+  },
+  "team-channel": (_e, { el }) => {
+    const id = el.dataset.id || "";
+    state.channelTeamId = state.channelTeamId === id ? null : id;
+    const b = viewBots().find((x) => x.id === state.selected) || viewBots()[0];
+    if (b) {
+      paintChat(b);
+      paintTeamTabs(b);
+    }
   },
   "team-tab": (e, { el }) => {
     // Cloud teammates live in cloudDraft.bots, not state.bots.
