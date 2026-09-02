@@ -3023,6 +3023,11 @@ async function deliverTeammateReply(toId: string | null | undefined, from: Dispa
     outstandingFor.set(toId, new Set());
     if (!replies.length) return;
     const only = replies.length === 1 ? replies[0]! : null;
+    // One teammate answered and nothing is being tracked: the user sees the
+    // answer in the channel and there is nothing to combine — no report turn.
+    // (The report row is already in the lead's thread for memory.) A lead
+    // turn here only ever produced "Done." / "Asking X…" for the user to read.
+    if (only && !team?.job) return;
     runReport(
       teammate.chiefReportLlm(only ? only.name : "Your teammates", only ? only.text : "", {
         followUp,
