@@ -45,6 +45,7 @@ import * as memory from "./memory.mjs";
 import * as account from "./account.mjs";
 import * as cloudDraft from "./cloud/draft.mjs";
 import { resolveChoice, visibleChoiceReply, applyInternalEmit } from "@sub8/choice";
+import * as spendGuard from "./spend-guard.mjs";
 import * as mcpRemote from "@sub8/web-fetch/mcp-remote";
 
 import type { Request, Response } from "express";
@@ -2156,6 +2157,7 @@ app.delete("/api/teams/:id", async (req, res) => {
 });
 
 app.post("/api/teams/:id/messages", async (req, res) => {
+  spendGuard.noteUserActivity();
   const team = await teams.getTeam(req.params.id);
   if (!team) return res.status(404).json({ error: "not found" });
   const text = String(req.body?.content || "").trim();
@@ -2991,7 +2993,17 @@ app.delete("/api/bots/:id/messages/:mid", async (req, res) => {
   res.json(toClient(bot));
 });
 
+app.get("/api/spend-guard", (_req, res) => {
+  res.json(spendGuard.snapshot());
+});
+
+app.post("/api/spend-guard/resume", (_req, res) => {
+  spendGuard.resume();
+  res.json(spendGuard.snapshot());
+});
+
 app.post("/api/bots/:id/messages", async (req, res) => {
+  spendGuard.noteUserActivity();
   const bot = await store.getBot(req.params.id) as IndexBot | null;
   if (!bot) return res.status(404).json({ error: "not found" });
   const text = String(req.body?.content || "").trim();
@@ -3053,6 +3065,14 @@ app.post("/api/bots/:id/choice", async (req, res) => {
   const describe = /i'?ll describe/i.test(label);
   const intent = card?.context?.intent;
   const name = card?.context?.name || "Worker";
+  if (intent === "spend-guard") {
+    if (selectedId === "pause") spendGuard.pauseByUser();
+    else spendGuard.resume();
+    await store.patchBot(bot.id, (b) => {
+      b.awaitingUserSelection = false;
+    });
+    return res.json({ ok: true, paused: spendGuard.isPaused() });
+  }
   if (intent === "create-teammate" && !describe) {
     const team = await teams.ensureTeamForBot(bot);
     const { bot: mate, team: saved } = await teams.addMember(team, {
@@ -3591,9 +3611,43 @@ async function tickRoutines() {
         () =>
           `Standing routine "${accepted[0]!.name}" is due (repeating job, run ${(accepted[0]!.runs || []).length || 1}). Continue from previous progress. Do not start over.\n${accepted[0]!.instruction || ""}`,
       );
+      const guard = spendGuard.decide(now);
+      if (guard.action === "skip-paused") continue;
+      if (guard.action === "nudge") {
+        await postSpendNudge(live, guard.reason).catch((e) => console.error("spend nudge", e));
+        continue;
+      }
+      spendGuard.noteFire(now);
       enqueueTurn(bot.id, () => runUserTurn(bot.id, prompt, true));
     }
   }
+}
+
+/** The "you've been away — keep routines running?" card, posted once when the
+ * guard pauses automations. The user's next message auto-resumes; the buttons
+ * let them resume now or stay paused. */
+async function postSpendNudge(bot: IndexBot, reason: string): Promise<void> {
+  const card = {
+    id: `sg${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
+    role: "assistant",
+    kind: "choices",
+    content: `I paused my standing routines — ${reason}. Keep them running?`,
+    hint: "They resume when you're back. Pause all keeps them off until you resume.",
+    choices: [
+      { id: "keep", label: "Keep running" },
+      { id: "pause", label: "Pause all" },
+    ],
+    pending: true,
+    context: { intent: "spend-guard" },
+    speakerId: bot.id,
+    speakerName: bot.name,
+    ts: Date.now(),
+  };
+  await store.patchBot(bot.id, (b) => {
+    b.messages = b.messages || [];
+    if (!(b.messages as { id?: string }[]).some((m) => m.id === card.id)) (b.messages as unknown[]).push(card);
+  });
+  broadcast("message", { botId: bot.id, ...card });
 }
 
 setInterval(() => tickRoutines().catch((e) => console.error("routines", e)), 15_000);
