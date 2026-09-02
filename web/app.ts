@@ -1438,7 +1438,14 @@ function attachLiveFrame(bot: Bot | null | undefined): void {
     restoreFieldFocus(keep);
     return;
   }
-  resetCloudMux(wrap);
+  // Tear the Cloud mux down only when one is actually in the pane.
+  // resetCloudMux() also nulls liveFrameKey, and nulling it on every local
+  // paint made the keyed check below miss every time: mountLiveFrame() rewrote
+  // #screen-wrap and the fresh <iframe> opened a new noVNC session on every SSE
+  // "bot" event and render() — the "Connected (unencrypted)" banner on every
+  // chat message. Deliberate remounts (Refresh stream, reconnect, port change)
+  // still null liveFrameKey themselves.
+  if (wrap.dataset.cloudMux || wrap.querySelector("iframe.cloud-novnc, .cloud-mux")) resetCloudMux(wrap);
   if (dockerMissing()) {
     liveFrameKey = null;
     wrap.innerHTML = `<div class="screen-status desk-empty">${dockerPaneHtml()}</div>`;
