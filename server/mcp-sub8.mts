@@ -1066,13 +1066,17 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     };
   }
   if (name === "disable_routine") {
-    const bot = await store.getBot(botId);
-    if (!bot) throw new Error("Bot not found");
-    const r = (bot.routines || []).find((x) => x.id === args.id);
+    // Same lock discipline as upsert_routine (see above).
+    const box: { row: { id: string; name: string } | null } = { row: null };
+    await store.patchBot(botId, (b) => {
+      const hit = (b.routines || []).find((x) => x.id === args.id);
+      if (!hit) return;
+      hit.enabled = false;
+      hit.updatedAt = Date.now();
+      box.row = { id: String(hit.id), name: String(hit.name || "routine") };
+    });
+    const r = box.row;
     if (!r) return { content: [{ type: "text", text: "routine not found" }], isError: true };
-    r.enabled = false;
-    r.updatedAt = Date.now();
-    await store.upsertBot(bot);
     await emit("routine", { routine: r });
     await emit("message", {
       id: `tl${Date.now()}rt`,
@@ -1097,24 +1101,31 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     // not own. `upsertRoutine` reads each one with a truthiness or `== null`
     // test, so an explicit `undefined` and an absent key behave identically. The
     // assertion adds no runtime instruction.
-    const { routine, merged, rejected } = routines.upsertRoutine(bot, {
-      id: args.id || undefined,
-      name: args.name,
-      instruction,
-      intervalMs: Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : undefined,
-      schedule: args.schedule,
-      groupKey: args.group_key || undefined,
-      forceNew: args.force_new === true,
-      forceReplace: args.force_replace === true || instruction.length > 80,
-      solo: args.solo !== false,
-      replace: args.replace !== false,
-      enabled: args.enabled,
-      // @sub8/store spells "no override" as `null`; `ContextSettings` spells it
-      // as an absent key. `resolveZone` ORs the field with the environment, so
-      // both reach the same branch.
-      timeZone: resolveZone(settings as ContextSettings),
-    } as RoutineSpec);
-    await store.upsertBot(bot);
+    // Mutate under the bots.json lock. getBot → upsertBot was a lost update:
+    // the server's own patchBot (tool rows, busy flags) landed after this
+    // snapshot and wrote the routine away — the bot "confirmed" a routine that
+    // did not exist on its record.
+    let result = null as unknown as ReturnType<typeof routines.upsertRoutine>;
+    await store.patchBot(botId, (b) => {
+      result = routines.upsertRoutine(b as McpBot, {
+        id: args.id || undefined,
+        name: args.name,
+        instruction,
+        intervalMs: Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : undefined,
+        schedule: args.schedule,
+        groupKey: args.group_key || undefined,
+        forceNew: args.force_new === true,
+        forceReplace: args.force_replace === true || instruction.length > 80,
+        solo: args.solo !== false,
+        replace: args.replace !== false,
+        enabled: args.enabled,
+        // @sub8/store spells "no override" as `null`; `ContextSettings` spells it
+        // as an absent key. `resolveZone` ORs the field with the environment, so
+        // both reach the same branch.
+        timeZone: resolveZone(settings as ContextSettings),
+      } as RoutineSpec);
+    });
+    const { routine, merged, rejected } = result;
     await emit("routine", { routine, merged, rejected });
     await emit("message", {
       id: `tl${Date.now()}rt`,
