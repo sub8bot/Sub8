@@ -104,6 +104,7 @@ plan/
 /server/subagents.mjs
 /server/teammate.mjs
 /server/teams.mjs
+/server/spend-guard.mjs
 /server/tools-catalog.mjs
 /server/update-state.mjs
 /server/update.mjs
