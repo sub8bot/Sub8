@@ -435,6 +435,11 @@ export const TOOLS: ToolSpec[] = [
     inputSchema: { type: "object", properties: {} },
   },
   {
+    name: "nothing_to_add",
+    description: "A teammate's report needs no reply from you — the user already sees it in the channel. Call this to end your turn quietly. Do not write a closing remark instead.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
     name: "send_message",
     description:
       "Your only voice to the user. type=text result. type=widget asks and ENDS the turn. type=secret-request masked credential, ENDS the turn. In a team the whole team sees it too; pass to (names or ids) to wake specific teammates. A worker's answer to the lead is its final message, not a send_message.",
@@ -582,7 +587,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "create_teammate",
     description:
-      "Create another Bot on THIS shared desk with its own Chrome/screen. Pass name and job. You MAY set harness (claude, grok-build, hermes, codex, cursor, ollama, lmstudio) and model. Use when the user asks for N bots or split work. Returns id= — pass that to message_teammate. Never invent ids.",
+      "Create another Bot on THIS shared desk with its own Chrome/screen. Pass name and job — take the job from the user's words; a missing job defaults to general helper, so never ask what the teammate is for. You MAY set harness (claude, grok-build, hermes, codex, cursor, ollama, lmstudio) and model. Returns id= — pass that to message_teammate. Never invent ids.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1233,105 +1238,40 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     }
     return { content: [{ type: "text", text: "sent" }] };
   }
+  if (name === "nothing_to_add") {
+    // Ends the turn now, so the harness never produces a closing remark. Same
+    // mechanism as a widget ending the turn, minus the wait-for-a-pick state.
+    if (emitUrl && token && botId) {
+      try {
+        await fetch(`${emitUrl}/api/internal/quiet-end`, { method: "POST", headers: { "Content-Type": "application/json", "x-sub8-token": token }, body: JSON.stringify({ botId }) });
+      } catch {
+        /* best-effort */
+      }
+    }
+    return { content: [{ type: "text", text: "ending quietly" }] };
+  }
   if (name === "message_teammate") {
-    const bot = await store.getBot(botId);
-    const toId = String(args.bot_id || "");
-    // Same redaction as send_message above: sendToAgentContent only trims and
-    // truncates, so a secret would land verbatim in the teammate's queue,
-    // the room and team history.
-    // The body may arrive under a sibling field (message / text / detail) when
-    // the model reaches for the wrong name; "empty message" was the lead
-    // reporting its own call as a tool failure. Take the first non-empty.
+    // Done by the server (see index.mts teammateMessage): the subprocess no
+    // longer touches the store for this — one call, no cross-process locks.
+    const to = String(args.bot_id || "");
     const rawBody = [args.content, args.message, args.text, args.detail].map((v) => String(v || "").trim()).find(Boolean) || "";
+    // Redacted here before the hop AND again server-side: a vault secret must
+    // never leave this process in the clear, whoever ends up storing it.
     const content = vault.redactSecrets(sendToAgentContent(rawBody), await vault.listSecrets());
     if (!content) return { content: [{ type: "text", text: "empty message — pass the note in `content`" }], isError: true };
-    const room = await channels.getChannel(toId).catch(() => null);
-    if (room) {
-      const routed: RoutedSend = await sendToAgent(bot?.id || botId, toId, content);
-      return { content: [{ type: "text", text: `queued to room ${routed.channelId} (${routed.queued} members)` }] };
-    }
-    const team = bot?.teamId ? await teams.getTeam(bot.teamId) : null;
-    const allBots = await store.loadBots();
-    const members = team ? teams.membersOf(team, allBots) : [];
-    // A name or an id prefix resolves too — see teams.resolveTeammate.
-    const mate = teams.resolveTeammate(toId, members);
-    if (!mate) {
-      const target = teams.resolveTeammate(toId, members, allBots) || (await store.getBot(toId));
-      if (!target) {
-        const names = members.filter((b) => b.id !== bot?.id).map((b) => b.name).filter(Boolean).join(", ");
-        return { content: [{ type: "text", text: `bot not found: "${toId}". Pass bot_id from list_teammates${names ? ` (your teammates: ${names})` : ""}.` }], isError: true };
-      }
-      const routed: RoutedSend = await sendToAgent(bot?.id || botId, target.id, content);
-      return { content: [{ type: "text", text: `queued to ${routed.botId}` }] };
-    }
-    // `mate` is non-null only when `team` was, and `team` is non-null only when
-    // `bot?.teamId` was truthy — so both the bot record and its team id are proven
-    // from here down. TypeScript cannot carry that through `teams.membersOf`, and
-    // the assertions below emit nothing.
-    const posted = await teams.appendMessage(bot!.teamId!, {
-      role: "assistant",
-      speakerId: bot!.id,
-      speakerName: bot!.name,
-      speakerRole: bot!.teamRole || "",
-      toId: mate.id,
-      toName: mate.name,
-      content,
-    });
-    await emit("team-message", { teamId: bot!.teamId, ...posted });
-    await emit("message", {
-      id: posted.id,
-      role: "assistant",
-      speakerId: bot!.id,
-      speakerName: bot!.name,
-      speakerRole: bot!.teamRole || "",
-      toId: mate.id,
-      toName: mate.name,
-      content: `To ${mate.name}: ${content}`,
-      ts: posted.ts,
-    });
-    if (emitUrl && token) {
-      try {
-        await fetch(`${emitUrl}/api/internal/team-dispatch`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-sub8-token": token },
-          body: JSON.stringify({ fromId: bot!.id, toId: mate.id, content }),
-        });
-      } catch {
-        /* dispatch is best-effort */
-      }
-    }
-    // `includes` wants its argument pre-narrowed to the element type; this call
-    // IS the runtime check that makes that true, and the assertion emits nothing.
-    const status = teams.TASK_STATUSES.includes(args.status as TaskStatus) ? (args.status as TaskStatus) : null;
-    if (bot!.teamRole === "chief") {
-      const assigned = await teams.onWorkerAssigned(bot!.teamId!, mate.id, {
-        label: args.label,
-        content,
-        status,
-        detail: args.detail,
-        stepId: args.step_id,
+    if (!emitUrl || !token || !botId) return { content: [{ type: "text", text: "team tools unavailable in this session" }], isError: true };
+    try {
+      const res = await fetch(`${emitUrl}/api/internal/team-dispatch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-sub8-token": token },
+        body: JSON.stringify({ fromId: botId, to, content, label: args.label, status: args.status, detail: args.detail, stepId: args.step_id }),
       });
-      if (assigned?.team?.job) await emit("job", { teamId: bot!.teamId, job: assigned.team.job });
-      for (const b of assigned?.renamed || []) {
-        await emit("teammate", {
-          bot: { id: b.id, name: b.name, teamId: b.teamId, teamRole: b.teamRole, color: b.color, harness: b.harness, vm: b.vm, description: b.description },
-        });
-      }
-      if (assigned?.bot?.name) mate.name = assigned.bot.name;
-    } else if (status) {
-      const bumped = await teams.patchTeamStep(bot!.teamId!, {
-        botId: bot!.id,
-        status,
-        detail: args.detail || content.slice(0, 160),
-      });
-      if (bumped?.job) await emit("job", { teamId: bot!.teamId, job: bumped.job });
-      for (const b of bumped?.renamed || []) {
-        await emit("teammate", {
-          bot: { id: b.id, name: b.name, teamId: b.teamId, teamRole: b.teamRole, color: b.color, harness: b.harness, vm: b.vm, description: b.description },
-        });
-      }
+      const r = (await res.json().catch(() => ({}))) as { ok?: boolean; text?: string; isError?: boolean; error?: string };
+      if (!res.ok) return { content: [{ type: "text", text: r.error || `server ${res.status}` }], isError: true };
+      return { content: [{ type: "text", text: r.text || (r.ok ? "sent" : "failed") }], ...(r.isError ? { isError: true } : {}) };
+    } catch (err) {
+      return { content: [{ type: "text", text: `could not reach the server: ${(err as Error).message}` }], isError: true };
     }
-    return { content: [{ type: "text", text: `sent to ${mate.name}` }] };
   }
   if (name === "list_tasks") {
     const bot = await store.getBot(botId);
@@ -1397,30 +1337,9 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
   if (name === "create_teammate") {
     const bot = await store.getBot(botId) as McpBot | null;
     if (!bot) throw new Error("Bot not found");
-    const job = String(args.job || "").trim();
+    // Same rule as agent.mts: no card, a default job, straight to work.
+    const job = String(args.job || "").trim() || "General helper on this computer. Takes tasks from the lead.";
     const nm = String(args.name || "").trim() || "Worker";
-    if (!job) {
-      const card = {
-        id: `ch${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
-        role: "assistant",
-        kind: "choices",
-        content: "What should this one do?",
-        hint: "Name + job is enough. You can also type your own.",
-        choices: teams.BOT_JOB_CHOICES,
-        allowCustom: true,
-        pending: true,
-        context: { intent: "create-teammate", name: nm },
-        speakerId: bot.id,
-        speakerName: bot.name,
-        ts: Date.now(),
-      };
-      await store.patchBot(botId, (b) => {
-        b.messages = b.messages || [];
-        b.messages.push(card);
-      });
-      await emit("message", card);
-      return { content: [{ type: "text", text: "asked the user what this Bot should do" }] };
-    }
     const team = await teams.ensureTeamForBot(bot);
     const { bot: mate } = await teams.addMember(team, {
       name: nm,

@@ -25,25 +25,13 @@ function uid(n) {
   return `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 }
 
-const first = wrapWorkerDispatch({
-  who: "Flight Checker",
-  role: "chief",
-  text: "Start now: DC -> SFO.",
-});
-// One principle, no ceremony: do it; your final message is your answer and the
-// system delivers it. The model works out the rest from its own context.
-assert.match(first, /From Flight Checker, your lead:/);
-assert.match(first, /Your final message is your answer/);
-assert.match(first, /delivered to Flight Checker and shown in the team channel/);
-assert.doesNotMatch(first, /update_task status=running/);
-assert.doesNotMatch(first, /message_teammate Flight Checker ONE short line/);
-assert.doesNotMatch(first, /__SILENT__|__DESK__/);
-assert.match(first, /DC -> SFO/);
-// There is no separate "follow-up" variant to learn; the same prompt serves.
-assert.equal(wrapWorkerDispatch({ who: "Flight Checker", text: "Heads up: add &curr=USD" }).includes("&curr=USD"), true);
+const first = wrapWorkerDispatch({ who: "Flight Checker", role: "chief", text: "Start now: DC -> SFO." });
+// Facts only: the contract lives in the team system prompt. An instruction
+// inside the message got acknowledged back ("Got it, I'll…") instead of followed.
+assert.equal(first, "Flight Checker (your lead): Start now: DC -> SFO.");
+assert.doesNotMatch(first, /update_task|message_teammate|__SILENT__|__DESK__|final message/);
 
 assert.equal(storedChiefToWorker("Flight Checker", "Heads up: THB"), "Flight Checker: Heads up: THB");
-assert.doesNotMatch(storedChiefToWorker("Flight Checker", "Start now"), /your lead:/);
 
 assert.equal(isFollowUpDispatch([]), false);
 assert.equal(isFollowUpDispatch([{ role: "user", content: "hello" }]), false);
@@ -57,17 +45,11 @@ assert.equal(stored, "Leg3 DC-BKK replies: $470 Qatar");
 assert.doesNotMatch(stored, /teammate report/);
 assert.doesNotMatch(stored, /upsert_routine/);
 
-// The lead gets the facts and one principle: the user already sees every
-// reply; speak (send_message) only to add something; ending without sending is
-// normal. No enumerated cases, no job ceremony, no sentinel token.
+// The lead gets the facts — the user's ask, what it handed out, the replies —
+// and nothing else: the principle lives in the system prompt.
 const llm = chiefReportLlm("Leg3 DC-BKK", "$470 Qatar", { userAsk: "find the cheapest DC-BKK", handed: ["Leg3 DC-BKK: DC-BKK fares", "Leg1: DC-SFO fares"] });
-assert.match(llm, /Leg3 DC-BKK replies: \$470 Qatar/);
-assert.match(llm, /The user asked you: "find the cheapest DC-BKK"/);
-assert.match(llm, /You handed out:\n- Leg3 DC-BKK: DC-BKK fares\n- Leg1: DC-SFO fares/);
-assert.match(llm, /The user already sees these replies in the team channel/);
-assert.match(llm, /only if you add something/);
-assert.match(llm, /end your turn with no final message at all/);
-assert.doesNotMatch(llm, /__SILENT__|EVERY non-Summary step|Compile from those details|update_task Summary done|list_tasks/);
+assert.equal(llm, 'Teammate report (this is not the user speaking):\nThe user asked you: "find the cheapest DC-BKK"\nYou handed out:\n- Leg3 DC-BKK: DC-BKK fares\n- Leg1: DC-SFO fares\nLeg3 DC-BKK replies: $470 Qatar\n(Nothing to add → nothing_to_add.)');
+assert.doesNotMatch(llm, /__SILENT__|list_tasks|Summary|only if you add/);
 
 function test(name, fn) {
   return Promise.resolve()
@@ -194,5 +176,5 @@ console.log("ok teammate");
   const both = rep("", "", { replies: [{ name: "Nova", text: "hello" }, { name: "Pixel", text: "42" }], userAsk: "ask nova to say hello and pixel a number" });
   assert.match(both, /Nova replies: hello/);
   assert.match(both, /Pixel replies: 42/);
-  assert.match(both, /The user already sees these replies in the team channel/);
+  assert.doesNotMatch(both, /only if you add/);
 }

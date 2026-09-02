@@ -1228,6 +1228,15 @@ app.post("/api/internal/emit", async (req, res) => {
   res.json({ ok: true });
 });
 
+/** nothing_to_add: end the turn now, quietly — no wait-for-a-pick state. */
+app.post("/api/internal/quiet-end", async (req, res) => {
+  if (req.get("x-sub8-token") !== internalToken) return res.status(401).json({ error: "unauthorized" });
+  const id = String(req.body?.botId || "");
+  if (!id) return res.status(400).json({ error: "botId required" });
+  stopTurn(id);
+  res.json({ ok: true, ended: true });
+});
+
 app.post("/api/internal/end-turn", async (req, res) => {
   if (req.get("x-sub8-token") !== internalToken) return res.status(401).json({ error: "unauthorized" });
   const id = String(req.body?.botId || "");
@@ -1355,9 +1364,19 @@ app.post("/api/internal/team-dispatch", async (req, res) => {
     deletedIds.add(String(req.body.stopId));
     return res.json({ ok: true, stopped: true });
   }
-  const toId = String(req.body?.toId || "");
   const fromId = String(req.body?.fromId || "");
   const content = String(req.body?.content || "").trim();
+  // Full message_teammate on behalf of the subprocess (resolve, channel line,
+  // sender note, dispatch, job tracking) when it sends `to`; the older
+  // {fromId,toId,content} shape still just dispatches.
+  const to = String(req.body?.to || "");
+  if (to) {
+    if (!fromId || !content) return res.status(400).json({ error: "fromId, to and content required" });
+    const str = (v: unknown) => (v == null ? undefined : String(v));
+    const r = await teammateMessage({ fromId, to, content, label: str(req.body?.label), status: str(req.body?.status), detail: str(req.body?.detail), stepId: str(req.body?.stepId) });
+    return res.json(r);
+  }
+  const toId = String(req.body?.toId || "");
   if (!toId || !content) return res.status(400).json({ error: "toId and content required" });
   const from = fromId ? await store.getBot(fromId) as IndexBot | null : null;
   dispatchToTeammate(toId, content, from);
@@ -1861,6 +1880,7 @@ app.put("/api/settings", async (req, res) => {
   // did are still claims. `saveSettings` normalises the record it is handed —
   // that is the function that turns those claims back into settings.
   const saved = await store.saveSettings(next as Partial<store.Settings>);
+  applyDeskMemorySetting(saved as { deskMemory?: unknown });
   // Mask the key on the way out, exactly as GET /api/settings does. This route
   // was handing the plaintext provider key back to the client on every settings
   // write — including the writes that only toggle a sidebar section. No caller
@@ -2193,6 +2213,7 @@ app.post("/api/teams/:id/messages", async (req, res) => {
     }
     await store.patchBot(id, (b) => {
       b.messages = b.messages || [];
+      userSpoke(b);
       b.messages.push({ ...posted, role: "user" });
     });
     broadcast("message", { botId: id, ...posted });
@@ -2716,6 +2737,19 @@ type PendingChannelMsg = { posted: store.Message; images: string[] };
 const pendingForLead = new Map<string, PendingChannelMsg[]>();
 const leadTurnQueued = new Set<string>();
 
+/**
+ * A user message answers whatever the bot was waiting on. awaitingUserSelection
+ * was cleared only by an explicit pick; a free-text reply — 1:1 or in the
+ * channel — left the bot "awaiting" forever with send_message blocked
+ * (AWAITING_BLOCKED), which is how a lead went silent for four minutes.
+ */
+function userSpoke(b: { awaitingUserSelection?: boolean | undefined; messages?: store.Message[] | undefined }): void {
+  b.awaitingUserSelection = false;
+  for (const m of b.messages || []) {
+    if ((m.kind === "choices" || m.kind === "secret-request") && m.pending !== false) m.pending = false;
+  }
+}
+
 function scheduleLeadTurn(botId: string, msg: PendingChannelMsg): void {
   (pendingForLead.get(botId) || pendingForLead.set(botId, []).get(botId)!).push(msg);
   if (leadTurnQueued.has(botId)) return; // the queued turn will drain this too
@@ -2729,6 +2763,7 @@ function scheduleLeadTurn(botId: string, msg: PendingChannelMsg): void {
       if (!batch.length) return;
       await store.patchBot(botId, (b) => {
         b.messages = b.messages || [];
+        userSpoke(b);
         for (const { posted } of batch) b.messages.push({ ...posted, role: "user" });
       });
       for (const { posted } of batch) broadcast("message", { botId, ...posted });
@@ -2843,7 +2878,7 @@ const notifiedThisTurn = new Set<string>();
  */
 const REPORT_FLUSH_MS = 3 * 60 * 1000;
 const outstandingFor = new Map<string, Set<string>>();
-const repliesFor = new Map<string, { name: string; text: string }[]>();
+const repliesFor = new Map<string, { name: string; text: string; explicit?: boolean }[]>();
 const reportFlushTimer = new Map<string, NodeJS.Timeout>();
 
 function noteHandedOff(chiefId: string, workerId: string): void {
@@ -2853,12 +2888,106 @@ function notifyKey(fromId: string | undefined, toId: string | null | undefined):
   return `${fromId || ""}->${toId || ""}`;
 }
 
+/**
+ * message_teammate, done by the server. The per-desk MCP subprocess used to
+ * do all of this itself — thirty-odd store reads and writes, each a cross-
+ * process file lock against a server that is writing bots.json many times a
+ * second during a team burst. Under contention the tool timed out or threw
+ * "lock timeout", and the lead told the user its teammates were unreachable.
+ * The server owns the store; the subprocess now just asks it (one HTTP call).
+ * The in-process tool path (agent.mts) keeps its own copy for now.
+ */
+async function teammateMessage({
+  fromId,
+  to,
+  content,
+  label,
+  status,
+  detail,
+  stepId,
+}: {
+  fromId: string;
+  to: string;
+  content: string;
+  label?: string | undefined;
+  status?: string | undefined;
+  detail?: string | undefined;
+  stepId?: string | undefined;
+}): Promise<{ ok: boolean; text: string; isError?: boolean }> {
+  const bot = await store.getBot(fromId) as IndexBot | null;
+  if (!bot) return { ok: false, text: "sender not found", isError: true };
+  const body = vault.redactSecrets(teammate.sendToAgentContent(content), await vault.listSecrets());
+  if (!body) return { ok: false, text: "empty message — pass the note in `content`", isError: true };
+  const room = await channels.getChannel(to).catch(() => null);
+  if (room) {
+    const routed = await teammate.sendToAgent(bot.id, to, body) as { queued: number; channelId: string };
+    return { ok: true, text: `queued to room ${routed.channelId} (${routed.queued} members)` };
+  }
+  const team = bot.teamId ? await teams.getTeam(bot.teamId) : null;
+  const allBots = await store.loadBots() as IndexBot[];
+  const members = team ? teams.membersOf(team, allBots) : [];
+  const mate = teams.resolveTeammate(to, members);
+  if (!mate) {
+    const target = teams.resolveTeammate(to, members, allBots) || (await store.getBot(to));
+    if (!target) {
+      const names = members.filter((b) => b.id !== bot.id).map((b) => b.name).filter(Boolean).join(", ");
+      return { ok: false, text: `bot not found: "${to}". Pass bot_id from list_teammates${names ? ` (your teammates: ${names})` : ""}.`, isError: true };
+    }
+    const routed = await teammate.sendToAgent(bot.id, target.id, body) as { queued: number; botId: string };
+    return { ok: true, text: `queued to ${routed.botId}` };
+  }
+  const teamId = bot.teamId as string;
+  const posted = await teams.appendMessage(teamId, {
+    role: "assistant",
+    speakerId: bot.id,
+    speakerName: bot.name,
+    speakerRole: bot.teamRole || "",
+    toId: mate.id,
+    toName: mate.name,
+    content: body,
+  });
+  broadcast("team-message", { teamId, ...posted });
+  const note = {
+    id: posted.id,
+    role: "assistant",
+    speakerId: bot.id,
+    speakerName: bot.name,
+    speakerRole: bot.teamRole || "",
+    toId: mate.id,
+    toName: mate.name,
+    content: `To ${mate.name}: ${body}`,
+    ts: posted.ts,
+  };
+  await store.patchBot(bot.id, (b) => {
+    b.messages = b.messages || [];
+    if (!b.messages.some((m) => m.id === note.id)) b.messages.push(note);
+  });
+  broadcast("message", { botId: bot.id, ...note });
+  dispatchToTeammate(mate.id, body, bot);
+  const st = teams.TASK_STATUSES.includes(status as teams.TaskStatus) ? (status as teams.TaskStatus) : null;
+  const announce = (renamed: { id: string; name?: string; teamId?: string; teamRole?: string; color?: string; harness?: unknown; vm?: unknown; description?: string }[] = []) => {
+    for (const b of renamed) broadcast("teammate", { bot: { id: b.id, name: b.name, teamId: b.teamId, teamRole: b.teamRole, color: b.color, harness: b.harness, vm: b.vm, description: b.description } });
+  };
+  if (bot.teamRole === "chief") {
+    const assigned = await teams.onWorkerAssigned(teamId, mate.id, { label, content: body, status: st, detail, stepId });
+    if (assigned?.team?.job) broadcast("job", { teamId, job: assigned.team.job });
+    announce(assigned?.renamed as Parameters<typeof announce>[0]);
+    return { ok: true, text: `sent to ${assigned?.bot?.name || mate.name}` };
+  }
+  if (st) {
+    const bumped = await teams.patchTeamStep(teamId, { botId: bot.id, status: st, detail: detail || body.slice(0, 160) });
+    if (bumped?.job) broadcast("job", { teamId, job: bumped.job });
+    announce(bumped?.renamed as Parameters<typeof announce>[0]);
+  }
+  return { ok: true, text: `sent to ${mate.name}` };
+}
+
 function dispatchToTeammate(toId: string, content: unknown, from: DispatchFrom | null | undefined): void {
   const text = String(content || "").trim();
   if (!toId || !text) return;
   if (from?.teamRole !== "chief") {
     notifiedThisTurn.add(notifyKey(from?.id, toId));
-    deliverTeammateReply(toId, from, text.slice(0, 240));
+    deliverTeammateReply(toId, from, text.slice(0, 240), { explicit: true });
     return;
   }
   const who = from?.name || "a teammate";
@@ -2907,22 +3036,22 @@ async function shortStepPing(bot: IndexBot | null | undefined): Promise<string> 
 }
 
 /**
- * The lead's final message on a USER turn is its answer to the user — the
- * same rule workers have (deliverWorkerAnswer). `claude -p` returns its answer
- * as final text; in a 1:1 thread that was always visible, so the harness never
- * needed send_message for chat. Deliver it to the channel unless the lead
- * already spoke there this turn (a delegation line or a send_message) — then
- * that IS the reply and a trailing "done, they'll get to it" stays private.
- * Report turns come through too: a combined answer the lead wrote as text
- * must reach the user; when it has nothing to add it is asked to write nothing.
+ * The lead's final message is its reply to the user — the same rule workers
+ * have (deliverWorkerAnswer); `claude -p` returns its answer as final text.
+ * One structural exception: on a turn where the lead handed work off, the
+ * delegation line IS the reply and its closing text ("message sent, waiting
+ * for her hello…") is not shown — anything else it wants the user to see on
+ * such a turn goes through send_message, a deliberate act. Tools express
+ * intent; no reading of the words. Report turns and plain turns deliver the
+ * text (a computed sum, an answer); silence is nothing_to_add.
  */
 async function deliverLeadAnswer(bot: IndexBot | null | undefined, last: { content?: unknown } | null | undefined, since: number): Promise<void> {
   if (bot?.teamRole !== "chief" || !bot.teamId || !last) return;
   const content = String(last.content || "").trim();
   if (!content) return;
   const recent = (await teams.loadMessages(bot.teamId)).slice(-30);
-  const spokeThisTurn = recent.some((m) => m.speakerId === bot.id && Number(m.ts || 0) >= since);
-  if (spokeThisTurn) return;
+  const handedOffThisTurn = recent.some((m) => m.speakerId === bot.id && Boolean(m.toId) && Number(m.ts || 0) >= since);
+  if (handedOffThisTurn) return;
   const posted = await teams.appendMessage(bot.teamId, {
     role: "assistant",
     speakerId: bot.id,
@@ -2946,7 +3075,7 @@ async function finalizeChiefJob(bot: IndexBot | null | undefined) {
   return saved.job;
 }
 
-async function deliverTeammateReply(toId: string | null | undefined, from: DispatchFrom | null | undefined, content: unknown): Promise<void> {
+async function deliverTeammateReply(toId: string | null | undefined, from: DispatchFrom | null | undefined, content: unknown, { explicit = false }: { explicit?: boolean } = {}): Promise<void> {
   if (!toId || !content || toId === from?.id) return;
   const short = String(content || "").trim().slice(0, 240);
   const to = await store.getBot(toId) as IndexBot | null;
@@ -3000,7 +3129,7 @@ async function deliverTeammateReply(toId: string | null | undefined, from: Dispa
   const pending = outstandingFor.get(toId);
   if (from?.id && pending) pending.delete(from.id);
   const gathered = repliesFor.get(toId) || repliesFor.set(toId, []).get(toId)!;
-  gathered.push({ name: String(from?.name || "Teammate"), text: short });
+  gathered.push({ name: String(from?.name || "Teammate"), text: short, explicit });
   const flush = () => {
     const t = reportFlushTimer.get(toId);
     if (t) clearTimeout(t);
@@ -3010,6 +3139,12 @@ async function deliverTeammateReply(toId: string | null | undefined, from: Dispa
     outstandingFor.set(toId, new Set());
     if (!replies.length) return;
     const only = replies.length === 1 ? replies[0]! : null;
+    // Event policy, not word-parsing: wake the lead only when there is
+    // something to decide. One automatic answer to a one-piece ask needs no
+    // lead turn — the user already sees it, and a turn here only ever produced
+    // "Got it! What next?". Several answers (combine), a tracked job, or a
+    // teammate that explicitly messaged the lead (a tool call = intent) do wake it.
+    if (only && !only.explicit && !team?.job) return;
     runReport(
       teammate.chiefReportLlm(only ? only.name : "Your teammates", only ? only.text : "", {
         userAsk,
@@ -3184,6 +3319,7 @@ app.post("/api/bots/:id/messages", async (req, res) => {
   };
   await store.patchBot(bot.id, (b) => {
     b.messages = b.messages || [];
+    userSpoke(b);
     b.messages.push(userMsg);
   });
   broadcast("message", { botId: bot.id, ...userMsg });
@@ -3232,6 +3368,28 @@ app.post("/api/bots/:id/choice", async (req, res) => {
   const describe = /i'?ll describe/i.test(label);
   const intent = card?.context?.intent;
   const name = card?.context?.name || "Worker";
+  if (intent === "desk-resources") {
+    const ctx = card?.context as { container?: string; ramMb?: number; action?: string } | undefined;
+    let note = "Left as is.";
+    if (selectedId === "increase" && ctx?.container && ctx.ramMb) {
+      const r = await vm.raiseDeskResources(ctx.container, ctx.ramMb);
+      note = r.ok ? `Done — this computer now has ${r.memory} memory and a ${r.pids}-process limit.` : `Couldn't raise it: ${r.error}`;
+      await store.patchBot(bot.id, (b) => {
+        if (b.vm && ctx.ramMb) (b.vm as { ramMb?: number }).ramMb = ctx.ramMb;
+      });
+    } else if (ctx?.action === "ack") {
+      note = "Waiting on the Docker Desktop memory raise.";
+    }
+    await store.patchBot(bot.id, (b) => {
+      b.awaitingUserSelection = false;
+      const c = (b.messages || []).find((m) => m.id === card?.id);
+      if (c) (c as { pending?: boolean }).pending = false;
+    });
+    const out = { id: `a${Date.now()}dr`, role: "assistant", content: note, speakerId: bot.id, speakerName: bot.name, ts: Date.now() };
+    await store.patchBot(bot.id, (b) => { b.messages = b.messages || []; b.messages.push(out as store.Message); });
+    broadcast("message", { botId: bot.id, ...out });
+    return res.json({ ok: true });
+  }
   if (intent === "spend-guard") {
     if (selectedId === "pause") spendGuard.pauseByUser();
     else spendGuard.resume();
@@ -3633,7 +3791,10 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
       // Only THIS turn's final message counts (ts >= turnStart): a turn that
       // ended in a choices card or tool call must not fall through to an older
       // turn's text and deliver that as the answer.
-      const last = [...(latest?.messages || [])].reverse().find((m) => m.role === "assistant" && String(m.content || "").trim() && m.kind !== "choices" && Number(m.ts || 0) >= turnStart);
+      // ...and the lead's OWN row: a teammate's report is stored in the lead's
+      // thread as role "assistant" with the teammate as speaker, and a report
+      // nudged into an in-flight turn was being delivered as the lead's reply.
+      const last = [...(latest?.messages || [])].reverse().find((m) => m.role === "assistant" && String(m.content || "").trim() && m.kind !== "choices" && Number(m.ts || 0) >= turnStart && (!m.speakerId || m.speakerId === latest?.id));
       if (latest?.teamRole === "chief") {
         if (last) await finalizeChiefJob(latest);
         // Every turn, including a report turn: the lead's final message is its
@@ -3826,6 +3987,91 @@ async function postSpendNudge(bot: IndexBot, reason: string): Promise<void> {
   });
   broadcast("message", { botId: bot.id, ...card });
 }
+
+/**
+ * The user's local desk-memory choice ("4g", "8g"…) applies to NEW containers
+ * via the same env deskMemory() already reads. Set at boot and on settings save.
+ */
+function applyDeskMemorySetting(settings: { deskMemory?: unknown } | null | undefined): void {
+  const v = String(settings?.deskMemory || "").trim().toLowerCase();
+  if (/^[0-9]{1,2}g$/.test(v)) process.env.LOCALBOT_MEMORY = v;
+}
+store.loadSettings().then((s0) => applyDeskMemorySetting(s0 as { deskMemory?: unknown })).catch(() => {});
+
+/**
+ * Resource pressure watcher. The desk hit its pids ceiling mid-session and the
+ * failure surfaced as nonsense ("I can't install screenshot tools") — nothing
+ * knew the ceiling existed. Every minute: for each running local desk, read its
+ * cgroup usage; near a limit, offer the user an upgrade as a choice card from
+ * that desk's lead. When Docker Desktop's VM itself is the ceiling (7.7 GB of a
+ * 128 GB Mac), say exactly that and where to raise it — that one is a human
+ * action. One card per container per hour; acting on it is the intent handler.
+ */
+const deskPressureCardAt = new Map<string, number>();
+setInterval(async () => {
+  try {
+    const bots = await store.loadBots() as IndexBot[];
+    const byContainer = new Map<string, IndexBot[]>();
+    for (const b of bots) {
+      const c = b.vm?.container;
+      if (c && b.vm?.status === "running") (byContainer.get(c) || byContainer.set(c, []).get(c)!).push(b);
+    }
+    for (const [container, mates] of byContainer) {
+      const last = deskPressureCardAt.get(container) || 0;
+      if (Date.now() - last < 60 * 60 * 1000) continue;
+      const st = await vm.deskResourceStatus(container).catch(() => null);
+      if (!st || !st.pressure) continue;
+      const owner = mates.find((b) => b.teamRole === "chief") || mates[0]!;
+      if (owner.awaitingUserSelection) continue;
+      deskPressureCardAt.set(container, Date.now());
+      const nextRamMb = Math.min(16384, Math.max(4096, (st.memMaxMb || 2048) * 2));
+      const vmCeiling = st.vmTotalMb > 0 && nextRamMb > st.vmTotalMb * 0.8;
+      const facts = `memory ${st.memUsedMb}/${st.memMaxMb || "∞"} MiB, processes ${st.pids}/${st.pidsMax || "∞"}`;
+      const card = vmCeiling
+        ? {
+            id: `dr${Date.now()}`,
+            role: "assistant",
+            kind: "choices",
+            content: `My computer is near its limits (${facts}) — and the real ceiling is Docker Desktop itself: it only gives Docker ${(st.vmTotalMb / 1024).toFixed(1)} GB of this Mac's ${(st.hostTotalMb / 1024).toFixed(0)} GB.`,
+            hint: "Raise it in Docker Desktop → Settings → Resources → Memory (16 GB is comfortable), then Apply & Restart. I can't change that setting myself.",
+            choices: [{ id: "ack", label: "Got it" }],
+            pending: true,
+            context: { intent: "desk-resources", container, action: "ack" },
+            speakerId: owner.id,
+            speakerName: owner.name,
+            ts: Date.now(),
+          }
+        : {
+            id: `dr${Date.now()}`,
+            role: "assistant",
+            kind: "choices",
+            content: `My computer is near its limits (${facts}). Give it more room?`,
+            hint: `Raises this computer to ${(nextRamMb / 1024).toFixed(0)} GB memory and a matching process limit, live — nothing restarts.`,
+            choices: [
+              { id: "increase", label: `Increase to ${(nextRamMb / 1024).toFixed(0)} GB` },
+              { id: "keep", label: "Keep as is" },
+            ],
+            pending: true,
+            context: { intent: "desk-resources", container, ramMb: nextRamMb, action: "raise" },
+            speakerId: owner.id,
+            speakerName: owner.name,
+            ts: Date.now(),
+          };
+      await store.patchBot(owner.id, (b) => {
+        b.messages = b.messages || [];
+        if (!(b.messages as { id?: string }[]).some((m) => m.id === card.id)) (b.messages as unknown[]).push(card);
+        b.awaitingUserSelection = true;
+      });
+      broadcast("message", { botId: owner.id, ...card });
+      if (owner.teamId) {
+        const posted = await teams.appendMessage(owner.teamId, { ...(card as unknown as Record<string, unknown>), speakerRole: "chief" });
+        broadcast("team-message", { teamId: owner.teamId, ...posted });
+      }
+    }
+  } catch {
+    /* next tick */
+  }
+}, 60_000);
 
 setInterval(() => tickRoutines().catch((e) => console.error("routines", e)), 15_000);
 setInterval(() => drainLeftoverWakes().catch((e) => console.error("wakes", e)), 5_000);

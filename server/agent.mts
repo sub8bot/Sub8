@@ -1672,6 +1672,7 @@ async function execTool(
   try {
     const hostTools = new Set([
       "send_message",
+      "nothing_to_add",
       "upsert_routine",
       "list_routines",
       "disable_routine",
@@ -1811,6 +1812,11 @@ async function execTool(
         }
       }
       return { text: "sent" };
+    }
+    if (name === "nothing_to_add") {
+      // Ends the turn now — no closing remark can follow. See mcp-sub8.
+      endTurnKeepBot(bot.id);
+      return { text: "ending quietly", endTurn: true };
     }
     if (name === "list_teammates") {
       const mates = await teams.listDeskWorkers(bot);
@@ -1979,31 +1985,12 @@ async function execTool(
       return { text: "asked the user; wait for their pick in chat", endTurn: true };
     }
     if (name === "create_teammate") {
-      const job = String(args.job || "").trim();
+      // No interrogation: a teammate without a stated job gets a sensible
+      // default and starts working. The lead's next message_teammate is the
+      // real job anyway; a "What should this one do?" card stalled the turn
+      // (and un-ended, the model asked AGAIN via ask_user — two stacked cards).
+      const job = String(args.job || "").trim() || "General helper on this computer. Takes tasks from the lead.";
       const nm = String(args.name || "").trim() || "Worker";
-      if (!job) {
-        const card = {
-          id: `ch${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
-          role: "assistant",
-          kind: "choices",
-          content: "What should this one do?",
-          hint: "Name + job is enough. You can also type your own.",
-          choices: teams.BOT_JOB_CHOICES,
-          allowCustom: true,
-          pending: true,
-          context: { intent: "create-teammate", name: nm },
-          speakerId: bot.id,
-          speakerName: bot.name,
-          ts: Date.now(),
-        };
-        bot.messages.push(card);
-        await store.patchBot(bot.id, (b) => {
-          b.messages = b.messages || [];
-          if (!b.messages.some((m) => m.id === card.id)) b.messages.push(card);
-        });
-        await Promise.resolve(emit("message", card));
-        return { text: "asked the user what this Bot should do; wait for their pick" };
-      }
       const team = await teams.ensureTeamForBot(bot);
       const harness = {
         ...(bot.harness || {}),

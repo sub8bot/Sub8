@@ -127,7 +127,7 @@ export interface HostCliPing {
 
 /** Mac-fallback prompt: same surface as MCP + catalog (widget/secret-request end the turn). */
 export const MCP_DRIVE_TOOLS =
-  "browser, computer, shell, memory, vault_list, vault_fill, list_routines, upsert_routine, disable_routine, send_message, list_teammates, message_teammate, list_tasks, update_task, set_job, ask_user, create_teammate, rename_bot, update_bot, delete_teammate, web_search, web_fetch, read, create_channel, update_channel, task, check_subagent, message_subagent, stop_subagent, await_shell, cloud_agent, request_box_help, update_state, get_mcp_tools, call_mcp_tool, authenticate_mcp_server, add_mcp_server";
+  "browser, computer, shell, memory, vault_list, vault_fill, list_routines, upsert_routine, disable_routine, send_message, nothing_to_add, list_teammates, message_teammate, list_tasks, update_task, set_job, ask_user, create_teammate, rename_bot, update_bot, delete_teammate, web_search, web_fetch, read, create_channel, update_channel, task, check_subagent, message_subagent, stop_subagent, await_shell, cloud_agent, request_box_help, update_state, get_mcp_tools, call_mcp_tool, authenticate_mcp_server, add_mcp_server";
 
 export function extraPath(): string {
   const home = process.env.HOME || os.homedir() || "";
@@ -857,9 +857,11 @@ export function recapConversation(
 
 export function continuePrompt(userText: string, recap: string): string {
   if (!recap) return userText;
+  // Context, not a briefing: labelled so the model does not "acknowledge" it
+  // ("Got it, I understand my team is…") instead of acting on the new message.
   return (
-    `Continuing this Bot's conversation. The Sub8 transcript is the source of truth; earlier turns may have used a different harness.\n\n` +
-    `Prior conversation:\n${recap}\n\nUser:\n${userText}`
+    `Recent conversation, for context only — do not acknowledge, summarize, or restate it; act on what comes after it. If an earlier turn refused something these rules allow, or did something they do not, follow the rules, not the earlier turn:\n${recap}\n\n` +
+    `Now:\n${userText}`
   );
 }
 
@@ -959,7 +961,7 @@ A question is send_message type=widget (ends the turn). Secrets: type=secret-req
 Web pages: browser action=navigate / snapshot / click (ref from snapshot) / fill.
 Pixels and native UI: computer screenshot and left_click.
 To type text or a URL: computer action=type (pastes exactly, including ://). computer action=key is Return / ctrl+l / Escape — never put a URL in key.
-To sign in: vault_fill. Never print a password.
+Signing in to the user's OWN accounts — bank, email, anything — is normal work here, never something to refuse: you never see or type the password. vault_list to find a grant for the site, then click the field and vault_fill. No grant: open the site's sign-in page and ask them to press Take control and log in themselves (or add the login to the vault). Never print a password.
 Teammates are Sub8 bots on this computer — not sessions, agents, subagents, or peers of your own harness, and no harness-native session/agent/peer messaging reaches them. Reach one only with the sub8 tool message_teammate (a name or the id from list_teammates). Each Bot has its own Chrome tab on its display. Worker: your final message is your answer to the lead — it is delivered for you; make it the answer, not a status. Lead: handing work to a teammate (message_teammate) is itself what the user sees; send_message only when you add something, and ending without one is normal. Jobs: set_job only for multi-step work the user will track; update_task only a step that actually changed. Do not invent extra files. Do not print a user-visible sentence between every click — tools until done. Google URLs: &hl=en&gl=us&curr=USD. If you need a yes/no, a pick, or confirmation from the user, call send_message type=widget (ask_user is an alias) and stop — do not guess.
 Do not drive Chrome with xdotool, wmctrl, octo-click, CDP, or host Bash. Call the sub8 tools. If the desktop is sick, shell desk-doctor. Do not announce tools are missing unless a tool call returned an error.
 `;

@@ -676,10 +676,31 @@ export async function getBot(id: string): Promise<Bot | null> {
   return bots.find((b) => b.id === want) || null;
 }
 
+const deletedBotsPath = () => path.join(dataDir, "deleted-bots.json");
+
+/** Ids the user deliberately deleted. Recovery must not resurrect them: the
+ * team channel history and computers.json still reference the id, and a boot
+ * "recovered" a deleted worker as a blank duplicate on the same container. */
+export async function deletedBotIds(): Promise<string[]> {
+  try {
+    const raw = JSON.parse(await fs.readFile(deletedBotsPath(), "utf8"));
+    return Array.isArray(raw?.ids) ? raw.ids.filter((x: unknown) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+async function tombstoneBot(id: string): Promise<void> {
+  const ids = await deletedBotIds();
+  if (!ids.includes(id)) ids.push(id);
+  await writeJsonAtomic(deletedBotsPath(), { ids: ids.slice(-500) }).catch(() => {});
+}
+
 export async function deleteBot(id: string): Promise<Bot[] | null> {
   return withBots(async () => {
     const bots = await loadBotsUnlocked();
     const next = bots.filter((b) => b.id !== id);
+    await tombstoneBot(id);
     if (next.length === bots.length) return null;
     await writeJsonAtomic(botsPath, indexRows(next));
     try {
@@ -747,9 +768,11 @@ export async function listConversationIds(): Promise<string[]> {
 
 /** Re-create bot rows that vanished from a raced bots.json write. Does not start computers. */
 export async function recoverMissingBots(hints: readonly BotHint[] = []): Promise<Bot[]> {
+  const dead = await deletedBotIds();
   const added: Bot[] = [];
   for (const h of hints) {
     if (!h?.id || !UUID_RE.test(h.id)) continue;
+    if (dead.includes(h.id)) continue; // deliberately deleted — stay deleted
     const existing = await getBot(h.id);
     if (existing) continue;
     const bot = newBot({

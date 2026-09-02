@@ -85,20 +85,14 @@ export function storedChiefToWorker(who: unknown, text: unknown): string {
 }
 
 /**
- * What a worker is handed when the lead sends it something. One principle, no
- * ceremony: do it, and your final message is your answer — the system
- * delivers it to the lead and the team channel. The model works out the rest
- * (use the screen or not, ask the lead a question, report a blocker) from its
- * own context.
+ * What a worker is handed when the lead sends it something: the fact of it.
+ * The contract (do it; your final message is your answer and is delivered for
+ * you) lives in the team system prompt — an instruction inside the message
+ * only gets acknowledged back ("Got it, I'll…").
  */
 export function wrapWorkerDispatch({ who, text }: WorkerDispatch = {}): string {
   const name = String(who || "your lead").trim() || "your lead";
-  const body = String(text || "").trim();
-  return `From ${name}, your lead:
-
-${body}
-
-Do this. Your final message is your answer — it is delivered to ${name} and shown in the team channel for you, so make it the answer itself (not a status). Use your own screen only if the task needs it.`;
+  return `${name} (your lead): ${String(text || "").trim()}`;
 }
 
 export function chiefReportStored(fromName: unknown, short: unknown): string {
@@ -117,22 +111,22 @@ export interface ChiefReportOpts {
 }
 
 /**
- * What the lead is handed when teammates answer: the facts, and one
- * principle. The user already sees every reply in the channel; the lead speaks
- * (send_message) only when it adds something — a combined answer, a next step,
- * an unblock. Ending the turn without sending anything is normal. What
- * "adds something" means is the model's call, not a rule here.
+ * What the lead is handed when teammates answer: the facts — the user's
+ * request, what it handed out, every reply. The principle (the user already
+ * sees these; speak only to add something; nothing_to_add otherwise) lives in
+ * the team system prompt, not here: an instruction inside the message gets
+ * acknowledged back instead of followed.
  */
 export function chiefReportLlm(fromName: unknown, short: unknown, opts: ChiefReportOpts = {}): string {
   const many = (opts.replies || []).filter((r) => r && String(r.text || "").trim());
   const stored = many.length ? many.map((r) => chiefReportStored(r.name, r.text)).join("\n") : chiefReportStored(fromName, short);
   const userAsk = String(opts.userAsk || "").trim();
   const handed = (opts.handed || []).map((h) => String(h || "").trim()).filter(Boolean);
-  const context = [
+  return [
+    "Teammate report (this is not the user speaking):",
     userAsk ? `The user asked you: "${userAsk.slice(0, 300)}"` : "",
     handed.length ? `You handed out:\n${handed.map((h) => `- ${h.slice(0, 160)}`).join("\n")}` : "",
+    stored,
+    "(Nothing to add → nothing_to_add.)",
   ].filter(Boolean).join("\n");
-  return `${context ? `${context}\n` : ""}${stored}
-
-The user already sees these replies in the team channel. Your final message reaches the user, so write one only if you add something — a combined answer they asked for, a next step, an unblock. If there is nothing to add, end your turn with no final message at all: no closing remark, no summary of what happened. Do not hand a teammate the same thing again while they are still on it.`;
 }

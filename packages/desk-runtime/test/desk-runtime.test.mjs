@@ -9,7 +9,7 @@ test("1 GB desk is a 1g cgroup with a half CPU and a pid cap", () => {
     memorySwap: "1g",
     shm: "256m",
     cpus: "0.5",
-    pids: 256,
+    pids: 512,
   });
 });
 
@@ -19,7 +19,7 @@ test("4 GB desk is the default dedicated webtop", () => {
     memorySwap: "4g",
     shm: "256m",
     cpus: "1.0",
-    pids: 512,
+    pids: 1024,
   });
 });
 
@@ -56,7 +56,7 @@ test("loopback run args mount /config, cap cgroups, and never bind 0.0.0.0", () 
   assert.equal(args[args.indexOf("--memory-swap") + 1], "2g");
   assert.equal(args[args.indexOf("--shm-size") + 1], "256m");
   assert.equal(args[args.indexOf("--cpus") + 1], "0.5");
-  assert.equal(args[args.indexOf("--pids-limit") + 1], "384");
+  assert.equal(args[args.indexOf("--pids-limit") + 1], "768");
   const ports = args.filter((_, i) => args[i - 1] === "-p");
   for (const p of ports) assert.ok(String(p).startsWith("127.0.0.1:"), p);
   assert.ok(ports.some((p) => p === `127.0.0.1:13109-${13109 + DISPLAY_SLOTS - 1}:3000-${3000 + DISPLAY_SLOTS - 1}`));

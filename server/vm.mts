@@ -516,6 +516,57 @@ export function deskMemory(memberCount?: unknown): string {
   return `${Math.min(6, 2 + (n - 1))}g`;
 }
 
+/** What a desk is actually using vs allowed, plus the ceilings above it. */
+export interface DeskResourceStatus {
+  container: string;
+  memUsedMb: number;
+  memMaxMb: number;
+  pids: number;
+  pidsMax: number;
+  /** Docker Desktop's whole VM — the real ceiling for ALL desks combined. */
+  vmTotalMb: number;
+  hostTotalMb: number;
+  pressure: "" | "pids" | "memory";
+}
+
+let vmTotalMbCache = 0;
+
+export async function deskResourceStatus(container: string): Promise<DeskResourceStatus | null> {
+  const read = await docker([
+    "exec", container, "sh", "-c",
+    "cat /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max /sys/fs/cgroup/pids.current /sys/fs/cgroup/pids.max 2>/dev/null",
+  ]);
+  if (read.code !== 0) return null;
+  const [memCur = "0", memMax = "max", pidsCur = "0", pidsMax = "max"] = String(read.out || "").trim().split(/\s+/);
+  if (!vmTotalMbCache) {
+    const info = await docker(["info", "--format", "{{.MemTotal}}"]);
+    vmTotalMbCache = Math.round(Number(String(info.out || "").trim()) / 1048576) || 0;
+  }
+  const memUsedMb = Math.round(Number(memCur) / 1048576) || 0;
+  const memMaxMb = memMax === "max" ? 0 : Math.round(Number(memMax) / 1048576) || 0;
+  const pids = Number(pidsCur) || 0;
+  const pidsMaxN = pidsMax === "max" ? 0 : Number(pidsMax) || 0;
+  const pressure: DeskResourceStatus["pressure"] =
+    pidsMaxN && pids > pidsMaxN * 0.85 ? "pids" : memMaxMb && memUsedMb > memMaxMb * 0.9 ? "memory" : "";
+  return {
+    container,
+    memUsedMb,
+    memMaxMb,
+    pids,
+    pidsMax: pidsMaxN,
+    vmTotalMb: vmTotalMbCache,
+    hostTotalMb: Math.round(os.totalmem() / 1048576),
+    pressure,
+  };
+}
+
+/** Live raise (no restart): docker update the memory + pids rung. */
+export async function raiseDeskResources(container: string, ramMb: number): Promise<{ ok: boolean; memory: string; pids: number; error?: string }> {
+  const l = limitsFromRamMb(ramMb);
+  const r = await docker(["update", "--memory", l.memory, "--memory-swap", l.memorySwap, "--pids-limit", String(l.pids), container]);
+  return { ok: r.code === 0, memory: l.memory, pids: l.pids, ...(r.code === 0 ? {} : { error: String(r.out || "docker update failed").slice(0, 200) }) };
+}
+
 export function deskShm(): string {
   return process.env.LOCALBOT_SHM || "256m";
 }

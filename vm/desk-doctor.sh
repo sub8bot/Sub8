@@ -46,7 +46,18 @@ fi
 
 echo "disk:"
 df -h /config / 2>/dev/null | awk 'NR==1 || /config|\/$/'
-echo "memory:"
-awk '/MemTotal|MemAvailable|SwapTotal/{print}' /proc/meminfo 2>/dev/null || true
+echo "memory (this computer's own limits — /proc/meminfo shows the host, not you):"
+mem_cur=$(cat /sys/fs/cgroup/memory.current 2>/dev/null || echo 0)
+mem_max=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max)
+pids_cur=$(cat /sys/fs/cgroup/pids.current 2>/dev/null || echo 0)
+pids_max=$(cat /sys/fs/cgroup/pids.max 2>/dev/null || echo max)
+echo "  memory: $((mem_cur/1048576)) MiB used of $([ "$mem_max" = max ] && echo unlimited || echo $((mem_max/1048576))) MiB"
+echo "  processes/threads: $pids_cur of $pids_max"
+if [ "$pids_max" != max ] && [ "$pids_cur" -gt $((pids_max*8/10)) ]; then
+  note "near the process limit ($pids_cur/$pids_max): forks (screenshots, tools, apt) will start failing. Tell the user this computer needs a bigger limit — do not try to install tools."
+fi
+if [ "$mem_max" != max ] && [ "$mem_cur" -gt $((mem_max*9/10)) ]; then
+  note "near the memory limit: Chrome tabs and tools may be killed. Tell the user this computer needs more memory."
+fi
 echo "logs: /tmp/xvfb.log /tmp/chrome.log /tmp/x11vnc.log /tmp/picom.log /tmp/xfwm4.log"
 exit "$fail"

@@ -395,6 +395,14 @@ export const TOOLS: ToolSpec[] = [
   {
     type: "function",
     function: {
+      name: "nothing_to_add",
+      description: "A teammate's report needs no reply from you — the user already sees it in the channel. Call this to end your turn quietly. Do not write a closing remark instead.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "message_teammate",
       description:
         "SendToAgent: fire-and-forget a note to a bot UUID or a room UUID. Pass bot_id from list_teammates, create_teammate, or create_channel. Never invent a UUID. Team job-bar fields (label/status/detail) still apply when you are on a desk crew. Do not pass status=running on a step that is already done — that is a follow-up note, not a restart.",
@@ -491,7 +499,7 @@ export const TOOLS: ToolSpec[] = [
     function: {
       name: "create_teammate",
       description:
-        "Create another Bot in your group on the same shared desk. Pass name and job. You MAY set harness (claude, grok-build, hermes, codex, cursor, ollama, lmstudio), model, instructions, color. If the job is missing, ask the user with a choice card first.",
+        "Create another Bot in your group on the same shared desk. Pass name and job — take the job from the user's words ('ask it to say hello' → the job includes that); a missing job defaults to general helper, so never ask the user what the teammate is for. You MAY set harness (claude, grok-build, hermes, codex, cursor, ollama, lmstudio), model, instructions, color.",
       parameters: {
         type: "object",
         properties: {
