@@ -1966,12 +1966,16 @@ async function execTool(
       // above). Non-null because `cardFromSendMessageArgs` only answers null when
       // it cannot build a card, and a `type: "widget"` spec always builds one —
       // which is why the runtime pushes this unguarded.
+      const askChoices = Array.isArray(args.choices) && args.choices.length ? args.choices : [];
       const card = cardFromSendMessageArgs(bot, {
         type: "widget",
         question: args.question,
         hint: args.hint,
-        choices: Array.isArray(args.choices) && args.choices.length ? args.choices : teams.BOT_JOB_CHOICES,
-        allow_custom: args.allow_custom,
+        // No options given = a free-text question (a code, a name, an address).
+        // Defaulting to the new-bot job options put "GitHub / PRs" under
+        // "enter the verification code".
+        choices: askChoices.length ? askChoices : [{ id: "answer", label: "Type your answer below" }],
+        allow_custom: askChoices.length ? args.allow_custom : true,
       }) as unknown as AgentMessage;
       bot.messages.push(card);
       bot.awaitingUserSelection = true;

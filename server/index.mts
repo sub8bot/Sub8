@@ -362,6 +362,27 @@ const clients = new Set<Response>();
 function broadcast(event: string, data: unknown): void {
   const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const res of clients) res.write(payload);
+  // The attention event: a bot just asked the human for something (a pick, a
+  // credential, a verification code). One structural hook — every card funnels
+  // through broadcast — so the desktop app can toast + fire a native macOS
+  // notification, and future surfaces (menu bar, iOS) subscribe to the same
+  // event. This is the start of the event vocabulary: attention now; done /
+  // error / needs-review later.
+  if (event === "message") {
+    const m = data as { botId?: string; kind?: string; pending?: boolean; content?: string; question?: string; speakerName?: string };
+    if ((m?.kind === "choices" || m?.kind === "secret-request") && m.pending !== false) {
+      const attention = {
+        id: `at${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
+        botId: m.botId || "",
+        botName: m.speakerName || "",
+        kind: m.kind,
+        title: String(m.content || m.question || "Needs your input").slice(0, 140),
+        ts: Date.now(),
+      };
+      const ap = `event: attention\ndata: ${JSON.stringify(attention)}\n\n`;
+      for (const res of clients) res.write(ap);
+    }
+  }
 }
 
 // Cloud steady refresh: local mode streams over SSE; cloud threads only change server-side,

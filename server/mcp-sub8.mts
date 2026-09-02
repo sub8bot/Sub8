@@ -1318,12 +1318,14 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     if (!bot) throw new Error("Bot not found");
     // Non-null: `type: "widget"` is the arm of cardFromSendMessageArgs that always
     // builds a card.
+    const askChoices = Array.isArray(args.choices) && args.choices.length ? args.choices : [];
+    // No options given = a free-text question — see agent.mts.
     const card = cardFromSendMessageArgs(bot, {
       type: "widget",
       question: args.question,
       hint: args.hint,
-      choices: Array.isArray(args.choices) && args.choices.length ? args.choices : teams.BOT_JOB_CHOICES,
-      allow_custom: args.allow_custom,
+      choices: askChoices.length ? askChoices : [{ id: "answer", label: "Type your answer below" }],
+      allow_custom: askChoices.length ? args.allow_custom : true,
     })!;
     await store.patchBot(botId, (b) => {
       b.messages = b.messages || [];

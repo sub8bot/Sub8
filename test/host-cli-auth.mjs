@@ -39,12 +39,13 @@ assert.equal(JSON.parse(await fs.readFile(src, "utf8")).tokens.refresh_token, "v
 
 await fs.rm(dir, { recursive: true, force: true });
 
-assert.deepEqual(claudeModelArgs(""), ["--model", "haiku", "--fallback-model", "haiku"]);
-assert.deepEqual(claudeModelArgs("default"), ["--model", "haiku", "--fallback-model", "haiku"]);
-assert.deepEqual(claudeModelArgs("auto"), ["--model", "haiku", "--fallback-model", "haiku"]);
-assert.deepEqual(claudeModelArgs("sonnet"), ["--model", "haiku", "--fallback-model", "haiku"]);
-assert.deepEqual(claudeModelArgs("claude-sonnet-5"), ["--model", "haiku", "--fallback-model", "haiku"]);
-assert.deepEqual(claudeModelArgs("fable"), ["--model", "fable", "--fallback-model", "haiku"]);
+assert.deepEqual(claudeModelArgs(""), ["--model", "claude-sonnet-5", "--fallback-model", "claude-sonnet-4-5"]);
+assert.deepEqual(claudeModelArgs("default"), ["--model", "claude-sonnet-5", "--fallback-model", "claude-sonnet-4-5"]);
+assert.deepEqual(claudeModelArgs("auto"), ["--model", "claude-sonnet-5", "--fallback-model", "claude-sonnet-4-5"]);
+assert.deepEqual(claudeModelArgs("sonnet"), ["--model", "claude-sonnet-5", "--fallback-model", "claude-sonnet-4-5"]);
+assert.deepEqual(claudeModelArgs("claude-sonnet-5"), ["--model", "claude-sonnet-5", "--fallback-model", "claude-sonnet-4-5"]);
+assert.deepEqual(claudeModelArgs("claude-sonnet-4-5"), ["--model", "claude-sonnet-5", "--fallback-model", "claude-sonnet-4-5"]);
+assert.deepEqual(claudeModelArgs("fable"), ["--model", "fable", "--fallback-model", "claude-sonnet-4-5"]);
 
 assert.match(MCP_DRIVE_TOOLS, /\btask\b/);
 assert.match(MCP_DRIVE_TOOLS, /\bread\b/);

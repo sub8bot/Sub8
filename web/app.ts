@@ -2442,6 +2442,52 @@ function toolIcon(action: string | undefined): string {
   return svg(`<circle cx="12" cy="12" r="3"/>`);
 }
 
+/**
+ * A bot asked the human for something. Two surfaces from one event: a native
+ * notification (Electron renderer Notification = real macOS banner; plain
+ * browsers too) and a dismissable in-app toast. Clicking either jumps to the
+ * bot so the card is right there.
+ */
+interface AttentionEvent { id?: string; botId?: string; botName?: string; kind?: string; title?: string }
+function showAttention(a: AttentionEvent): void {
+  const title = `${a.botName || "A bot"} needs you`;
+  const body = String(a.title || "Needs your input");
+  const focusBot = () => {
+    if (!a.botId) return;
+    rememberSelected(a.botId);
+    state.channelTeamId = null;
+    render();
+  };
+  try {
+    if (typeof Notification !== "undefined") {
+      const fire = () => {
+        const n = new Notification(title, { body, tag: a.id || "attention" });
+        n.onclick = () => { window.focus(); focusBot(); };
+      };
+      if (Notification.permission === "granted") fire();
+      else if (Notification.permission !== "denied") Notification.requestPermission().then((p) => { if (p === "granted") fire(); });
+    }
+  } catch {
+    /* no native notifications here */
+  }
+  let host = document.getElementById("toasts");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "toasts";
+    document.body.appendChild(host);
+  }
+  const el = document.createElement("div");
+  el.className = "toast attention";
+  el.innerHTML = `<b>${escapeHtml(title)}</b><span>${escapeHtml(body)}</span><button type="button" class="toast-x" aria-label="Dismiss">×</button>`;
+  el.addEventListener("click", (ev) => {
+    if ((ev.target as HTMLElement).classList.contains("toast-x")) { el.remove(); return; }
+    focusBot();
+    el.remove();
+  });
+  host.appendChild(el);
+  setTimeout(() => el.remove(), 45_000);
+}
+
 function render(): void {
   ensureShell();
   applyDeskSize();
@@ -10732,6 +10778,13 @@ function listen(): void {
       }
     }
     es = new EventSource("/api/events");
+    es.addEventListener("attention", (e: MessageEvent<string>) => {
+      try {
+        showAttention(JSON.parse(e.data));
+      } catch {
+        /* malformed event */
+      }
+    });
     es.addEventListener("cloud-thread", (e: MessageEvent<string>) => {
       const d = JSON.parse(e.data);
       const bot = (state.cloudDraft?.bots || []).find((b) => b.id === d.botId);

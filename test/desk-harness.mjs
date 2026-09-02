@@ -404,7 +404,7 @@ async function pollHealth(port, want, ms = 20000) {
   assert.equal(args[args.indexOf("--session-id") + 1], "s1");
   assert.equal(args[args.indexOf("--append-system-prompt") + 1], "RULES");
   assert.equal(args[args.indexOf("--model") + 1], "haiku");
-  assert.equal(args[args.indexOf("--fallback-model") + 1], "haiku");
+  assert.equal(args[args.indexOf("--fallback-model") + 1], "claude-sonnet-4-5");
   assert.ok(!claudeArgs({ prompt: "hi", sessionId: "s2", mcpFile: "/tmp/m.json" }).includes("--append-system-prompt"));
 
   // Claude stream-json folds into the same {tool,delta,done} the Worker reads.

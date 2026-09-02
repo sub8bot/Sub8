@@ -160,11 +160,13 @@ export function claudeBin(): string {
 }
 
 /**
- * Desk-safe Claude id. Claude Code 2.1.197 aliases `sonnet` to `claude-sonnet-5`
- * and this login's harness turns 404 `model_not_found` on Sonnet 5 and 4.6
- * (plain `-p` still works). Haiku is the id that completes a desk turn.
+ * Desk Claude id. Sonnet 5 verified working in -p mode on this login
+ * (2026-09-02: claude-sonnet-5/4-6/4-5 all answer; the earlier
+ * model_not_found 404s no longer reproduce). Haiku was a stopgap and is not
+ * good enough for team coordination — double-delegations, skipped summaries.
  */
-export const CLAUDE_SAFE_SONNET = "haiku";
+export const CLAUDE_SAFE_SONNET = "claude-sonnet-5";
+export const CLAUDE_FALLBACK = "claude-sonnet-4-5";
 
 /** Map UI/API aliases onto a Claude Code CLI id this login can run. */
 export function resolveClaudeCliModel(model: unknown): string {
@@ -180,7 +182,7 @@ export function resolveClaudeCliModel(model: unknown): string {
 /** Claude Code flags. Always pin --model so 2.1.197 cannot default to Sonnet 5. */
 export function claudeModelArgs(model: unknown): string[] {
   const m = resolveClaudeCliModel(model);
-  return ["--model", m, "--fallback-model", CLAUDE_SAFE_SONNET];
+  return ["--model", m, "--fallback-model", m === CLAUDE_FALLBACK ? "haiku" : CLAUDE_FALLBACK];
 }
 
 export function codexBin(): string {
