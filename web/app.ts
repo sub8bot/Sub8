@@ -2199,15 +2199,19 @@ function namedBubble(m: Message, assistant: boolean): string {
 
 function renderTeamChannel(thread: HTMLElement, team: Team): void {
   const msgs = ((team.messages || []) as Message[]).filter((m) => !m.hidden);
-  const head = `<div class="channel-head"># ${escapeHtml(team.name)} · team channel<span class="channel-sub">Everyone sees this. @mention a teammate to wake them.</span></div>`;
+  const chief = teamBots(team).find((b) => b.teamRole === "chief");
+  const lead = chief?.name || "the lead";
+  // One lead you talk to here; they open and direct workers, and the whole
+  // team's activity lands in this one log — the bot app model.
+  const head = `<div class="channel-head">${escapeHtml(lead)} · ${escapeHtml(team.name)}<span class="channel-sub">You're talking to ${escapeHtml(lead)}, the team lead. @mention a teammate to reach them directly.</span></div>`;
   if (!msgs.length) {
-    thread.innerHTML = head + `<div class="empty">No channel messages yet. @mention a teammate in a message to coordinate.</div>`;
+    thread.innerHTML = head + `<div class="empty">Say hi to ${escapeHtml(lead)}. They'll bring in teammates when the work needs it.</div>`;
     return;
   }
   thread.innerHTML = head + msgs.slice(-100).map((m) => namedBubble(m, m.speakerRole !== "user")).join("");
   thread.scrollTop = thread.scrollHeight;
   const input = $<HTMLTextAreaElement>('textarea[name="q"]');
-  if (input) input.placeholder = `Message # ${team.name} channel · @name to wake a teammate`;
+  if (input) input.placeholder = `Message ${lead} · @name to reach a teammate`;
 }
 
 function paintChat(bot: Bot | null | undefined): void {
@@ -2233,7 +2237,10 @@ function paintChat(bot: Bot | null | undefined): void {
   bindActivityFold(thread);
   if (!Array.isArray(bot.messages)) bot.messages = [];
   const chTeam = teamOf(bot);
-  if (state.channelTeamId && chTeam && chTeam.id === state.channelTeamId) {
+  // The lead has no private thread: selecting the chief of a team IS the
+  // channel view, however you got there (tab, rail, restore).
+  const leadView = Boolean(chTeam && bot.teamRole === "chief" && teamBots(chTeam).length >= 2);
+  if (chTeam && (leadView || (state.channelTeamId && chTeam.id === state.channelTeamId))) {
     renderTeamChannel(thread, chTeam);
     return;
   }
@@ -3413,9 +3420,18 @@ function paintTeamTabs(bot: Bot): void {
   }
   host.hidden = false;
   host.closest(".chat-head")?.classList.add("has-tabs");
-  const chOn = state.channelTeamId === team.id;
-  const channelTab = `<button type="button" class="chrome-tab channel-tab ${chOn ? "on" : ""}" data-act="team-channel" data-id="${team.id}" title="Shared team channel"><span class="chrome-tab-title"># Channel</span></button>`;
+  // The channel IS the conversation with the lead, like the bot app: one chief
+  // you talk to in the main tab, who opens and directs workers. So the first
+  // tab is the chief (avatar + name), the chief gets no separate tab, and
+  // having the chief selected lights this tab.
+  const chief = members.find((b) => b.teamRole === "chief") || members[0];
+  const chOn = state.channelTeamId === team.id || bot.id === chief?.id;
+  const channelTab = `<button type="button" class="chrome-tab channel-tab ${chOn ? "on" : ""} ${chief?.busy ? "busy" : ""}" data-act="team-channel" data-id="${team.id}" title="${escapeHtml(chief ? `${chief.name} · Lead of ${team.name}` : team.name)}">
+    ${chief ? `<span class="chrome-tab-ico" data-avatar="${chief.id}" data-avatar-slot="tab" data-avatar-size="22" data-avatar-framing="body"></span>` : ""}
+    <span class="chrome-tab-title">${escapeHtml(chief?.name || team.name)}</span>
+  </button>`;
   host.innerHTML = channelTab + members
+    .filter((b) => b.id !== chief?.id)
     .map((b) => {
       const memberOn = !chOn && b.id === bot.id;
       const role = b.teamRole === "chief" ? "Chief" : b.teamRole === "worker" ? "Worker" : "";
@@ -3497,8 +3513,9 @@ function paintChatPane(bot: Bot | null): void {
     const mates = teamBots(team).filter((b) => b.id !== bot.id);
     const inChannel = Boolean(state.channelTeamId && team && team.id === state.channelTeamId);
     if (input) {
+      const lead = teamBots(team).find((b) => b.teamRole === "chief")?.name || "the lead";
       input.placeholder = inChannel
-        ? `Message # ${team!.name} channel · @name to wake a teammate`
+        ? `Message ${lead} · @name to reach a teammate`
         : mates.length
           ? `Message ${bot.name} · @name to ping a teammate`
           : `Message ${bot.name}`;
@@ -6818,7 +6835,17 @@ const ACTIONS: Record<string, ActHandler> = {
     return;
   },
   "team-channel": (_e, { el }) => {
-    state.channelTeamId = el.dataset.id || "";
+    const teamId = el.dataset.id || "";
+    state.channelTeamId = teamId;
+    // The channel is the lead's conversation, so the chief becomes the active
+    // bot — the screen pane and everything keyed off the selection follow it.
+    const chief = viewBots().find((x) => x.teamId === teamId && x.teamRole === "chief");
+    if (chief) {
+      rememberSelected(chief.id);
+      if (!isCloudPlace()) api(`/api/teams/${teamId}/focus`, { method: "POST", body: { botId: chief.id } }).catch(() => {});
+      render();
+      return;
+    }
     const b = viewBots().find((x) => x.id === state.selected) || viewBots()[0];
     if (b) {
       paintChat(b);
@@ -8576,8 +8603,12 @@ async function onSend(e: ComposerSubmit): Promise<void> {
   // Channel view: the message belongs to the shared team channel, not the
   // selected bot. Local posts to the team channel (with @mention wake); cloud
   // has no channel backend yet, so it routes to the team's chief to coordinate.
-  const channelTeam = state.channelTeamId ? teamOf(bot) : null;
-  if (channelTeam && channelTeam.id === state.channelTeamId) {
+  // The lead has no private thread, so having the chief selected is the
+  // channel view too — same as paintChat.
+  const ownTeam = teamOf(bot);
+  const leadView = Boolean(ownTeam && bot?.teamRole === "chief" && teamBots(ownTeam).length >= 2);
+  const channelTeam = ownTeam && (leadView || (state.channelTeamId && ownTeam.id === state.channelTeamId)) ? ownTeam : null;
+  if (channelTeam) {
     ((channelTeam.messages ||= []) as Message[]).push({
       id: `pending-${Date.now()}`, role: "user", content, ts: Date.now(), speakerId: "user", speakerName: "You",
     });

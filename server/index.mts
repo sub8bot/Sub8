@@ -2178,23 +2178,11 @@ app.post("/api/teams/:id/messages", async (req, res) => {
   const targets = [...new Set([...asked, ...tagged])].filter((id) => members.some((b) => b.id === id));
   // `filter(Boolean)` drops the empty team's `undefined`; TypeScript does not
   // read that, so the ids it leaves behind are stated here.
+  // An un-mentioned message goes to the lead. The chief decides whether and
+  // how to delegate (create_teammate / message_teammate / set_job) — the
+  // server no longer pre-assigns every worker a job step on the first message,
+  // which turned a plain "hi" into a three-step job card.
   const deliver = targets.length ? targets : ([team.chiefId || team.memberIds?.[0]].filter(Boolean) as string[]);
-  if (!team.job) {
-    const workers = members.filter((m) => m.teamRole !== "chief");
-    if (workers.length) {
-      const seeded = await teams.setTeamJob(team.id, {
-        title: teams.jobTitleFromText(text, team.name),
-        steps: [
-          ...workers.map((w) => ({ label: w.name, bot_id: w.id })),
-          { label: "Summary", bot_id: team.chiefId },
-        ],
-      });
-      if (seeded?.job) {
-        broadcast("job", { teamId: team.id, job: seeded.job });
-        broadcast("teams", await publicTeams());
-      }
-    }
-  }
   for (const id of deliver) {
     await store.patchBot(id, (b) => {
       b.messages = b.messages || [];
@@ -2853,6 +2841,30 @@ async function shortStepPing(bot: IndexBot | null | undefined): Promise<string> 
   return "done";
 }
 
+/**
+ * The team channel IS the conversation with the lead — there is no separate
+ * chief tab. So the chief's plain final reply must land in the channel, not
+ * only in its own thread. send_message already posts to the channel itself, so
+ * dedup by speaker+content against the recent log: mirror only what isn't
+ * there yet, never double a message the chief posted on purpose.
+ */
+async function mirrorChiefReplyToChannel(bot: IndexBot | null | undefined, last: { content?: unknown } | null | undefined): Promise<void> {
+  if (bot?.teamRole !== "chief" || !bot.teamId || !last) return;
+  const content = String(last.content || "").trim();
+  if (!content) return;
+  const recent = (await teams.loadMessages(bot.teamId)).slice(-30);
+  const dup = recent.some((m) => m.speakerId === bot.id && String(m.content || "").trim() === content);
+  if (dup) return;
+  const posted = await teams.appendMessage(bot.teamId, {
+    role: "assistant",
+    speakerId: bot.id,
+    speakerName: bot.name,
+    speakerRole: "chief",
+    content,
+  });
+  broadcast("team-message", { teamId: bot.teamId, ...posted });
+}
+
 async function finalizeChiefJob(bot: IndexBot | null | undefined) {
   if (bot?.teamRole !== "chief" || !bot.teamId) return null;
   const team = await teams.getTeam(bot.teamId);
@@ -3463,7 +3475,10 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
     {
       const latest = await store.getBot(botId) as IndexBot | null;
       const last = [...(latest?.messages || [])].reverse().find((m) => m.role === "assistant" && String(m.content || "").trim() && m.kind !== "choices");
-      if (last && latest?.teamRole === "chief") await finalizeChiefJob(latest);
+      if (last && latest?.teamRole === "chief") {
+        await finalizeChiefJob(latest);
+        await mirrorChiefReplyToChannel(latest, last);
+      }
     }
     // Don't let a long turn resurrect routines/vm state deleted while it ran.
     const latest = await store.getBot(botId) as IndexBot | null;
