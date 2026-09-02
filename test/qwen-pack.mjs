@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { extractToolCallsFromContent, localContinueQuery, localWantsTools, looksLikeDesktopTask, qwenSafeMessages } from "../server/agent.mjs";
+import { extractToolCallsFromContent, localContinueQuery, localWantsTools, qwenSafeMessages } from "../server/agent.mjs";
 
 const short = "Continue the desktop job.";
 assert.equal(localContinueQuery(short), short);
@@ -33,11 +33,11 @@ assert.equal(typeof lastShell.content, "string");
 assert.equal(packedShell.filter((m) => Array.isArray(m.content)).length, 0);
 assert.match(lastShell.content, /Do not re-cat notes/);
 
-assert.equal(looksLikeDesktopTask("resume"), false, "cloud path must not treat resume as a new desktop job");
-assert.equal(looksLikeDesktopTask("open gmail"), true);
-assert.equal(looksLikeDesktopTask("what is 2+2?"), false);
-assert.equal(localWantsTools("resume", 0), true);
-assert.equal(localWantsTools("keep going", 0), true);
+// localWantsTools reads no words: whether the FIRST step needs a tool is the
+// model's call; after a tool step it stays "required" so a small local model
+// does not drift back into narrating.
+assert.equal(localWantsTools("resume", 0), false);
+assert.equal(localWantsTools("open gmail", 0), false);
 assert.equal(localWantsTools("hi", 2), true);
 assert.equal(localWantsTools("what is 2+2?", 0), false);
 

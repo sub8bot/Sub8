@@ -12,7 +12,6 @@ import * as vm from "../server/vm.mjs";
 import { listComputers, computerForBot } from "../server/computers.mjs";
 import { requireVm, assertVmShell, isHostPath } from "../server/isolation.mjs";
 import * as routines from "@sub8/automations";
-import { isChatQuestion } from "../server/agent.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 process.chdir(root);
@@ -129,13 +128,6 @@ Rating: 4.6 ★ · 1,530 reviews.`;
     routines.looksLikeSchedule("Scout replies:\nVerified Kuma Sushi 4.7 on Google Maps, display :4."),
     false,
   );
-});
-
-test("can you open chrome is work, not a chat question", () => {
-  assert.equal(isChatQuestion("can you open chrome"), false);
-  assert.equal(isChatQuestion("search google flights"), false);
-  assert.equal(isChatQuestion("why didn't that work?"), true);
-  assert.equal(isChatQuestion("what are you doing?"), true);
 });
 
 test("upsert refuses a check-again one-liner", () => {

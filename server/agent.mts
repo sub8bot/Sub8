@@ -29,7 +29,7 @@ import * as deskClient from "./desk-client.mjs";
 import { ensureLocalHarness } from "./desk-harness/local.mjs";
 import * as bgShell from "@sub8/shell-exec";
 import { enqueueWake } from "@sub8/wakes";
-import { sendToAgent, sendToAgentContent, isSilentReply } from "./teammate.mjs";
+import { sendToAgent, sendToAgentContent } from "./teammate.mjs";
 
 bgShell.setOnCompleteWake((w) => {
   try {
@@ -512,34 +512,12 @@ function endTurnKeepBot(id: string): void {
   if (typeof endTurnFn === "function") endTurnFn(id);
 }
 
-export function isChatQuestion(text: unknown): boolean {
-  const t = String(text || "").trim();
-  if (!t) return false;
-  if (/^(stop|halt|cancel|never mind)\b/i.test(t)) return false;
-  if (/\b(go )?(post|tweet|publish) (it|now|this)\b/i.test(t)) return false;
-  if (/\b(open|click|type|go to|search|navigate|try again|resume|screenshot)\b/i.test(t)) return false;
-  if (/^(can you|could you|would you|please)\b/i.test(t) && looksLikeDesktopTask(t)) return false;
-  if (/\bwhy\b/i.test(t)) return true;
-  if (/\b(answer|explain|you should)\b/i.test(t) && !/\bpost it\b/i.test(t)) return true;
-  if (/^(what|how|when|where|who|did|do you|have you|are you)\b/i.test(t)) return true;
-  return /\?$/.test(t);
-}
-
 export async function orchestratorReply({ bot, settings, userText }: { bot: AgentBot; settings: AgentSettings; userText: string }): Promise<string | null> {
   const harness = resolveClient(settings);
   if (harness.kind !== "openai") return null;
-  const isStatus = (t: unknown): boolean =>
-    /what are you (doing|working)|status\??$|still (working|there)\??/i.test(String(t || "").trim());
   const lastTask = [...(bot.messages || [])]
     .reverse()
-    .find(
-      (m) =>
-        m.role === "user" &&
-        !m.hidden &&
-        !isStatus(m.content) &&
-        String(m.content || "").trim() !== String(userText || "").trim() &&
-        !isChatQuestion(m.content),
-    );
+    .find((m) => m.role === "user" && !m.hidden && String(m.content || "").trim() !== String(userText || "").trim());
   const work = (bot.messages || [])
     .filter((m) => m.kind === "tool")
     .slice(-16)
@@ -551,11 +529,11 @@ export async function orchestratorReply({ bot, settings, userText }: { bot: Agen
     messages: [
       {
         role: "system",
-        content: `You are ${bot.name}. First person only: I, me, my. Never say worker or orchestrator. Answer the user's actual question from the action list. If they ask why work is unfinished, be specific (typed a draft then clicked the text instead of Post; missed the Reply button by a few pixels; opened another tab). Do not use a canned line.`,
+        content: `You are ${bot.name}, in the middle of computer work. Answer the user's message from what you have actually done so far, in the first person, briefly and specifically.`,
       },
       {
         role: "user",
-        content: `Standing job:\n${String(lastTask?.content || "the current computer work").slice(0, 400)}\n\nWhat I actually did on the computer:\n${work || "nothing logged yet"}\n\nUser:\n${userText}`,
+        content: `What I was asked to do:\n${String(lastTask?.content || "the current computer work").slice(0, 400)}\n\nWhat I have actually done so far:\n${work || "nothing logged yet"}\n\nUser:\n${userText}`,
       },
     ],
     max_tokens: 180,
@@ -1059,12 +1037,7 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
 
   if (harness.kind === "grok-build") {
     if (!bot.grokSessionId) bot.grokSessionId = bot.id;
-    const desktop = looksLikeDesktopTask(userText);
-    const grokText = savedLogin?.did
-      ? `${userText}\n\n${savedLogin.brief}`
-      : desktop
-        ? `${userText}\n\nUse the desktop this turn. Open a URL with /usr/local/bin/chrome-desktop 'https://…' (replaces the current tab). Then look at the screen. Do not only send a text plan. Never --new-tab.`
-        : userText;
+    const grokText = savedLogin?.did ? `${userText}\n\n${savedLogin.brief}` : userText;
     emit("tool", { name: "computer", args: { action: "screenshot" } });
     const work = {
       id: `tl${Date.now()}gb`,
@@ -1082,7 +1055,7 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
     const msg = { id: `a${Date.now()}`, role: "assistant", content: text, ts: Date.now() };
     bot.messages.push(msg);
     emit("message", msg);
-    if (desktop && bot.vm?.status === "running") {
+    if (bot.vm?.status === "running") {
       try {
         // `as AgentDeskBot` here and at every other desk call in this file: the
         // guard on the line above (or, in `execTool`, the `hostTools` gate) has
@@ -1151,9 +1124,7 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
       }
       history.push({
         role: "user",
-        content: incoming.some((t) => isChatQuestion(t))
-          ? "The user asked a question in chat. It was already answered there in first person. Do NOT treat that question as a new computer task. Do not start posting or change what you are doing unless they explicitly said to post/do it now."
-          : "The user sent a chat message while you were working. It was already answered in chat. If they asked to stop or change course, follow that. If they asked you to do the thing now, do it. Otherwise continue the same computer work.",
+        content: "The message(s) above arrived while you were working. If they change what you should do, do that. If they ask something, answer it in one line with send_message. Otherwise continue the same work.",
       });
     }
     const resp = local
@@ -1197,11 +1168,7 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
         usedComputer = false;
         continue;
       }
-      if (
-        ((!usedComputer && looksLikeDesktopTask(userText)) ||
-          (local && (planning || localWantsTools(userText, 0)))) &&
-        steps < maxSteps - 1
-      ) {
+      if (local && (planning || localWantsTools(userText, 0)) && steps < maxSteps - 1) {
         history.push({ role: "assistant", content: lastVisible });
         history.push({
           role: "user",
@@ -1502,18 +1469,14 @@ function isDone(text: string | null | undefined): boolean {
   );
 }
 
-export function looksLikeDesktopTask(text: unknown): boolean {
-  return /\b(chrome|browser|click|desktop|computer|screenshot|flight|google|open |type |search|x\.com|twitter|post|tab|log\s*in|sign\s*in|gmail)\b/i.test(
-    String(text || ""),
-  );
-}
-
-export function localWantsTools(userText: unknown, toolSteps: number = 0): boolean {
-  return (
-    Number(toolSteps) > 0 ||
-    looksLikeDesktopTask(userText) ||
-    /\b(resume|continue|keep going|try again|same task)\b/i.test(String(userText || ""))
-  );
+/**
+ * Small-local-model crutch (Ollama / LM Studio): once the model has taken a
+ * tool step, keep tool_choice "required" so it does not drift back into
+ * narrating. Whether the FIRST step needs a tool is the model's call — there is
+ * no reading of the user's words here.
+ */
+export function localWantsTools(_userText: unknown, toolSteps: number = 0): boolean {
+  return Number(toolSteps) > 0;
 }
 
 export function extractToolCallsFromContent(content: unknown): ToolCall[] {
@@ -1786,10 +1749,6 @@ async function execTool(
     }
     if (name === "send_message") {
       if (bot.awaitingUserSelection) return { text: AWAITING_BLOCKED };
-      // The lead's "nothing to add" result after a teammate report: dropped,
-      // never shown. Gives the harness its one send_message without inventing
-      // "standing by" for the user to read.
-      if (isSilentReply(args.content)) return { text: "ok — nothing sent" };
       // `as unknown as`: from here the card is a chat row. @sub8/choice models it
       // as an interface, which carries no implicit index signature and so does not
       // overlap the open JSON row type this file and @sub8/store share — the two
@@ -1805,6 +1764,13 @@ async function execTool(
           b.awaitingUserSelection = true;
         });
         await Promise.resolve(emit("message", card));
+        // The lead asking the user a question must show in the team channel —
+        // that is where the user talks to the lead. Same id, so a pick made
+        // from the channel answers this card.
+        if (bot.teamId && bot.teamRole === "chief") {
+          const posted = await teams.appendMessage(bot.teamId, { ...(card as unknown as Record<string, unknown>), speakerId: bot.id, speakerName: bot.name, speakerRole: "chief" });
+          emit("team-message", { teamId: bot.teamId, ...posted });
+        }
         endTurnKeepBot(bot.id);
         return { text: "asked the user; wait for their pick in chat", endTurn: true };
       }
@@ -1831,15 +1797,15 @@ async function execTool(
             emit("job", { teamId: bot.teamId, job });
           }
         }
-        // Group-channel routing: the message is visible to the whole team in the
-        // shared log; wake only the @mentioned + keyword-subscribed members so a
-        // broadcast coordinates on one bus without spinning up every teammate.
+        // Everyone sees the message in the shared log; only the teammates the
+        // sender addressed are woken — named in `to`, or @mentioned in the text.
         const bots = await store.loadBots();
         const roster = teams.membersOf(team, bots).map((b) => {
-          const bb = b as { id: string; name?: string; teamRole?: string; channelKeywords?: readonly string[]; channelState?: "active" | "hold" };
-          return { id: bb.id, name: bb.name, teamRole: bb.teamRole, channelKeywords: bb.channelKeywords, channelState: bb.channelState };
+          const bb = b as { id: string; name?: string; teamRole?: string; channelState?: "active" | "hold" };
+          return { id: bb.id, name: bb.name, teamRole: bb.teamRole, channelState: bb.channelState };
         });
-        const { wake } = teams.routeChannelMessage({ authorId: bot.id, text: out.content, members: roster });
+        const to = Array.isArray(args.to) ? args.to : args.to ? [args.to] : [];
+        const { wake } = teams.routeChannelMessage({ authorId: bot.id, text: out.content, members: roster, to });
         if (wake.length && typeof dispatchTeammate === "function") {
           for (const id of wake) dispatchTeammate(id, out.content, bot);
         }
@@ -1894,9 +1860,6 @@ async function execTool(
       }
       // `!` here and on the two `bot.teamId` reads below: `mate` is only non-null
       // when `team` was, and `team` is only non-null when this bot has a teamId.
-      if (bot.teamRole === "chief" && (await teams.isDuplicateHandoff(bot.teamId!, bot.id, mate.id, content))) {
-        return { text: `already handed to ${mate.name}; they are working on it — wait for their reply` };
-      }
       const posted = await teams.appendMessage(bot.teamId!, {
         role: "assistant",
         speakerId: bot.id,

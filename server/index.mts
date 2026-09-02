@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import * as store from "@sub8/store";
 import * as vm from "./vm.mjs";
 import * as routines from "@sub8/automations";
-import { runTurn, publicBot, pingHarness, webSearch, orchestratorReply, isChatQuestion, HARNESS_PROVIDERS, harnessFor, setTeamDispatch, setTeamReply, setStopBot, setEndTurn } from "./agent.mjs";
+import { runTurn, publicBot, pingHarness, webSearch, orchestratorReply, HARNESS_PROVIDERS, harnessFor, setTeamDispatch, setTeamReply, setStopBot, setEndTurn } from "./agent.mjs";
 import { detectLocalHarnesses } from "./local-llm.mjs";
 import { collectHarnessStatus } from "./harness-status.mjs";
 import * as identities from "./identities.mjs";
@@ -1318,9 +1318,6 @@ app.post("/api/internal/desk-tool", async (req, res) => {
             who: bot.name,
             role: bot.teamRole || "chief",
             text: content,
-            followUp: teammate.isFollowUpDispatch(
-              ((liveBot.messages || []).slice(0, -1) as teammate.DispatchMessage[]),
-            ),
           }),
           false,
           [],
@@ -2885,7 +2882,7 @@ function dispatchToTeammate(toId: string, content: unknown, from: DispatchFrom |
       b.messages.push(incoming);
     });
     broadcast("message", { botId: toId, ...incoming });
-    const prompt = teammate.wrapWorkerDispatch({ who, role, text, followUp });
+    const prompt = teammate.wrapWorkerDispatch({ who, role, text });
     const inflight = inflightTurns.get(toId);
     if (inflight && followUp) {
       inflight.nudges.push(prompt);
@@ -2910,25 +2907,21 @@ async function shortStepPing(bot: IndexBot | null | undefined): Promise<string> 
 }
 
 /**
- * The team channel IS the conversation with the lead — there is no separate
- * chief tab. So the chief's plain final reply must land in the channel, not
- * only in its own thread. send_message already posts to the channel itself, so
- * dedup by speaker+content against the recent log: mirror only what isn't
- * there yet, never double a message the chief posted on purpose.
+ * The lead's final message on a USER turn is its answer to the user — the
+ * same rule workers have (deliverWorkerAnswer). `claude -p` returns its answer
+ * as final text; in a 1:1 thread that was always visible, so the harness never
+ * needed send_message for chat. Deliver it to the channel unless the lead
+ * already spoke there this turn (a delegation line or a send_message) — then
+ * that IS the reply and a trailing "done, they'll get to it" stays private.
+ * Report turns come through too: a combined answer the lead wrote as text
+ * must reach the user; when it has nothing to add it is asked to write nothing.
  */
-async function mirrorChiefReplyToChannel(bot: IndexBot | null | undefined, last: { content?: unknown } | null | undefined, since = 0): Promise<void> {
+async function deliverLeadAnswer(bot: IndexBot | null | undefined, last: { content?: unknown } | null | undefined, since: number): Promise<void> {
   if (bot?.teamRole !== "chief" || !bot.teamId || !last) return;
   const content = String(last.content || "").trim();
-  if (!content || teammate.isSilentReply(content)) return;
+  if (!content) return;
   const recent = (await teams.loadMessages(bot.teamId)).slice(-30);
-  // Same line already posted THIS turn (send_message) → not doubled. Scoped to
-  // the turn so an honest repeat of an old line is not swallowed.
-  const dup = recent.some((m) => m.speakerId === bot.id && (since <= 0 || Number(m.ts || 0) >= since) && String(m.content || "").trim() === content);
-  if (dup) return;
-  // The lead already spoke in the channel during this turn — a delegation
-  // ("→ Nova: say hello") or a send_message. That line IS the reply; a plain
-  // final line after it is almost always mechanics ("Message sent. Waiting…").
-  const spokeThisTurn = since > 0 && recent.some((m) => m.speakerId === bot.id && Number(m.ts || 0) >= since);
+  const spokeThisTurn = recent.some((m) => m.speakerId === bot.id && Number(m.ts || 0) >= since);
   if (spokeThisTurn) return;
   const posted = await teams.appendMessage(bot.teamId, {
     role: "assistant",
@@ -2977,26 +2970,20 @@ async function deliverTeammateReply(toId: string | null | undefined, from: Dispa
   if (!liveBot) return;
   broadcast("message", { botId: toId, ...incoming });
   const team = from?.teamId ? await teams.getTeam(from.teamId) : (to?.teamId ? await teams.getTeam(to.teamId) : null);
-  const followUp = to?.teamRole === "chief" && teams.isChiefFollowUpReport(team?.job);
-  // Make the report self-contained: what the lead handed this worker, and the
-  // user's request that led to it. Both live in the lead's own thread — the
-  // "To Nova: …" note and the channel message pushed before it.
-  let asked = "";
+  // Context for the lead, from the channel's own rows (a directed message
+  // carries toName + the raw text): the user's request, and everything the
+  // lead handed out since then.
   let userAsk = "";
   const handed: string[] = [];
-  if (to?.teamRole === "chief" && from?.id) {
-    const rows = to.messages || [];
-    const strip = (c: unknown) => String(c || "").replace(/^To [^:]+:\s*/i, "").trim();
-    const noteAt = rows.map((m, i) => ({ m, i })).reverse().find(({ m }) => m.toId === from.id && m.role === "assistant");
-    if (noteAt) {
-      asked = strip(noteAt.m.content);
-      const askIdx = rows.slice(0, noteAt.i).map((m, i) => ({ m, i })).reverse().find(({ m }) => m.role === "user" && (m.speakerRole === "user" || !m.speakerRole));
-      userAsk = String(askIdx?.m.content || "").trim();
-      // Every delegation since that ask (to anyone), so the lead never hands
-      // the same thing out twice while a teammate is still working on it.
-      for (const m of rows.slice(askIdx ? askIdx.i : 0)) {
-        if (m.role === "assistant" && m.toId && m.toName) handed.push(`${m.toName}: ${strip(m.content)}`);
-      }
+  if (to?.teamRole === "chief" && team) {
+    const rows = await teams.loadMessages(team.id);
+    let askIdx = -1;
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (rows[i]!.speakerRole === "user") { askIdx = i; break; }
+    }
+    userAsk = askIdx >= 0 ? String(rows[askIdx]!.content || "").trim() : "";
+    for (const m of rows.slice(askIdx >= 0 ? askIdx : 0)) {
+      if (m.speakerId === to.id && m.toName) handed.push(`${m.toName}: ${String(m.content || "").trim()}`);
     }
   }
   const runReport = (llm: string) => {
@@ -3023,15 +3010,8 @@ async function deliverTeammateReply(toId: string | null | undefined, from: Dispa
     outstandingFor.set(toId, new Set());
     if (!replies.length) return;
     const only = replies.length === 1 ? replies[0]! : null;
-    // One teammate answered and nothing is being tracked: the user sees the
-    // answer in the channel and there is nothing to combine — no report turn.
-    // (The report row is already in the lead's thread for memory.) A lead
-    // turn here only ever produced "Done." / "Asking X…" for the user to read.
-    if (only && !team?.job) return;
     runReport(
       teammate.chiefReportLlm(only ? only.name : "Your teammates", only ? only.text : "", {
-        followUp,
-        asked: only ? asked : "",
         userAsk,
         handed: [...new Set(handed)],
         replies: only ? undefined : replies,
@@ -3056,10 +3036,9 @@ async function deliverTeammateReply(toId: string | null | undefined, from: Dispa
 async function deliverWorkerAnswer(chiefId: string, worker: IndexBot | null | undefined, fallback: string, since = 0): Promise<void> {
   if (!worker || !chiefId) return;
   if (worker.teamId) {
-    // If the worker already spoke in the channel during this turn (it
-    // send_message'd its answer), THAT is its answer: report it to the lead
-    // and do not append its trailing plain text ("Done.") as a second bubble —
-    // which also fed the lead "Done." as the reply and made it re-ask.
+    // The worker already spoke in the channel this turn (send_message): that
+    // is its answer — report it to the lead, and do not also post its closing
+    // plain text as a second bubble.
     const recent = (await teams.loadMessages(worker.teamId)).slice(-30);
     const spoke = recent.filter((m) => m.speakerId === worker.id && !m.toId && Number(m.ts || 0) >= since && String(m.content || "").trim());
     if (since > 0 && spoke.length) {
@@ -3069,20 +3048,10 @@ async function deliverWorkerAnswer(chiefId: string, worker: IndexBot | null | un
   }
   const last = [...(worker.messages || [])]
     .reverse()
-    .find((m) => m.role === "assistant" && String(m.content || "").trim() && !m.kind && !m.toId);
+    .find((m) => m.role === "assistant" && String(m.content || "").trim() && !m.kind && !m.toId && (since <= 0 || Number(m.ts || 0) >= since));
   const answer = String(last?.content || "").trim() || fallback;
   if (!answer) return;
   if (worker.teamId) {
-    // A worker that already posted this exact line THIS turn is not doubled.
-    // Scoped to the turn: across turns a repeat is legitimate — a worker asked
-    // twice for a random number said "42" both times, and the second was
-    // silently dropped as a duplicate of the first.
-    const recent = (await teams.loadMessages(worker.teamId)).slice(-30);
-    const already = recent.some((m) => m.speakerId === worker.id && Number(m.ts || 0) >= since && String(m.content || "").trim() === answer);
-    if (already) {
-      await deliverTeammateReply(chiefId, worker, answer);
-      return;
-    }
     const posted = await teams.appendMessage(worker.teamId, {
       role: "assistant",
       speakerId: worker.id,
@@ -3518,12 +3487,10 @@ async function talkWhileWorking(botId: string, text: string): Promise<void> {
   if (!bot) return;
   // Same two spellings as `runTurn` below: agent.mts names its own slice of a
   // bot row and of the settings record.
-  let content = await orchestratorReply({ bot, settings, userText: text } as Parameters<typeof orchestratorReply>[0]);
-  if (!content) {
-    content = isChatQuestion(text)
-      ? "Still working on my computer. I'll keep going and pick this up in a moment."
-      : "Got it. I'll use that while I keep working.";
-  }
+  // Only an API-model harness can answer in-line while the turn runs; otherwise
+  // the running turn already has the message as a nudge and answers it itself.
+  const content = await orchestratorReply({ bot, settings, userText: text } as Parameters<typeof orchestratorReply>[0]);
+  if (!content) return;
   const out = {
     id: `o${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
     role: "assistant",
@@ -3663,13 +3630,16 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
     }
     {
       const latest = await store.getBot(botId) as IndexBot | null;
-      const last = [...(latest?.messages || [])].reverse().find((m) => m.role === "assistant" && String(m.content || "").trim() && m.kind !== "choices");
-      if (last && latest?.teamRole === "chief") {
-        await finalizeChiefJob(latest);
-        // A report turn speaks only via send_message — the user already sees
-        // the worker's reply; mirroring the lead's reaction is the narration
-        // ("Pixel has reported completion…") we are removing.
-        if (opts.source !== "report") await mirrorChiefReplyToChannel(latest, last, turnStart);
+      // Only THIS turn's final message counts (ts >= turnStart): a turn that
+      // ended in a choices card or tool call must not fall through to an older
+      // turn's text and deliver that as the answer.
+      const last = [...(latest?.messages || [])].reverse().find((m) => m.role === "assistant" && String(m.content || "").trim() && m.kind !== "choices" && Number(m.ts || 0) >= turnStart);
+      if (latest?.teamRole === "chief") {
+        if (last) await finalizeChiefJob(latest);
+        // Every turn, including a report turn: the lead's final message is its
+        // answer (a combined result it computed in text would otherwise be
+        // lost). Nothing to add means it writes nothing — see chiefReportLlm.
+        if (last) await deliverLeadAnswer(latest, last, turnStart);
       }
     }
     // Don't let a long turn resurrect routines/vm state deleted while it ran.

@@ -98,17 +98,3 @@ console.log("ok teams");
   assert.equal(teams.resolveTeammate("", members), null, "empty");
   console.log("PASS resolveTeammate accepts id, name, or id prefix");
 }
-
-// The lead re-issuing the exact same handoff while the worker is still on it
-// is a retry: suppressed. Once the worker answers, the same text is new work.
-{
-  const teams = await import("../server/teams.mjs");
-  const id = "t-dup";
-  await teams.saveTeam({ id, name: "dup", memberIds: ["c", "w"], chiefId: "c" });
-  await teams.appendMessage(id, { role: "assistant", speakerId: "c", speakerName: "C", speakerRole: "chief", toId: "w", toName: "W", content: "Say a random number" });
-  assert.equal(await teams.isDuplicateHandoff(id, "c", "w", "Say a random number"), true, "same text, no reply yet → duplicate");
-  assert.equal(await teams.isDuplicateHandoff(id, "c", "w", "Say hello"), false, "different text → not a duplicate");
-  await teams.appendMessage(id, { role: "assistant", speakerId: "w", speakerName: "W", speakerRole: "worker", content: "42" });
-  assert.equal(await teams.isDuplicateHandoff(id, "c", "w", "Say a random number"), false, "worker answered → the same text is new work");
-  console.log("PASS isDuplicateHandoff suppresses only an in-flight exact repeat");
-}

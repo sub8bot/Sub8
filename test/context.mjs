@@ -26,7 +26,6 @@ ok("bad zone falls back", resolveZone({ userTimeZoneOverride: "Not/AZone" }) ===
 
 const { readFileSync } = await import("node:fs");
 const ctxSrc = readFileSync(new URL("../server/context.mjs", import.meta.url), "utf8");
-ok("chief prompt asks for own steps", /piece you keep/.test(ctxSrc));
 ok("chief prompt forbids extra files", /invent extra files/.test(ctxSrc));
 ok("prompt forces USD on Google", /curr=USD/.test(ctxSrc));
 
@@ -44,7 +43,7 @@ ok(
   "local-adapter: close all bots is delete_teammate, not a job",
   /Closing teammates/i.test(adapter) && /all_workers=true/.test(adapter) && /Do NOT [`']?set_job/.test(adapter),
 );
-ok("chief prompt: closing bots is delete_teammate", /Closing\/removing bots is not a job/.test(ctxSrc));
+ok("chief prompt: closing bots is delete_teammate", /delete_teammate/.test(ctxSrc));
 ok("local-adapter: never second VM, never narrate box", /Never a second VM/.test(adapter) && /Never narrate "box"/.test(adapter));
 ok("local-adapter does not call itself orchestrator as a role", !/\bI am (the )?orchestrator\b/i.test(adapter));
 ok(

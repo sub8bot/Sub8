@@ -1,80 +1,65 @@
-// Stage 1: the group-channel router — broadcast visibility, targeted wake.
+// The team-channel router: everyone sees a message; only the teammates the
+// sender ADDRESSED are woken — named in the tool's `to` list, or @mentioned in
+// the text (the human's addressing syntax). No keyword matching: the sender
+// says who it wants; the model does the thinking, the router does the plumbing.
 import assert from "node:assert/strict";
-import { routeChannelMessage, channelKeywordsFor, mentionedMemberIds, deriveChannelKeywords } from "../server/teams.mjs";
+import { routeChannelMessage, mentionedMemberIds, resolveTeammate } from "../server/teams.mjs";
 
 const members = [
   { id: "chief", name: "Job Hunter Lead", teamRole: "chief" },
-  { id: "scout", name: "FDE Scout", teamRole: "worker", channelKeywords: ["sourcing", "roles"] },
-  { id: "closer", name: "App Closer", teamRole: "worker", channelKeywords: ["apply", "submit"] },
-  { id: "ops", name: "Pipeline Ops", teamRole: "worker", channelKeywords: ["tracker", "pipeline"] },
+  { id: "scout", name: "FDE Scout", teamRole: "worker" },
+  { id: "closer", name: "App Closer", teamRole: "worker" },
+  { id: "ops", name: "Pipeline Ops", teamRole: "worker" },
 ];
 let pass = 0, fail = 0;
 function t(name, fn) { try { fn(); pass++; console.log("PASS", name); } catch (e) { fail++; console.log("FAIL", name, "-", e.message); } }
 
-t("@mention wakes exactly the named member, not the author", () => {
+t("`to` (names or ids) wakes exactly those members, not the author", () => {
+  const r = routeChannelMessage({ authorId: "chief", text: "sourcing batch is ready", members, to: ["App Closer", "ops"] });
+  assert.deepEqual(r.wake.sort(), ["closer", "ops"]);
+});
+
+t("@mention in the text wakes the named member", () => {
   const r = routeChannelMessage({ authorId: "chief", text: "@App Closer submit OpenRouter FDE now", members });
   assert.deepEqual(r.wake, ["closer"]);
   assert.deepEqual(r.mentioned, ["closer"]);
 });
 
-t("@role wakes the member with that role", () => {
+t("@role wakes every member with that role", () => {
   const r = routeChannelMessage({ authorId: "chief", text: "@worker heads up", members });
   assert.deepEqual(r.wake.sort(), ["closer", "ops", "scout"]);
 });
 
-t("a keyword wakes the subscribed member even without an @mention", () => {
-  const r = routeChannelMessage({ authorId: "chief", text: "who owns the tracker this week?", members });
-  assert.deepEqual(r.wake, ["ops"]);
-  assert.deepEqual(r.keyworded, ["ops"]);
+t("`to` and @mentions union, deduped, author excluded", () => {
+  const r = routeChannelMessage({ authorId: "scout", text: "@Pipeline Ops the batch is on file", members, to: ["FDE Scout", "Pipeline Ops"] });
+  assert.deepEqual(r.wake, ["ops"], "scout addressed itself → excluded; ops once");
 });
 
-t("mention + keyword union, deduped, author excluded", () => {
-  const r = routeChannelMessage({ authorId: "scout", text: "@Pipeline Ops the sourcing batch is on file", members });
-  // ops is @mentioned; scout owns 'sourcing' keyword but is the author → excluded
-  assert.deepEqual(r.wake, ["ops"]);
-});
-
-t("no mention, no keyword → nobody is woken (visible-only broadcast)", () => {
-  const r = routeChannelMessage({ authorId: "chief", text: "morning everyone", members });
+t("a message that names nobody wakes nobody — a keyword in the text is NOT an address", () => {
+  const r = routeChannelMessage({ authorId: "chief", text: "who owns the tracker and the pipeline this week?", members });
   assert.deepEqual(r.wake, []);
+  assert.deepEqual(routeChannelMessage({ authorId: "chief", text: "morning everyone", members }).wake, []);
 });
 
-t("a member on HOLD does not wake on their keyword or mention", () => {
+t("a member on HOLD does not wake, addressed either way", () => {
   const held = members.map((m) => (m.id === "closer" ? { ...m, channelState: "hold" } : m));
-  const r = routeChannelMessage({ authorId: "chief", text: "@App Closer apply now", members: held });
-  assert.deepEqual(r.wake, [], "held member stays parked");
+  assert.deepEqual(routeChannelMessage({ authorId: "chief", text: "@App Closer apply now", members: held }).wake, []);
+  assert.deepEqual(routeChannelMessage({ authorId: "chief", text: "apply now", members: held, to: ["closer"] }).wake, []);
 });
 
-t("keyword matching is whole-word (does not fire on a substring)", () => {
-  const r = routeChannelMessage({ authorId: "chief", text: "the pipelines are fine", members }); // 'pipeline' kw vs 'pipelines'
-  // whole-word: 'pipelines' should NOT match 'pipeline'
-  assert.equal(r.wake.includes("ops"), false);
-  const r2 = routeChannelMessage({ authorId: "chief", text: "check the pipeline.", members });
-  assert.equal(r2.wake.includes("ops"), true, "trailing punctuation still matches");
+t("an unknown name in `to` is ignored, not an error", () => {
+  const r = routeChannelMessage({ authorId: "chief", text: "hi", members, to: ["Nobody", "FDE Scout"] });
+  assert.deepEqual(r.wake, ["scout"]);
 });
 
-t("channelKeywordsFor lowercases and dedupes", () => {
-  assert.deepEqual(channelKeywordsFor({ id: "x", channelKeywords: ["Apply", "apply", " SUBMIT "] }).sort(), ["apply", "submit"]);
-  assert.deepEqual(channelKeywordsFor({ id: "x" }), []);
-});
-
-t("name prefix @mention still works (existing behavior preserved)", () => {
+t("name-prefix @mention still resolves", () => {
   assert.deepEqual(mentionedMemberIds("@FDE hello", members), ["scout"]);
 });
 
-t("deriveChannelKeywords: name words >=3 chars, role, deduped, stopwords dropped", () => {
-  assert.deepEqual(deriveChannelKeywords("Pipeline Ops", "worker").sort(), ["ops", "pipeline"]);
-  assert.deepEqual(deriveChannelKeywords("FDE Scout", "worker").sort(), ["fde", "scout"]);
-  assert.deepEqual(deriveChannelKeywords("New Bot", "worker"), [], "stopwords 'new'/'bot' dropped, nothing left");
-  assert.ok(deriveChannelKeywords("Warm Outreach", "researcher").includes("researcher"), "a real role word is a keyword");
-});
-
-t("a derived keyword actually wakes the member via the router", () => {
-  const m = [
-    { id: "chief", name: "Lead", teamRole: "chief" },
-    { id: "ops", name: "Pipeline Ops", teamRole: "worker", channelKeywords: deriveChannelKeywords("Pipeline Ops", "worker") },
-  ];
-  assert.deepEqual(routeChannelMessage({ authorId: "chief", text: "update the pipeline please", members: m }).wake, ["ops"]);
+t("resolveTeammate: exact id, name (any case), id prefix", () => {
+  assert.equal(resolveTeammate("ops", members)?.name, "Pipeline Ops");
+  assert.equal(resolveTeammate("app closer", members)?.id, "closer");
+  assert.equal(resolveTeammate("nobody", members), null);
 });
 
 console.log(`\n${pass} passed, ${fail} failed`);

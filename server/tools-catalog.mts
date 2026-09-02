@@ -87,12 +87,13 @@ export const TOOLS: ToolSpec[] = [
     function: {
       name: "send_message",
       description:
-        "User-visible chat — your only voice. The user never sees plain assistant text. On a user turn, ack first with send_message before other tools. Ack ≠ delivery: the last send_message is the result. type=widget asks a question (1–6 options) and ENDS the turn; their pick is the next message. type=secret-request asks for a credential via a masked field (never chat paste) and ENDS the turn. Workers: do not report here — message_teammate the chief one line.",
+        "User-visible chat — your only voice. The user never sees plain assistant text. On a user turn, ack first with send_message before other tools (in a team, the lead's delegation line is the ack). Ack ≠ delivery: the last send_message is the result. type=widget asks a question (1–6 options) and ENDS the turn; their pick is the next message. type=secret-request asks for a credential via a masked field (never chat paste) and ENDS the turn. In a team the whole team sees it too; pass `to` (names or ids) to wake specific teammates. A worker's answer to the lead is its final message, not a send_message.",
       parameters: {
         type: "object",
         properties: {
           type: { type: "string", enum: ["text", "widget", "secret-request", "attachment"], description: "Default text." },
           content: { type: "string", description: "Required for type=text." },
+          to: { type: "array", items: { type: "string" }, description: "Teammates to wake with this message (names or ids). Omit for the user only." },
           question: { type: "string", description: "Widget prompt (or use widget.prompt)." },
           hint: { type: "string" },
           choices: {

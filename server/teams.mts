@@ -437,7 +437,6 @@ export async function addMember(
     teamRole: role,
     color: spec.color,
     avatar: spec.avatar,
-    channelKeywords: role === "worker" ? deriveChannelKeywords(mateName, role) : [],
     channelState: "active",
   });
   const src: store.BotVm = chief?.vm || {};
@@ -780,33 +779,6 @@ export function resolveTeammate<T extends { id: string; name?: string | undefine
   return null;
 }
 
-/**
- * The lead is handing a teammate the SAME text it handed them moments ago,
- * and that teammate has not replied since: a retry, not a new task (a slow
- * tool result, a nudged turn re-issuing its plan). Suppress it — a second
- * delegation line and a second worker turn were the only effect. Exact match,
- * bounded window, cleared the moment the worker answers: no intent-guessing.
- */
-export async function isDuplicateHandoff(
-  teamId: string,
-  chiefId: string,
-  workerId: string,
-  content: unknown,
-  windowMs = 3 * 60 * 1000,
-): Promise<boolean> {
-  const text = String(content || "").trim();
-  if (!teamId || !chiefId || !workerId || !text) return false;
-  const rows = (await loadMessages(teamId)).slice(-40);
-  const cutoff = Date.now() - windowMs;
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const m = rows[i]!;
-    if (Number(m.ts || 0) < cutoff) break;
-    if (m.speakerId === workerId && !m.toId) return false; // they answered since
-    if (m.speakerId === chiefId && m.toId === workerId && String(m.content || "").trim() === text) return true;
-  }
-  return false;
-}
-
 export function mentionedMemberIds(text: unknown, members: readonly TeamMember[] | null | undefined): string[] {
   // `!`: the pattern has exactly one group and it is not optional, so group 1
   // participates in every match this iterator yields.
@@ -838,56 +810,24 @@ export async function setChannelState(botId: unknown, state: "active" | "hold"):
   return bot;
 }
 
-export function deriveChannelKeywords(name: unknown, role?: unknown): string[] {
-  const stop = new Set(["the", "and", "bot", "for", "with", "team", "new"]);
-  const words = String(name || "")
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((w) => w.length >= 3 && !stop.has(w));
-  const r = String(role || "").trim().toLowerCase();
-  if (r && r !== "worker" && r !== "chief" && r.length >= 3) words.push(r);
-  return [...new Set(words)];
-}
-
-export function channelKeywordsFor(member: TeamMember | null | undefined): string[] {
-  const out = new Set<string>();
-  for (const k of member?.channelKeywords || []) {
-    const t = String(k || "").trim().toLowerCase();
-    if (t) out.add(t);
-  }
-  return [...out];
-}
-
-function keywordHit(text: string, keyword: string): boolean {
-  if (!keyword) return false;
-  // Whole-word-ish: bounded by non-word chars, so "ops" does not fire on "oops".
-  const esc = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`, "i").test(text);
-}
-
 /**
- * Route one channel message. The shared team log is visible to everyone (the
- * caller appends it there); this decides who is actually WOKEN — i.e. gets a
- * turn started — so a broadcast does not spin up every teammate. A member wakes
- * when they are @mentioned OR one of their subscribed keywords appears, and is
- * neither the author nor on `hold`. This is the group-channel core: broadcast
- * visibility, targeted wake.
+ * Route one channel message: everyone sees it (the caller appends it to the
+ * shared log); this decides who is WOKEN — gets a turn — so a broadcast does
+ * not spin up every teammate. A member wakes when it is addressed: named in
+ * the tool's `to` list, or @mentioned in the text (the human's addressing
+ * syntax). No keyword matching — the sender says who it wants. Never the
+ * author, never a member on hold.
  */
 export function routeChannelMessage(
-  { authorId, text, members }: { authorId?: string | null | undefined; text?: unknown; members?: readonly TeamMember[] | null | undefined },
-): { wake: string[]; mentioned: string[]; keyworded: string[] } {
-  const body = String(text || "");
+  { authorId, text, members, to }: { authorId?: string | null | undefined; text?: unknown; members?: readonly TeamMember[] | null | undefined; to?: readonly unknown[] | null | undefined },
+): { wake: string[]; mentioned: string[] } {
   const roster = members || [];
-  const mentioned = mentionedMemberIds(body, roster);
-  const keyworded: string[] = [];
-  for (const m of roster) {
-    if (m.channelState === "hold") continue;
-    if (channelKeywordsFor(m).some((kw) => keywordHit(body, kw))) keyworded.push(m.id);
-  }
+  const named = (to || []).map((ref) => resolveTeammate(ref, roster)?.id).filter((id): id is string => Boolean(id));
+  const mentioned = [...new Set([...named, ...mentionedMemberIds(String(text || ""), roster)])];
   const author = String(authorId || "");
   const held = new Set(roster.filter((m) => m.channelState === "hold").map((m) => m.id));
-  const wake = [...new Set([...mentioned, ...keyworded])].filter((id) => id !== author && !held.has(id));
-  return { wake, mentioned, keyworded: [...new Set(keyworded)] };
+  const wake = mentioned.filter((id) => id !== author && !held.has(id));
+  return { wake, mentioned };
 }
 
 export const TASK_STATUSES: readonly TaskStatus[] = ["pending", "running", "done", "blocked", "looping"];

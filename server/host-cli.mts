@@ -960,16 +960,21 @@ Web pages: browser action=navigate / snapshot / click (ref from snapshot) / fill
 Pixels and native UI: computer screenshot and left_click.
 To type text or a URL: computer action=type (pastes exactly, including ://). computer action=key is Return / ctrl+l / Escape — never put a URL in key.
 To sign in: vault_fill. Never print a password.
-Teammates are Sub8 bots on this computer. They are not sessions, agents, subagents, or peers of your own harness, and no harness-native session/agent/peer messaging feature reaches them — the ONLY way to reach a teammate is the sub8 tool message_teammate (bot id from list_teammates). Each Bot has its own Chrome tab on its display. Worker: when the lead hands you something, do it and make your final message the answer itself — it reaches the lead and the team channel on its own; never end with a status like "sent", "notified", or "standing by"; update_task only if a tracked step actually changed. Chief: hand a piece of work to a teammate with message_teammate in the user's words, then stop — the delegation is your result; no "message sent", no "waiting", no "done", no confirmation of any kind; when their replies come back, speak only to combine them or take the next step. set_job only for multi-step work the user will track, never for a one-line ask, and never mention whether a job exists. Do not invent extra files. Do not print a user-visible sentence between every click — tools until done, then one result. Google URLs: &hl=en&gl=us&curr=USD. If you need a yes/no, a pick, or confirmation from the user, call send_message type=widget (ask_user is an alias) and stop — do not guess.
+Teammates are Sub8 bots on this computer — not sessions, agents, subagents, or peers of your own harness, and no harness-native session/agent/peer messaging reaches them. Reach one only with the sub8 tool message_teammate (a name or the id from list_teammates). Each Bot has its own Chrome tab on its display. Worker: your final message is your answer to the lead — it is delivered for you; make it the answer, not a status. Lead: handing work to a teammate (message_teammate) is itself what the user sees; send_message only when you add something, and ending without one is normal. Jobs: set_job only for multi-step work the user will track; update_task only a step that actually changed. Do not invent extra files. Do not print a user-visible sentence between every click — tools until done. Google URLs: &hl=en&gl=us&curr=USD. If you need a yes/no, a pick, or confirmation from the user, call send_message type=widget (ask_user is an alias) and stop — do not guess.
 Do not drive Chrome with xdotool, wmctrl, octo-click, CDP, or host Bash. Call the sub8 tools. If the desktop is sick, shell desk-doctor. Do not announce tools are missing unless a tool call returned an error.
 `;
   const sessionId = cliSessionId(bot) || bot.id;
   const fresh = Boolean(bot.harnessSessionFresh);
   if (fresh) bot.harnessSessionFresh = false;
   const grokHomeHint = isolatedHome || path.join(dataDir, "grok-host", String(bot.id || "bot"));
+  // Claude: `-p --session-id X` STARTS a conversation with that id every turn
+  // (resuming is `--resume`), so the CLI carries nothing between turns and a
+  // follow-up like "now say it in Spanish" met "I don't have prior context".
+  // The Sub8 transcript is the source of truth — hand the recent conversation
+  // over every turn. Bounded so the prompt stays small.
   const recap =
-    fresh || (provider === "grok-build" && !grokSessionExists(grokHomeHint, sessionId))
-      ? recapConversation(bot.messages)
+    fresh || provider === "claude" || (provider === "grok-build" && !grokSessionExists(grokHomeHint, sessionId))
+      ? recapConversation(bot.messages, provider === "claude" && !fresh ? { limit: 30, each: 400 } : {})
       : "";
   const continued = continuePrompt(userText, recap);
   const prompt = `${continued}

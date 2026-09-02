@@ -2222,7 +2222,17 @@ function renderTeamChannel(thread: HTMLElement, team: Team): void {
     thread.innerHTML = head + `<div class="empty">Say hi to ${escapeHtml(lead)}. They'll bring in teammates when the work needs it.</div>`;
     return;
   }
-  thread.innerHTML = head + msgs.slice(-100).map((m) => namedBubble(m, m.speakerRole !== "user")).join("");
+  // A question the lead asked (choices / secret-request) renders as the same
+  // card as in a 1:1 thread. Its live state (pending / picked) is on the
+  // lead's own copy, found by id.
+  const leadBot = chief;
+  thread.innerHTML = head + msgs.slice(-100).map((m) => {
+    if (m.kind === "choices" || m.kind === "secret-request") {
+      const live = (leadBot?.messages || []).find((x: Message) => x.id === m.id) || m;
+      return `<div class="msg asst" data-mid="${escapeHtml(m.id || "")}">${renderChoiceCard(live)}</div>`;
+    }
+    return namedBubble(m, m.speakerRole !== "user");
+  }).join("");
   thread.scrollTop = thread.scrollHeight;
   const input = $<HTMLTextAreaElement>('textarea[name="q"]');
   if (input) input.placeholder = `Message ${lead} · @name to reach a teammate`;

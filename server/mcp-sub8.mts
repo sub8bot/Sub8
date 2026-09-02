@@ -30,7 +30,7 @@ import * as channels from "@sub8/store/channels";
 import { syncChannelDesk } from "./channel-desk.mjs";
 import * as subagents from "./subagents.mjs";
 import { cardFromSendMessageArgs, AWAITING_BLOCKED } from "@sub8/choice";
-import { sendToAgent, sendToAgentContent, isSilentReply } from "./teammate.mjs";
+import { sendToAgent, sendToAgentContent } from "./teammate.mjs";
 import * as bgShell from "@sub8/shell-exec";
 import * as mcpRemote from "@sub8/web-fetch/mcp-remote";
 
@@ -92,6 +92,8 @@ export type ToolArgs = {
   block_until_ms?: unknown;
   path?: string | undefined;
   content?: string | undefined;
+  /** send_message: teammates to wake (names or ids). */
+  to?: unknown;
   message?: unknown;
   reason?: unknown;
   id?: string | undefined;
@@ -435,12 +437,13 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "send_message",
     description:
-      "Your only voice. type=text ack/result. type=widget asks and ENDS the turn. type=secret-request masked credential, ENDS the turn.",
+      "Your only voice to the user. type=text result. type=widget asks and ENDS the turn. type=secret-request masked credential, ENDS the turn. In a team the whole team sees it too; pass to (names or ids) to wake specific teammates. A worker's answer to the lead is its final message, not a send_message.",
     inputSchema: {
       type: "object",
       properties: {
         type: { type: "string", enum: ["text", "widget", "secret-request", "attachment"] },
         content: { type: "string" },
+        to: { type: "array", items: { type: "string" } },
         question: { type: "string" },
         hint: { type: "string" },
         choices: { type: "array", items: { type: "object" } },
@@ -1162,9 +1165,6 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     const bot = await store.getBot(botId) as McpBot | null;
     if (!bot) throw new Error("Bot not found");
     if (bot.awaitingUserSelection) return { content: [{ type: "text", text: AWAITING_BLOCKED }], isError: true };
-    // The lead's "nothing to add" result after a teammate report: dropped,
-    // never shown (see agent.mts — same rule on both tool paths).
-    if (isSilentReply(args.content)) return { content: [{ type: "text", text: "ok — nothing sent" }] };
     const card = cardFromSendMessageArgs(bot, args);
     if (card) {
       await store.patchBot(botId, (b) => {
@@ -1173,6 +1173,11 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
         b.awaitingUserSelection = true;
       });
       await emit("message", card);
+      // See agent.mts: the lead's question shows in the team channel, same id.
+      if (bot.teamId && bot.teamRole === "chief") {
+        const posted = await teams.appendMessage(bot.teamId, { ...(card as unknown as Record<string, unknown>), speakerId: bot.id, speakerName: bot.name, speakerRole: "chief" });
+        await emit("team-message", { teamId: bot.teamId, ...posted });
+      }
       await endTurnKeepBot();
       return { content: [{ type: "text", text: "asked the user; wait for their pick in chat" }] };
     }
@@ -1202,16 +1207,16 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
           await emit("job", { teamId: bot.teamId, job });
         }
       }
-      // Group-channel routing: the message is visible to the whole team in the
-      // shared log; wake only the @mentioned + keyword-subscribed members via the
-      // server's team-dispatch, so a broadcast coordinates on one bus without
-      // spinning up every teammate.
+      // Everyone sees the message in the shared log; only the teammates the
+      // sender addressed are woken — named in `to`, or @mentioned in the text —
+      // via the server's team-dispatch.
       const allBots = await store.loadBots();
       const roster = teams.membersOf(team, allBots).map((b) => {
-        const bb = b as { id: string; name?: string; teamRole?: string; channelKeywords?: readonly string[]; channelState?: "active" | "hold" };
-        return { id: bb.id, name: bb.name, teamRole: bb.teamRole, channelKeywords: bb.channelKeywords, channelState: bb.channelState };
+        const bb = b as { id: string; name?: string; teamRole?: string; channelState?: "active" | "hold" };
+        return { id: bb.id, name: bb.name, teamRole: bb.teamRole, channelState: bb.channelState };
       });
-      const { wake } = teams.routeChannelMessage({ authorId: bot.id, text: content, members: roster });
+      const to = Array.isArray(args.to) ? args.to : args.to ? [args.to] : [];
+      const { wake } = teams.routeChannelMessage({ authorId: bot.id, text: content, members: roster, to });
       if (wake.length && emitUrl && token) {
         for (const id of wake) {
           try {
@@ -1263,9 +1268,6 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     // `bot?.teamId` was truthy — so both the bot record and its team id are proven
     // from here down. TypeScript cannot carry that through `teams.membersOf`, and
     // the assertions below emit nothing.
-    if (bot!.teamRole === "chief" && (await teams.isDuplicateHandoff(bot!.teamId!, bot!.id, mate.id, content))) {
-      return { content: [{ type: "text", text: `already handed to ${mate.name}; they are working on it — wait for their reply` }] };
-    }
     const posted = await teams.appendMessage(bot!.teamId!, {
       role: "assistant",
       speakerId: bot!.id,

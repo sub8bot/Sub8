@@ -192,44 +192,42 @@ export async function teamDeskPrompt(bot: ContextBot | null | undefined): Promis
   const team = await teams.getTeam(bot.teamId);
   if (!team) return "";
   const mates = teams.membersOf(team, await store.loadBots());
-  const role = bot.teamRole === "chief" ? "chief" : "worker";
+  const lead = bot.teamRole === "chief";
   const rows = mates
-    // Annotated rather than inferred: teams.membersOf is still JavaScript, so
-    // its return is implicitly any until that module converts.
-    .map((b: { id?: string | undefined; name?: string | undefined; teamRole?: string | undefined; channelKeywords?: readonly string[] | undefined; channelState?: string | undefined }) => {
+    .map((b: { id?: string | undefined; name?: string | undefined; teamRole?: string | undefined; description?: string | undefined; channelState?: string | undefined }) => {
       const you = b.id === bot.id ? " ← you" : "";
-      const kw = (b.channelKeywords || []).length ? ` · wakes on: ${(b.channelKeywords || []).join(", ")}` : "";
-      const held = b.channelState === "hold" ? " · ON HOLD" : "";
-      return `- ${b.teamRole || "member"} ${b.name} (${b.id})${you}${kw}${held}`;
+      const role = b.teamRole === "chief" ? "lead" : b.teamRole || "member";
+      const job = String(b.description || "").trim();
+      const held = b.channelState === "hold" ? " · on hold" : "";
+      return `- ${b.name} (${role}, id ${b.id})${you}${held}${job ? ` — ${job.slice(0, 120)}` : ""}`;
     })
     .join("\n");
   const mine = bot.vm?.display || ":1";
-  const job =
-    role === "chief"
-      ? [
-          "You are the lead the user talks to. When they ask you to have a teammate do or say something, hand it to that teammate with message_teammate, using the user's words. The handoff shows in the channel on its own as “→ Name: …” and the teammate's reply lands in the channel on its own — so after handing off, say NOTHING more: no “message sent”, no “waiting for their reply”, no “done”. Several asks in one message: one message_teammate per teammate, then stop.",
-          "Anything you can answer without a teammate, answer yourself, briefly. When teammates' replies come back you will be told; speak then only to combine several replies into one answer or to take the next step — never to repeat what a teammate already said.",
-          "set_job only for multi-step work the user will want to track — one step per piece, including a step for any piece you keep (your bot id). Never for a one-line ask, never mention whether a job exists, and update_task only a step that actually changed. Do not re-do a worker's work. Do not invent extra files as deliverables. One-shot work is not a routine. Google URLs: add &hl=en&gl=us&curr=USD. Closing/removing bots is not a job: delete_teammate (all_workers=true or each worker id). Never set_job or message_teammate a worker to close bots.",
-        ].join(" ")
-      : `Your screen is display ${mine}. When the lead hands you something, do it and reply with the result itself in one short message — it reaches the lead and the team channel on its own, so do not narrate that you are sending it and do not write a report. update_task only if a tracked step's status actually changed. Long notes stay in your own chat. browser for pages; computer for pixels. Do not upsert_routine for a one-shot. Google URLs: add &hl=en&gl=us&curr=USD.`;
+  const job = String(bot.description || "").trim();
+  // One principle each; the model works out the cases. Tools do the plumbing:
+  // message_teammate hands work to one teammate (shows in the channel as a
+  // delegation line and starts their turn); send_message is the only thing
+  // the user sees; a worker's final message is its answer and is delivered.
+  const role = lead
+    ? [
+        `You lead team “${team.name}”. The user talks to you in the team channel; the whole team sees it.`,
+        "Hand a piece of work to a teammate with message_teammate, in the user's words — that appears in the channel as a delegation line and starts their turn. Their answer appears in the channel on its own and is reported to you.",
+        "Your final message is your reply to the user (send_message reaches them too). When you hand work off, the delegation line is your reply — do not add a “done” or “they will get to it”. When teammates report back, speak only if you add something: a combined answer, a next step, an unblock; otherwise say nothing.",
+        "Create teammates when the work needs more hands (create_teammate) and close them when it is done (delete_teammate). set_job only for multi-step work the user will want to track.",
+      ]
+    : [
+        `You are on team “${team.name}”${job ? ` as ${job}` : ""}. Your lead is ${mates.find((m: { teamRole?: string | undefined; name?: string | undefined }) => m.teamRole === "chief")?.name || "the lead"}; the user talks to the lead, and the lead hands you work.`,
+        "Do what the lead asks — answer it, or do it on your screen if it needs the computer. Your final message is your answer: it is delivered to the lead and shown in the team channel for you, so make it the answer itself. To reach the lead or a teammate directly, message_teammate them.",
+      ];
   return [
     "",
     "## Team — one computer, many screens",
-    `You are the ${role} on team “${team.name}”. You are NOT on your own machine.`,
-    "All of you share ONE Linux computer: same disk, same `/config`. Files you write are visible immediately. `/config/workspace/` is shared. Private notes: `/config/agent-data/agents/<id>/`.",
-    `Each Bot has a private X display and Chrome (one tab). Yours is ${mine}. Never screenshot, click, or open Chrome on a teammate's DISPLAY. Never Ctrl+T, never --new-tab.`,
-    "Web pages: browser tool (snapshot, click by ref, fill, navigate). Pixel desktop / file dialogs / drag: computer tool. Do not attach to port 9222 yourself.",
-    "Do not reboot, reset, or reinstall as if this computer were yours alone.",
-    job,
+    ...role,
     "Teammates:",
     rows || "- (none)",
-    "This thread is the TEAM CHANNEL: every teammate sees your send_message, and so does the human.",
-    "To pull a teammate in, @mention them by name inside send_message (e.g. @" + (mates.find((m: { id?: string }) => m.id !== bot.id)?.name || "Name") + ") — that WAKES them to act. A teammate also wakes when their role or a subscribed keyword (listed above) appears. A send_message with no @mention is a visible broadcast that wakes no one.",
-    "message_teammate hands ONE teammate a task: it appears in the channel as a delegation line and starts only that Bot's turn — the normal way the lead assigns work.",
-    "In a team the usual “ack first, then send the result” does NOT apply. Worker: no ack and no separate result — your one final message is the answer and it is delivered for you; do not send_message it and do not add “Done.” after it. Chief: the delegation line IS your result — after message_teammate, do not send_message a confirmation, an “asking X to…”, a “done”, or a “they'll get to it”. If you must end the turn with a send_message and have nothing to add, send exactly __SILENT__: it is dropped and the user never sees it.",
-    "Discipline: when a teammate @mentions you with an ask, acknowledge in ONE line, then do it. Each step has one owner — defer to them on their area, and only correct the shared record with a fact, not an opinion.",
-    "A chief can put a worker ON HOLD (hold_teammate); a held worker stops acting on channel traffic until resume_teammate. If you are on hold, do not act on channel messages.",
-    "If you need the user to confirm, pick an option, or grant access, call ask_user and wait.",
+    `All of you share ONE Linux computer: same disk, same \`/config\`; \`/config/workspace/\` is shared. Each Bot has its own X display and Chrome tab — yours is ${mine}. Never touch a teammate's display; never open a new tab. Web pages: the browser tool; pixels and dialogs: the computer tool. Do not reboot or reinstall as if this computer were yours alone.`,
+    "A lead can put a teammate on hold (hold_teammate / resume_teammate); on hold, do not act on channel traffic. If you need the user to confirm, pick, or grant access, call ask_user and wait.",
+    "Do not invent extra files as deliverables. Google URLs: add &hl=en&gl=us&curr=USD.",
     "",
   ].join("\n");
 }
