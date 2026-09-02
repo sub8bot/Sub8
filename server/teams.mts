@@ -82,6 +82,12 @@ export interface TeamMember {
   teamRole?: string | undefined;
   /** Tool-shaped rows spell the role plainly; `@sub8/store` does not model it. */
   role?: string | undefined;
+  /** Extra words this member wakes on when they appear in a channel message
+   * (beyond their own name/role, which always wake them). Opt-in per bot. */
+  channelKeywords?: readonly string[] | undefined;
+  /** Coordination state. `hold` = parked by the chief, does not wake on channel
+   * traffic until resumed; `active` (default) wakes normally. */
+  channelState?: "active" | "hold" | undefined;
 }
 
 /** A team as the membership guards read it: a stored row, or an expanded view. */
@@ -739,6 +745,50 @@ export function mentionedMemberIds(text: unknown, members: readonly TeamMember[]
     if (tags.some((t) => t === name || t === role || (name && name.startsWith(t)))) ids.push(m.id);
   }
   return [...new Set(ids)];
+}
+
+/** The words that wake a member when they appear in a channel message: their
+ * own name, their role, and any opted-in keywords. Name/role are matched by the
+ * @mention router; this returns the extra keyword set, lowercased. */
+export function channelKeywordsFor(member: TeamMember | null | undefined): string[] {
+  const out = new Set<string>();
+  for (const k of member?.channelKeywords || []) {
+    const t = String(k || "").trim().toLowerCase();
+    if (t) out.add(t);
+  }
+  return [...out];
+}
+
+function keywordHit(text: string, keyword: string): boolean {
+  if (!keyword) return false;
+  // Whole-word-ish: bounded by non-word chars, so "ops" does not fire on "oops".
+  const esc = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^a-z0-9])${esc}([^a-z0-9]|$)`, "i").test(text);
+}
+
+/**
+ * Route one channel message. The shared team log is visible to everyone (the
+ * caller appends it there); this decides who is actually WOKEN — i.e. gets a
+ * turn started — so a broadcast does not spin up every teammate. A member wakes
+ * when they are @mentioned OR one of their subscribed keywords appears, and is
+ * neither the author nor on `hold`. This is the group-channel core: broadcast
+ * visibility, targeted wake.
+ */
+export function routeChannelMessage(
+  { authorId, text, members }: { authorId?: string | null | undefined; text?: unknown; members?: readonly TeamMember[] | null | undefined },
+): { wake: string[]; mentioned: string[]; keyworded: string[] } {
+  const body = String(text || "");
+  const roster = members || [];
+  const mentioned = mentionedMemberIds(body, roster);
+  const keyworded: string[] = [];
+  for (const m of roster) {
+    if (m.channelState === "hold") continue;
+    if (channelKeywordsFor(m).some((kw) => keywordHit(body, kw))) keyworded.push(m.id);
+  }
+  const author = String(authorId || "");
+  const held = new Set(roster.filter((m) => m.channelState === "hold").map((m) => m.id));
+  const wake = [...new Set([...mentioned, ...keyworded])].filter((id) => id !== author && !held.has(id));
+  return { wake, mentioned, keyworded: [...new Set(keyworded)] };
 }
 
 export const TASK_STATUSES: readonly TaskStatus[] = ["pending", "running", "done", "blocked", "looping"];

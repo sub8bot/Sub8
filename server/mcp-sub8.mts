@@ -1181,12 +1181,35 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     if (bot.teamId) {
       const posted = await teams.appendMessage(bot.teamId, { ...out, teamId: bot.teamId });
       await emit("team-message", { teamId: bot.teamId, ...posted });
+      const team = await teams.getTeam(bot.teamId);
       if (bot.teamRole === "chief") {
-        const team = await teams.getTeam(bot.teamId);
         const { job, finalized } = teams.maybeFinalizeSummary(team?.job);
         if (finalized) {
           await teams.saveTeam({ ...team, job });
           await emit("job", { teamId: bot.teamId, job });
+        }
+      }
+      // Group-channel routing: the message is visible to the whole team in the
+      // shared log; wake only the @mentioned + keyword-subscribed members via the
+      // server's team-dispatch, so a broadcast coordinates on one bus without
+      // spinning up every teammate.
+      const allBots = await store.loadBots();
+      const roster = teams.membersOf(team, allBots).map((b) => {
+        const bb = b as { id: string; name?: string; teamRole?: string; channelKeywords?: readonly string[]; channelState?: "active" | "hold" };
+        return { id: bb.id, name: bb.name, teamRole: bb.teamRole, channelKeywords: bb.channelKeywords, channelState: bb.channelState };
+      });
+      const { wake } = teams.routeChannelMessage({ authorId: bot.id, text: content, members: roster });
+      if (wake.length && emitUrl && token) {
+        for (const id of wake) {
+          try {
+            await fetch(`${emitUrl}/api/internal/team-dispatch`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", "x-sub8-token": token },
+              body: JSON.stringify({ fromId: bot.id, toId: id, content }),
+            });
+          } catch {
+            /* dispatch is best-effort */
+          }
         }
       }
     }

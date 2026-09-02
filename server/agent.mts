@@ -1819,13 +1819,25 @@ async function execTool(
       if (bot.teamId) {
         const posted = await teams.appendMessage(bot.teamId, { ...out, teamId: bot.teamId });
         emit("team-message", { teamId: bot.teamId, ...posted });
+        const team = await teams.getTeam(bot.teamId);
         if (bot.teamRole === "chief") {
-          const team = await teams.getTeam(bot.teamId);
           const { job, finalized } = teams.maybeFinalizeSummary(team?.job);
           if (finalized) {
             await teams.saveTeam({ ...team, job });
             emit("job", { teamId: bot.teamId, job });
           }
+        }
+        // Group-channel routing: the message is visible to the whole team in the
+        // shared log; wake only the @mentioned + keyword-subscribed members so a
+        // broadcast coordinates on one bus without spinning up every teammate.
+        const bots = await store.loadBots();
+        const roster = teams.membersOf(team, bots).map((b) => {
+          const bb = b as { id: string; name?: string; teamRole?: string; channelKeywords?: readonly string[]; channelState?: "active" | "hold" };
+          return { id: bb.id, name: bb.name, teamRole: bb.teamRole, channelKeywords: bb.channelKeywords, channelState: bb.channelState };
+        });
+        const { wake } = teams.routeChannelMessage({ authorId: bot.id, text: out.content, members: roster });
+        if (wake.length && typeof dispatchTeammate === "function") {
+          for (const id of wake) dispatchTeammate(id, out.content, bot);
         }
       }
       return { text: "sent" };
