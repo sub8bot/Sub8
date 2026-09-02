@@ -2721,8 +2721,9 @@ select.vault-kv-in { appearance: none; cursor: pointer; }
   display: grid; place-items: center; color: var(--text); line-height: 0;
   z-index: 2;
 }
-.block { margin-bottom: 22px; }
-.block h3 { font-size: 13px; color: var(--muted); font-weight: 500; margin: 0 0 8px; }
+.block { margin-bottom: 24px; }
+.block h3 { font-size: 12px; color: var(--muted); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; margin: 0 0 10px; }
+.block .card + .card { margin-top: 10px; }
 .card {
   background: var(--card); border-radius: 14px; padding: 14px 16px;
 }
@@ -3443,3 +3444,19 @@ select.pill { appearance: none; padding-right: 24px; }
 .channel-tab .chrome-tab-title { font-weight: 600; }
 .channel-head { padding: 8px 12px; font-weight: 600; display: flex; flex-direction: column; gap: 2px; border-bottom: 1px solid var(--border, #2a2530); margin-bottom: 8px; }
 .channel-head .channel-sub { font-weight: 400; font-size: 12px; color: var(--muted, #a396b0); }
+
+
+/* Identities: one card per login, header + aligned key/value rows. */
+.card.ident { padding: 14px 16px 12px; }
+.ident .row + .row { margin-top: 10px; padding-top: 10px; }
+.ident-head { align-items: flex-start; }
+.ident-title .sub { margin-top: 3px; }
+.ident-meta { min-height: 28px; }
+.ident-meta .k { color: var(--muted); font-size: 13px; font-weight: 500; }
+.ident-meta .v { font-size: 13px; color: var(--text); text-align: right; }
+.ident-actions { display: inline-flex; align-items: center; gap: 10px; }
+.ident-actions .pill { padding: 6px 12px; }
+
+/* Card hints that carry a link: buttons, not a wrapped raw URL. */
+.choice-links { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.choice-links .pill { text-decoration: none; }

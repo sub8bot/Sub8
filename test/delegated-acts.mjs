@@ -125,6 +125,8 @@ const HANDLED = [
   "install-docker",
   "install-update",
   "identity-add",
+  "identity-remove",
+  "copy-link",
   "lol",
   "lol-create",
   "lol-send",
@@ -246,8 +248,10 @@ assert.deepEqual(covered, expected);
 // Guard the guard: an empty pin would make every assertion above vacuous.
 // 173 -> 175: ctx-move-cloud / computer-move-cloud.
 // 175 -> 176: team-channel (the lead's tab is the team channel).
-assert.equal(HANDLED.length, 176);
-assert.equal(covered.length, 176);
+// 176 -> 177: identity-remove (Identities → Remove a login).
+// 177 -> 178: copy-link (card hints with a URL: Copy link).
+assert.equal(HANDLED.length, 178);
+assert.equal(covered.length, 178);
 
 console.log(
   "ok delegated-acts (" + keys.length + " in ACTIONS, " + new Set(chain).size +

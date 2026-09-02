@@ -21,6 +21,7 @@ import {
   liveBrainClaudeAuthStart as cloudLiveBrainClaudeAuthStart,
   liveBrainClaudeAuthCode as cloudLiveBrainClaudeAuthCode,
   liveBrainClaudeAuthLogout as cloudLiveBrainClaudeAuthLogout,
+  liveBrainClaudeForget as cloudLiveBrainClaudeForget,
   liveBrainWaitGrok as cloudLiveBrainWaitGrok,
   liveBrainKey as cloudLiveBrainKey,
   liveBrainRoutines as cloudLiveBrainRoutines,
@@ -853,6 +854,10 @@ export async function liveBrainClaudeAuthStart(computerId: string): Promise<unkn
 
 export async function liveBrainClaudeAuthCode(computerId: string, code: string): Promise<unknown> {
   return cloudLiveBrainClaudeAuthCode({ token: await claudeAuthToken(), computerId, code });
+}
+
+export async function liveBrainClaudeForget(): Promise<unknown> {
+  return cloudLiveBrainClaudeForget({ token: await claudeAuthToken() });
 }
 
 export async function liveBrainClaudeAuthLogout(computerId: string): Promise<unknown> {

@@ -64,6 +64,8 @@ export interface CloudIdentityInput {
     apiKeyHint?: unknown;
     provider?: unknown;
     model?: unknown;
+    /** Worker-validated: tokens present and not expired. */
+    claudeCredentials?: unknown;
   } | null;
   computerId?: string;
   claude?: { loggedIn?: unknown; email?: unknown } | null;
@@ -137,19 +139,29 @@ export async function ensureCloudIdentities(input: CloudIdentityInput = {}): Pro
     }
   }
 
-  const computerId = String(input.computerId || "").replace(/^cloud[:-]/, "").trim();
-  if (computerId) {
+  // ONE Claude row for the account. The credential is account-wide (every desk
+  // adopts it), so a row per desk was wrong twice over: dead desks lingered as
+  // "Claude on Cloud desk · NOT SIGNED IN" forever, and the live one claimed
+  // SIGNED IN off a hollow credential. Legacy per-desk rows are pruned.
+  const legacy = all.filter((r) => r.place === "cloud" && r.provider === "claude" && r.id !== "cloud-claude");
+  if (legacy.length) {
+    all = all.filter((r) => !legacy.includes(r));
+    changed = true;
+  }
+  if (brain) {
     const email = String(input.claude?.email || "").trim();
+    const prev = all.find((r) => r.id === "cloud-claude");
+    const subject = email || String(prev?.subject || "");
     const row = normalizeIdentity({
-      id: `cloud-claude-${computerId}`,
+      id: "cloud-claude",
       provider: "claude",
       place: "cloud",
-      label: email ? `Claude · ${email}` : "Claude on Cloud desk",
-      subject: email,
-      model: "haiku",
-      runtimeRef: computerId,
+      label: subject ? `Claude · ${subject}` : "Claude (Cloud)",
+      subject,
+      model: "claude-sonnet-5",
+      runtimeRef: "account",
       kind: "cli-oauth",
-      createdAt: now,
+      createdAt: prev?.createdAt || now,
       updatedAt: now,
     });
     if (row) {
@@ -170,11 +182,9 @@ export function cloudIdentityStatus(identity: Identity, ctx: CloudIdentityInput 
     return ctx.brain?.apiKeySet ? "signed_in" : "signed_out";
   }
   if (identity.provider === "claude" && identity.place === "cloud") {
-    const desk = String(ctx.computerId || "").replace(/^cloud[:-]/, "").trim();
-    if (desk && identity.runtimeRef === desk) {
-      return ctx.claude?.loggedIn ? "signed_in" : "signed_out";
-    }
-    return identity.subject ? "signed_in" : "signed_out";
+    // Signed in = the account credential is valid (Worker-checked: tokens and
+    // not expired) OR the selected desk's CLI reports a login of its own.
+    return ctx.brain?.claudeCredentials || ctx.claude?.loggedIn ? "signed_in" : "signed_out";
   }
   return identity.subject ? "signed_in" : "signed_out";
 }

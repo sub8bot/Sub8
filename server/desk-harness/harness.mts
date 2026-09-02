@@ -1037,8 +1037,10 @@ export async function runTurn(body: TurnBody, emit: EmitTurnEvent, opts: RunTurn
   // auth.json. This is what makes one sign-in cover every desk: a desk that was
   // never signed in adopts the account's credential and just works.
   if (claude && t.claudeAuth) {
-    const already = await claudeExportCredentials();
-    if (!already.ok) await claudeImportCredentials(t.claudeAuth);
+    // Not "is there a file" — "does the CLI consider itself logged in". A desk
+    // holding a hollow or expired file never re-adopted a fresh credential.
+    const status = await claudeAuthStatus().catch(() => ({ loggedIn: false }));
+    if (!status.loggedIn) await claudeImportCredentials(t.claudeAuth);
   }
   const prompt = claude
     ? `${t.text}\n\nUse the sub8 tools. Do not only send a plan.`

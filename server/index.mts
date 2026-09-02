@@ -2013,8 +2013,17 @@ app.patch("/api/identities/:id", async (req, res) => {
 });
 
 app.delete("/api/identities/:id", async (req, res) => {
+  // The cloud Claude identity is the account credential: removing it forgets
+  // the credential on the Worker too, so it does not come straight back.
+  if (req.params.id === "cloud-claude") {
+    try {
+      await account.liveBrainClaudeForget();
+    } catch (err) {
+      return sendAccountError(res, err);
+    }
+  }
   const ok = await identities.removeIdentity(req.params.id);
-  if (!ok) return res.status(404).json({ error: "not found" });
+  if (!ok && req.params.id !== "cloud-claude") return res.status(404).json({ error: "not found" });
   res.json({ ok: true });
 });
 

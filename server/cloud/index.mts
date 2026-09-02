@@ -153,6 +153,10 @@ export async function liveBrainClaudeAuthCode({
   });
 }
 
+export async function liveBrainClaudeForget({ token }: { token?: string } = {}) {
+  return http.cloudApi("/api/brain/claude", { baseUrl: needBase(), token, method: "DELETE" });
+}
+
 export async function liveBrainClaudeAuthLogout({ token, computerId }: ClaudeAuthOptions = {}) {
   return http.cloudApi("/api/brain/claude/auth/logout", {
     baseUrl: needBase(),

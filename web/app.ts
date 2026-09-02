@@ -3353,7 +3353,7 @@ function renderChoiceCard(m: Message): string {
     <div class="choice-head">
       <div>
         <div class="choice-title">${escapeHtml(m.content || "Pick one")}</div>
-        ${m.hint ? `<div class="choice-hint">${escapeHtml(m.hint)}</div>` : ""}
+        ${m.hint ? choiceHintHtml(m.hint) : ""}
       </div>
       ${closed ? "" : `<button type="button" class="choice-x" data-act="dismiss-choice" data-mid="${escapeHtml(m.id)}">×</button>`}
     </div>
@@ -6068,25 +6068,39 @@ function identitiesHtml(): string {
     const tone = row.status === "signed_in" ? "ok" : row.status === "expired" || row.status === "not_installed" ? "bad" : "warn";
     const who = row.subject ? escapeHtml(row.subject) : "—";
     const place = row.place === "cloud" ? "Cloud" : row.runtimeRef === "host" ? "This Mac (shared)" : "This Mac (isolated)";
-    return `<div class="card">
-      <div class="row">
-        <div>
+    const cloudClaude = row.place === "cloud" && row.provider === "claude";
+    // Which bots are attached to this login — local bots by id, cloud bots by
+    // the Worker-level identity (cloud-claude-<desk> collapses to cloud-claude).
+    const attached = [...state.bots, ...(state.cloudDraft?.bots || [])].filter((b) => {
+      const id = String(b.identityId || "");
+      if (!id) return false;
+      return id === row.id || (row.place === "cloud" && workerCloudIdentityId(id) === workerCloudIdentityId(row.id));
+    });
+    const usedBy = [...new Set(attached.map((b) => b.name || "Bot"))].map((n) => escapeHtml(n)).join(", ");
+    const deskState = state.claudeAuth?.loggedIn
+      ? `Signed in${state.claudeAuth.email ? ` as ${escapeHtml(state.claudeAuth.email)}` : ""}`
+      : cloudDeskIdOf(currentBot()) ? "Not signed in" : "Select a Cloud desk bot to sign in";
+    return `<div class="card ident">
+      <div class="row ident-head">
+        <div class="ident-title">
           <div class="lbl">${escapeHtml(row.label)}</div>
           <div class="sub">${escapeHtml(place)} · ${escapeHtml(row.provider)}${row.model ? ` · ${escapeHtml(row.model)}` : ""}</div>
         </div>
         <span class="hbadge ${tone}">${escapeHtml(identityStatusLabel(row.status))}</span>
       </div>
-      <div class="row"><div class="lbl">Account</div><span class="muted">${who}</span></div>
+      <div class="row ident-meta"><span class="k">Account</span><span class="v">${who === "—" ? "Not connected" : who}</span></div>
+      <div class="row ident-meta"><span class="k">Used by</span><span class="v ident-actions">${usedBy || "No bots yet"}${
+        row.place === "cloud" && row.provider !== "grok-build"
+          ? `<button type="button" class="pill" data-act="identity-remove" data-id="${escapeHtml(row.id)}" title="Forget this login">Remove</button>`
+          : ""
+      }</span></div>
       ${
-        row.place === "cloud" && row.provider === "claude"
-          ? `<div class="row"><div class="sub">${
-              state.claudeAuth?.loggedIn ? `Desk Claude${state.claudeAuth.email ? ` as ${escapeHtml(state.claudeAuth.email)}` : ""}` : "Desk Claude is not signed in."
-            }</div>
-            ${
+        cloudClaude
+          ? `<div class="row ident-meta"><span class="k">This desk</span><span class="v ident-actions">${deskState}${
               state.claudeAuth?.loggedIn
                 ? `<button type="button" class="pill" data-act="claude-logout">Sign out</button>`
-                : `<button type="button" class="pill primary" data-act="claude-login">Sign in</button>`
-            }</div>`
+                : `<button type="button" class="pill primary" data-act="claude-login" ${cloudDeskIdOf(currentBot()) ? "" : "disabled"}>Sign in</button>`
+            }</span></div>`
           : ""
       }
     </div>`;
@@ -7731,6 +7745,33 @@ const ACTIONS: Record<string, ActHandler> = {
     testHarness(el.dataset.id);
     return;
   },
+  "copy-link": (e) => {
+    const btn = (e?.target as HTMLElement | null)?.closest?.("[data-url]") as HTMLElement | null;
+    const url = btn?.getAttribute("data-url") || "";
+    if (!url) return;
+    void navigator.clipboard?.writeText(url).then(() => {
+      if (!btn) return;
+      const was = btn.textContent;
+      btn.textContent = "Copied";
+      setTimeout(() => { btn.textContent = was; }, 1400);
+    });
+    return;
+  },
+  "identity-remove": (e) => {
+    const id = (e?.target as HTMLElement | null)?.closest?.("[data-id]")?.getAttribute("data-id") || "";
+    if (!id) return;
+    if (!window.confirm("Remove this login? Bots attached to it will ask you to sign in again.")) return;
+    void (async () => {
+      try {
+        await api(`/api/identities/${encodeURIComponent(id)}`, { method: "DELETE" });
+        await loadIdentities();
+        if (state.modal === "settings" && state.section === "identities") paintModal();
+      } catch (err) {
+        window.alert((err as CaughtError).message || "Could not remove that identity.");
+      }
+    })();
+    return;
+  },
   "identity-add": () => {
     const provider = $<ValueEl>("#identity-add-provider")?.value || "claude";
     void (async () => {
@@ -8866,6 +8907,20 @@ function mentionedMemberIds(text: string, members: Bot[] | null | undefined): st
   return [...new Set(ids)];
 }
 
+/** A card hint that carries a URL (Claude sign-in, a payment page) renders the
+ * URL as an "Open" button plus "Copy link" instead of a wrapped raw string. */
+function choiceHintHtml(hint: string): string {
+  const m = /https?:\/\/\S+/.exec(hint);
+  if (!m) return `<div class="choice-hint">${escapeHtml(hint)}</div>`;
+  const url = m[0].replace(/[.,;:]+$/, "");
+  const text = (hint.slice(0, m.index) + hint.slice(m.index + m[0].length)).replace(/\s*[:—-]\s*$/, "").trim();
+  return `<div class="choice-hint">${escapeHtml(text)}</div>
+    <div class="choice-links">
+      <a class="pill primary" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open sign-in page ↗</a>
+      <button type="button" class="pill" data-act="copy-link" data-url="${escapeHtml(url)}">Copy link</button>
+    </div>`;
+}
+
 const choiceBusy = new Set<string>();
 
 async function submitChoice(messageId: string | undefined, choiceId: string | undefined, custom: string): Promise<void> {
@@ -8873,6 +8928,25 @@ async function submitChoice(messageId: string | undefined, choiceId: string | un
     const bot = currentBot();
     if (!bot || !messageId) return;
     const card = (bot.messages || []).find((m) => m.id === messageId);
+    // Claude sign-in from the chat: the code goes to the auth endpoint, never
+    // into the thread. On success the message the bot could not run is re-sent.
+    const tgt = (card as { secretTarget?: { connector?: string; computerId?: string; retry?: string } } | undefined)?.secretTarget;
+    if (card?.kind === "secret-request" && tgt?.connector === "claude-auth") {
+      if (!custom) return;
+      card.pending = false;
+      card.selected = { id: "custom", label: "Sent" };
+      paintChat(bot);
+      try {
+        const r = (await api("/api/cloud/brain/claude/auth/code", { method: "POST", body: { computerId: tgt.computerId || "", code: custom } })) as { loggedIn?: boolean; error?: string };
+        if (!r?.loggedIn) { window.alert(r?.error || "Claude sign-in did not complete. Try the link again."); return; }
+        const form = $<SendForm>("#send");
+        const q = form?.q;
+        if (q && tgt.retry) { q.value = tgt.retry; await onSend({ preventDefault() {}, target: form }); }
+      } catch (err) {
+        window.alert((err as CaughtError | undefined)?.message || "Claude sign-in failed.");
+      }
+      return;
+    }
     const label = custom || card?.choices?.find((c) => String(c.id) === String(choiceId))?.label || choiceId;
     if (card) {
       card.pending = false;
