@@ -92,6 +92,8 @@ export interface AccountSession {
   userId: string;
   token: string;
   expiresAt: unknown;
+  /** X profile photo URL from the Worker session, or "". */
+  photo: string;
 }
 
 /** One `data/account.json`, after `normalize`. */
@@ -120,6 +122,7 @@ export interface AccountSessionInput {
   userId?: unknown;
   token?: unknown;
   expiresAt?: unknown;
+  photo?: unknown;
 }
 
 export interface AccountRowInput {
@@ -139,6 +142,7 @@ export interface SessionPayload {
   token?: unknown;
   userId?: unknown;
   expiresAt?: unknown;
+  photo?: unknown;
 }
 
 export interface LoadAccountOptions {
@@ -167,6 +171,8 @@ export interface AccountGate {
   email: string | null;
   handle: string | null;
   userId: string | null;
+  /** X profile photo URL when signed in with one; the desktop falls back to an identicon. */
+  photoUrl: string | null;
 }
 
 /** An AccountGate plus the build-level flags. What `/api/account` answers. */
@@ -502,6 +508,7 @@ function normalize(raw: AccountRowInput | null | undefined): AccountRow {
           userId: String(rawSession.userId || ""),
           token,
           expiresAt: rawSession.expiresAt || null,
+          photo: String(rawSession.photo || "").trim(),
         }
       : null;
   const view = raw.view === "cloud" || raw.view === "local" ? raw.view : place === "cloud" ? "cloud" : "local";
@@ -872,7 +879,7 @@ export async function liveBrainClaudeAuth(computerId: string): Promise<unknown> 
 }
 
 /** The synced envelope, as account.mts moves it (opaque here). */
-export type CloudVaultEnvelopeLike = { header: unknown; data: unknown; updatedAt?: number };
+export type CloudVaultEnvelopeLike = { header?: unknown; data: unknown; updatedAt?: number };
 export async function vaultGateStatus(): Promise<{ exists: boolean; locked: boolean; remaining: number } | null> {
   return (await cloudGateStatus({ token: await claudeAuthToken() })) as { exists: boolean; locked: boolean; remaining: number } | null;
 }
@@ -1261,6 +1268,7 @@ export function decideGate(row: AccountRow | null | undefined, { requireAccount:
     email: signedIn ? row.session!.email : null,
     handle: signedIn ? row.session!.handle || null : null,
     userId: signedIn ? row.session!.userId || null : null,
+    photoUrl: signedIn ? row.session!.photo || null : null,
   };
 }
 
@@ -1281,6 +1289,7 @@ export function disabledAccount(): PublicAccount {
     email: null,
     handle: null,
     userId: null,
+    photoUrl: null,
     mockAuth: false,
     cloudConfigured: false,
     comingSoon: false,
@@ -1442,6 +1451,7 @@ export async function completeSession(payload: SessionPayload | null | undefined
       userId,
       token,
       expiresAt: payload?.expiresAt || null,
+      photo: String(payload?.photo || "").trim(),
     },
   });
 }

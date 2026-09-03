@@ -3574,3 +3574,8 @@ select.pill { appearance: none; padding-right: 24px; }
 .vault-confirm { margin-top: 8px; padding: 10px; border: 1px solid color-mix(in srgb, #e5484d 40%, transparent); border-radius: 10px; background: color-mix(in srgb, #e5484d 8%, transparent); }
 .pill.danger { background: #e5484d; color: #fff; border-color: #e5484d; }
 .pill.danger:hover { background: #d13b40; }
+
+/* Rail account avatar: X photo fills the circle; identicon SVG sits inside it. */
+.rail .me { display: flex; align-items: center; justify-content: center; }
+.rail .me svg { display: block; border-radius: 50%; }
+.me-photo { width: 100%; height: 100%; object-fit: cover; display: block; }

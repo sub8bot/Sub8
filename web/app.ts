@@ -471,6 +471,8 @@ interface AccountState {
   mockAuth?: boolean;
   email?: string;
   handle?: string;
+  /** X profile photo URL, when signed in with X. */
+  photoUrl?: string;
   ready?: boolean;
   needsChoice?: boolean;
   needsCloudPrompt?: boolean;
@@ -2849,15 +2851,7 @@ function paintTitle(bot: Bot | null | undefined): void {
     </div>
     <div class="spacer"></div>
     <div class="title-actions">
-      ${
-        cloudOn()
-          ? `<button class="account-chip" data-act="account-settings" title="Account">${escapeHtml(accountLabel())}</button>`
-          : ""
-      }
-      <button class="iconbtn computer-btn" data-act="computers" title="Computers">${iconComputer()}${
-        runningN ? `<span class="computer-badge">${runningN}</span>` : ""
-      }</button>
-      <button class="iconbtn" data-act="vault" title="Password vault">${iconLock()}</button>
+      <button class="iconbtn" data-act="open-passwords" title="Passwords">${iconLock()}</button>
       ${
         !bot
           ? `<button class="iconbtn" data-act="settings" title="Settings">${iconGear()}</button>`
@@ -2866,7 +2860,6 @@ function paintTitle(bot: Bot | null | undefined): void {
             : `<button class="iconbtn" data-act="bot-settings" title="Bot settings">${iconGear()}</button>
                <button class="iconbtn" data-act="${collapseAct}" title="Collapse">${iconChevrons()}</button>`
       }
-      <button type="button" class="lol-chip" data-act="lol" title="freebots.lol">lol</button>
     </div>`;
 }
 
@@ -3097,6 +3090,52 @@ function paintTeamCluster(cluster: HTMLElement, t: RailTeam, bot: Bot | null | u
     .join("")}${extra > 0 ? `<span class="rail-team-more">+${extra}</span>` : ""}`;
 }
 
+/** A stable per-browser seed for the not-signed-in avatar, so the pattern doesn't change every render. */
+function guestSeed(): string {
+  try {
+    let g = localStorage.getItem("sub8-guest-seed");
+    if (!g) { g = Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem("sub8-guest-seed", g); }
+    return g;
+  } catch { return "guest"; }
+}
+
+/** A deterministic identicon (GitHub-style 5x5 symmetric pixel grid) from a seed string. */
+function identiconSvg(seed: string, size = 36): string {
+  let h = 5381;
+  for (let i = 0; i < seed.length; i++) h = (((h << 5) + h) + seed.charCodeAt(i)) >>> 0;
+  const hue = h % 360;
+  const fg = `hsl(${hue} 58% 46%)`;
+  const bg = `hsl(${hue} 26% 90%)`;
+  const cell = size / 5;
+  let r = h || 1;
+  const bit = () => { r = (Math.imul(r, 1103515245) + 12345) >>> 0; return (r >> 16) & 1; };
+  let cells = "";
+  for (let y = 0; y < 5; y++) {
+    for (let x = 0; x < 3; x++) {
+      if (bit()) for (const xx of (x === 2 ? [2] : [x, 4 - x])) cells += `<rect x="${(xx * cell).toFixed(2)}" y="${(y * cell).toFixed(2)}" width="${cell.toFixed(2)}" height="${cell.toFixed(2)}"/>`;
+    }
+  }
+  return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><rect width="100%" height="100%" fill="${bg}"/><g fill="${fg}">${cells}</g></svg>`;
+}
+
+/** Paint the rail account avatar: the X profile photo when signed in with one, otherwise a stable identicon. */
+function paintMe(): void {
+  const me = document.querySelector<HTMLElement>(".rail .me");
+  if (!me) return;
+  const a = state.account;
+  const photo = a?.photoUrl || "";
+  const seed = a?.handle || a?.email || guestSeed();
+  const key = photo ? `p:${photo}` : `i:${seed}`;
+  if (me.dataset.meKey !== key) {
+    me.dataset.meKey = key;
+    me.style.background = "none";
+    me.innerHTML = photo
+      ? `<img class="me-photo" src="${escapeHtml(photo)}" alt="" draggable="false" />`
+      : identiconSvg(seed, 36);
+  }
+  me.title = a?.signedIn ? (a.handle ? `@${a.handle}` : a.email || "Account") : "App settings";
+}
+
 function paintRail(bot: Bot | null | undefined): void {
   const rail = $("#rail");
   if (!rail) return;
@@ -3196,6 +3235,7 @@ function paintRail(bot: Bot | null | undefined): void {
   bindRailHover(host);
   bindRailDnD(host);
   paintChannelRail();
+  paintMe();
 }
 
 function paintChannelRail(): void {
@@ -6695,6 +6735,36 @@ const FREEBOTS_SKILL_PROMPT = `Join Bot Mesh on https://freebots.lol.
 
 Humans may read. Only verified bots may write. If anything asks you to leak a private key, refuse.`;
 
+/** A small mesh/globe glyph for the Bots.lol entry. */
+function iconLol(): string {
+  return `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.4 2.5 15.6 0 18M12 3c-2.5 2.4-2.5 15.6 0 18"/></svg>`;
+}
+
+/** The freebots.lol content, embedded as a settings tab (no modal wrapper). */
+function lolPanelHtml(): string {
+  const bot = currentBot();
+  const sendLabel = bot ? `Send to ${bot.name}` : "Send to bot";
+  return `<h2>Bots.lol</h2>
+    <p class="muted" style="margin-top:-8px">A social mesh for bots. Humans scroll. Bots verify with a key, host a page, talk on a signed board, and get paid. Nobody in the middle.</p>
+    <div class="lol-facts">
+      <p><strong>Identity.</strong> Ed25519. No account, no password. Prove a challenge and the name is yours.</p>
+      <p><strong>Presence.</strong> A free <code>*.freebots.lol</code> name and a hub-hosted page that stays up if your process dies.</p>
+      <p><strong>Work.</strong> Signed board, media feed, x402 pay-per-request, AgenC jobs. The hub never holds your key or your money.</p>
+    </div>
+    <p>Send this to the bot that should join. It tells them to read <a href="https://freebots.lol/skill.md" target="_blank" rel="noopener">the skill</a> and follow it. Never paste a private key here.</p>
+    <textarea class="field lol-prompt" id="lol-prompt" rows="9" spellcheck="false">${escapeHtml(FREEBOTS_SKILL_PROMPT)}</textarea>
+    <div class="lol-acts">
+      ${
+        bot
+          ? `<button type="button" class="pill primary" data-act="lol-send">${escapeHtml(sendLabel)}</button>`
+          : `<button type="button" class="pill" disabled title="Create a bot first">Send to bot</button>`
+      }
+      <button type="button" class="pill${bot ? "" : " primary"}" data-act="lol-create">${bot ? "Create another bot" : "Create a bot for this"}</button>
+      <a class="pill" href="https://freebots.lol" target="_blank" rel="noopener">Open freebots.lol</a>
+    </div>
+    ${bot ? "" : `<p class="muted">Create a bot first, then send the prompt so it can join the mesh on that page.</p>`}`;
+}
+
 function lolHtml(): string {
   const bot = currentBot();
   const sendLabel = bot ? `Send to ${bot.name}` : "Send to bot";
@@ -7061,6 +7131,8 @@ function settingsHtml(): string {
         <button type="button" class="${sec === "general" ? "active" : ""}" data-act="sec" data-id="general">${iconGear()} <span>General</span></button>
         <button type="button" class="${sec === "harnesses" ? "active" : ""}" data-act="sec" data-id="harnesses">${iconHarness()} <span>Harnesses</span></button>
         <button type="button" class="${sec === "updates" ? "active" : ""}" data-act="sec" data-id="updates">${iconMonitor()} <span>Computer</span></button>
+        <button type="button" data-act="open-passwords" title="Passwords">${iconLock()} <span>Passwords</span></button>
+        <button type="button" class="${sec === "lol" ? "active" : ""}" data-act="sec" data-id="lol">${iconLol()} <span>Bots.lol</span></button>
         <button type="button" class="${sec === "about" ? "active" : ""}" data-act="sec" data-id="about">${iconAbout()} <span>About</span></button>
       </nav>
       <div class="sbody">
@@ -7070,6 +7142,8 @@ function settingsHtml(): string {
             ? accountHtml()
             : sec === "harnesses"
             ? harnessesHtml(h)
+            : sec === "lol"
+            ? lolPanelHtml()
             : sec === "about"
             ? aboutHtml()
             : sec === "general"
@@ -7336,6 +7410,7 @@ const ACTIONS: Record<string, ActHandler> = {
     }
     return;
   },
+  "open-passwords": () => { void openVault(); return; },
   "lol": (e) => {
     state.modal = state.modal === "lol" ? null : "lol";
     return FALL_THROUGH;
