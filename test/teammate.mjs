@@ -48,7 +48,7 @@ assert.doesNotMatch(stored, /upsert_routine/);
 // The lead gets the facts — the user's ask, what it handed out, the replies —
 // and nothing else: the principle lives in the system prompt.
 const llm = chiefReportLlm("Leg3 DC-BKK", "$470 Qatar", { userAsk: "find the cheapest DC-BKK", handed: ["Leg3 DC-BKK: DC-BKK fares", "Leg1: DC-SFO fares"] });
-assert.equal(llm, 'Teammate report (this is not the user speaking):\nThe user asked you: "find the cheapest DC-BKK"\nYou handed out:\n- Leg3 DC-BKK: DC-BKK fares\n- Leg1: DC-SFO fares\nLeg3 DC-BKK replies: $470 Qatar\n(Nothing to add → nothing_to_add.)');
+assert.equal(llm, 'Teammate report (this is not the user speaking):\nThe user asked you: "find the cheapest DC-BKK"\nYou handed out:\n- Leg3 DC-BKK: DC-BKK fares\n- Leg1: DC-SFO fares\nLeg3 DC-BKK replies: $470 Qatar\n(Nothing to add → call the nothing_to_add tool; do not write its name.)');
 assert.doesNotMatch(llm, /__SILENT__|list_tasks|Summary|only if you add/);
 
 function test(name, fn) {
