@@ -2227,6 +2227,72 @@ app.post("/api/teams", async (req, res) => {
   if (chief) provision(chief.id).catch((err) => console.log("provision", err));
 });
 
+/**
+ * Duplicate a team the way a solo bot is duplicated: the same members (name,
+ * profile, harness, look) on a fresh shared desk, a fresh channel, and the
+ * team's section kept. Messages are not copied, like bot duplicate.
+ */
+app.post("/api/teams/:id/duplicate", async (req, res) => {
+  const src = await teams.getTeam(req.params.id);
+  if (!src) return res.status(404).json({ error: "not found" });
+  const bots = await store.loadBots() as IndexBot[];
+  const members = teams.membersOf(src, bots) as IndexBot[];
+  if (!members.length) return res.status(409).json({ error: "This team has no members to copy." });
+  const name = `${src.name || "Team"} copy`;
+  const teamId = randomUUID();
+  const created: IndexBot[] = [];
+  let desk = null;
+  // Chief first so the shared desk is created for it, as team create does.
+  for (const m of [...members].sort((a, b) => (a.teamRole === "chief" ? -1 : 0) - (b.teamRole === "chief" ? -1 : 0)).slice(0, 6)) {
+    const role = m.teamRole === "chief" ? "chief" : "worker";
+    const bot = store.newBot({
+      name: m.name,
+      title: m.title,
+      description: m.description,
+      instructions: m.instructions,
+      color: m.color,
+      avatar: m.avatar,
+      harness: m.harness,
+      teamId,
+      teamRole: role,
+      section: src.section,
+    }) as IndexBot;
+    if (!desk) {
+      desk = await computers.ensureComputerForBot(bot as computers.ComputerBot);
+      desk = await computers.saveComputer({ ...desk, name: `${name} desk` });
+    }
+    bot.vm = {
+      ...(bot.vm || {}),
+      computerId: desk.id,
+      container: desk.container,
+      volume: desk.volume,
+      novncPort: desk.novncPort || null,
+      status: "starting",
+      hint: "Starting the shared desk…",
+      detached: false,
+      error: null,
+    };
+    await store.upsertBot(bot);
+    created.push(bot);
+  }
+  const chief = created.find((b) => b.teamRole === "chief") || created[0];
+  vm.applyTeamDisplays({ chiefId: chief?.id, memberIds: created.map((b) => b.id) }, created as vm.Bot[], desk?.novncPort || null);
+  for (const b of created) await store.upsertBot(b);
+  const team = await teams.saveTeam({
+    id: teamId,
+    name,
+    chiefId: chief?.id || null,
+    memberIds: created.map((b) => b.id),
+    computerId: desk?.id || null,
+    section: src.section || "",
+  });
+  broadcast("bots", (await store.loadBots()).map(toClient));
+  broadcast("computers", { dirty: true });
+  broadcast("teams", await publicTeams());
+  res.json({ ...team, chiefId: chief?.id || null, members: created.map((b) => ({ id: b.id, name: b.name, role: b.teamRole, color: b.color })), messages: [] });
+  if (chief) provision(chief.id).catch((err) => console.log("provision", err));
+});
+
 app.delete("/api/teams/:id", async (req, res) => {
   const team = await teams.getTeam(req.params.id);
   if (!team) return res.status(404).json({ error: "not found" });
@@ -2340,10 +2406,11 @@ app.delete("/api/teams/:id/job", async (req, res) => {
 app.patch("/api/teams/:id", async (req, res) => {
   const team = await teams.getTeam(req.params.id);
   if (!team) return res.status(404).json({ error: "not found" });
-  const patch: { name?: string; section?: string; pinned?: boolean } = {};
+  const patch: { name?: string; section?: string; pinned?: boolean; hidden?: boolean } = {};
   if (typeof req.body?.name === "string" && req.body.name.trim()) patch.name = req.body.name.trim();
   if ("section" in (req.body || {})) patch.section = String(req.body.section || "");
   if ("pinned" in (req.body || {})) patch.pinned = Boolean(req.body.pinned);
+  if ("hidden" in (req.body || {})) patch.hidden = Boolean(req.body.hidden);
   const saved = await teams.saveTeam({ ...team, ...patch });
   broadcast("teams", await publicTeams());
   res.json(saved);

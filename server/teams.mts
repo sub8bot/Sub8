@@ -116,6 +116,8 @@ export interface Team extends TeamView {
   computerId: unknown;
   section: string;
   pinned: boolean;
+  /** Hidden from the sidebar, like a bot's `hidden`. */
+  hidden?: boolean | undefined;
   createdAt: number;
   updatedAt: number;
   job?: Job | null | undefined;

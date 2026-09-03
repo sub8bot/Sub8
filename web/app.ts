@@ -324,6 +324,7 @@ interface Team {
   memberIds?: string[];
   section?: string;
   pinned?: boolean;
+  hidden?: boolean;
   job?: TeamJob | undefined;
   messages?: Message[];
   members?: { id: string; role?: string }[];
@@ -2917,11 +2918,20 @@ function railLayout(): { pinned: Bot[]; pinnedTeams: RailTeam[]; groups: RailGro
   const teamed = new Set<string>();
   const byId = new Map<string, RailTeam>();
   const teams = state.teams || [];
+  // A hidden team leaves the rail with its bots: they are neither a group nor
+  // loose entries, so they are marked teamed and skipped rather than letting
+  // the member loop below rebuild the group from their teamId.
+  const hiddenTeams = new Set(teams.filter((t) => t.hidden).map((t) => t.id));
   for (const t of teams) {
+    if (t.hidden) continue;
     byId.set(t.id, { id: t.id, name: t.name, bots: [] });
   }
   for (const b of vis) {
     if (!b.teamId) continue;
+    if (hiddenTeams.has(b.teamId)) {
+      teamed.add(b.id);
+      continue;
+    }
     if (!byId.has(b.teamId)) byId.set(b.teamId, { id: b.teamId, name: teamNameFor(b.teamId, vis.filter((x) => x.teamId === b.teamId)), bots: [] });
     // The line above guarantees the key is present.
     byId.get(b.teamId)!.bots.push(b);
@@ -3911,11 +3921,28 @@ function paintCtxMenu(): void {
         <button type="button" class="pill primary" data-act="ctx-create-section" data-id="${team.id}" data-kind="team">Create</button>
       </div>`;
     }
+    // A team is one shared computer with a screen per bot, so it gets the same
+    // menu as a solo bot: what is per-bot targets the chief (profile, unread,
+    // snapshots of the shared desk); what is per-team targets the team.
+    const chiefId = team.chiefId || teamBots(team).find((b) => b.teamRole === "chief")?.id || "";
+    const chief = chiefId ? botById(chiefId) || state.bots.find((b) => b.id === chiefId) : null;
+    const chiefItem = (act: string, icon: string, label: string) =>
+      chiefId ? `<button type="button" class="ctx-item" data-act="${act}" data-id="${chiefId}">${ctxIcon(icon)}<span>${label}</span></button>` : "";
     host.innerHTML = `
       <div class="ctx-menu" style="top:${top}px;left:${left}px">
         ${item("ctx-rename-team-open", "edit", "Rename")}
         ${item("ctx-pin", "pin", team.pinned ? "Unpin" : "Pin")}
         <button type="button" class="ctx-item has-sub" data-act="ctx-move-open" data-id="${team.id}">${ctxIcon("folder")}<span>Move to</span><span class="ctx-caret">›</span></button>
+        ${chiefItem("ctx-unread", "unread", chief?.unread ? "Mark as Read" : "Mark as Unread")}
+        <div class="ctx-sep"></div>
+        ${chiefItem("ctx-edit", "edit", "Edit Profile")}
+        ${isCloudPlace() ? "" : chiefItem("ctx-snapshots", "disk", "Snapshots…")}
+        ${isCloudPlace() ? "" : item("ctx-team-dup", "dup", "Duplicate")}
+        <div class="ctx-sep"></div>
+        ${item("ctx-copy", "copy", "Copy conversation ID")}
+        ${item("ctx-team-hide", "hide", "Hide from sidebar")}
+        <div class="ctx-sep"></div>
+        ${item("ctx-team-del", "del", "Delete team", "ctx-danger")}
       </div>
       ${move}
       ${namePrompt}`;
@@ -3951,6 +3978,8 @@ function paintCtxMenu(): void {
       ${item("ctx-rename-tab-open", "edit", "Rename")}
       ${item(briefOn ? "hide-team-brief" : "show-team-brief", "info", briefOn ? "Hide description" : "Show description")}
       ${item("ctx-edit", "gear", "Open settings")}
+      ${bot.hidden ? item("ctx-hide", "hide", "Show in sidebar") : ""}
+      ${team?.hidden ? `<button type="button" class="ctx-item" data-act="ctx-team-hide" data-id="${team.id}">${ctxIcon("hide")}<span>Show team in sidebar</span></button>` : ""}
       ${isCloudPlace() ? "" : item("ctx-snapshots", "disk", "Snapshots…")}
       ${canMoveToCloud() ? item("ctx-move-cloud", "globe", "Move to Cloud…") : ""}
       <div class="ctx-sep"></div>
@@ -7915,6 +7944,57 @@ const ACTIONS: Record<string, ActHandler> = {
     const label = team ? `Remove “${b.name}” from ${team.name}? The shared desk stays.` : `Remove “${b.name}”?`;
     if (!confirm(label)) return;
     deleteBot(id, true);
+    return;
+  },
+  "ctx-team-hide": (e, { el }) => {
+    const id = String(el.dataset.id || "");
+    const team = (state.teams || []).find((t) => t.id === id);
+    state.ctx = null;
+    paintCtxMenu();
+    if (!team) return;
+    team.hidden = !team.hidden;
+    // Like ctx-hide for a bot: don't leave a hidden team's bot selected.
+    if (team.hidden) {
+      const members = new Set(teamBots(team).map((b) => b.id));
+      if (state.selected && members.has(state.selected)) {
+        const next = state.bots.find((b) => !b.hidden && !members.has(b.id));
+        rememberSelected(next?.id || null);
+      }
+    }
+    render();
+    api(`/api/teams/${encodeURIComponent(id)}`, { method: "PATCH", body: { hidden: team.hidden } }).then(upsertLocalTeam as (saved: unknown) => void);
+    return;
+  },
+  "ctx-team-dup": (e, { el }) => {
+    const id = String(el.dataset.id || "");
+    state.ctx = null;
+    paintCtxMenu();
+    if (!id) return;
+    void (async () => {
+      try {
+        const made = (await api(`/api/teams/${encodeURIComponent(id)}/duplicate`, { method: "POST" })) as { chiefId?: string | null };
+        if (made?.chiefId) rememberSelected(made.chiefId);
+        render();
+      } catch (err) {
+        window.alert((err as CaughtError).message || "Could not duplicate that team.");
+      }
+    })();
+    return;
+  },
+  "ctx-team-del": (e, { el }) => {
+    const id = String(el.dataset.id || "");
+    const team = (state.teams || []).find((t) => t.id === id);
+    state.ctx = null;
+    paintCtxMenu();
+    if (!team) return;
+    const n = teamBots(team).length;
+    if (!window.confirm(`Delete “${team.name || "this team"}”? Its ${n} bot${n === 1 ? "" : "s"} and their shared computer will be removed.`)) return;
+    const members = new Set(teamBots(team).map((b) => b.id));
+    if (state.selected && members.has(state.selected)) {
+      const next = state.bots.find((b) => !b.hidden && !members.has(b.id));
+      rememberSelected(next?.id || null);
+    }
+    void api(`/api/teams/${encodeURIComponent(id)}`, { method: "DELETE" }).catch((err: CaughtError) => window.alert(err.message || "Could not delete that team."));
     return;
   },
   "ctx-rename-team-open": (e) => {
