@@ -52,6 +52,9 @@ import {
   liveBillingPortal as cloudLiveBillingPortal,
   liveBillingCheckout as cloudLiveBillingCheckout,
   revokeSession as cloudRevokeSession,
+  getVaultFillPending as cloudVaultFillPending,
+  approveVaultFill as cloudVaultFillApprove,
+  denyVaultFill as cloudVaultFillDeny,
 } from "./cloud/index.mjs";
 import { runCloudTurn as cloudRunTurn, appendCloudUser as cloudAppendUser, liveBrainSaveThread as cloudSaveThread, chatMessages } from "./cloud/turn.mjs";
 
@@ -891,6 +894,18 @@ export async function vaultGateUnlock(passcode: string): Promise<{ ok: boolean; 
 }
 export async function vaultGateReset(): Promise<void> {
   await cloudGateReset({ token: await claudeAuthToken() });
+}
+
+/** Present-to-approve fills a cloud Bot is waiting on. */
+export async function vaultFillPending(): Promise<{ requests: { id: string; botId: string; botName: string; computerId: string; accountId: string; label: string; site: string; username: string; ts: number }[] }> {
+  const r = (await cloudVaultFillPending({ token: await claudeAuthToken() })) as { requests?: unknown[] } | null;
+  return { requests: (Array.isArray(r?.requests) ? r!.requests : []) as { id: string; botId: string; botName: string; computerId: string; accountId: string; label: string; site: string; username: string; ts: number }[] };
+}
+export async function vaultFillApprove(id: string, secret: string): Promise<void> {
+  await cloudVaultFillApprove({ token: await claudeAuthToken(), id, secret });
+}
+export async function vaultFillDeny(id: string): Promise<void> {
+  await cloudVaultFillDeny({ token: await claudeAuthToken(), id });
 }
 
 export async function getCloudVault(): Promise<CloudVaultEnvelopeLike | null> {

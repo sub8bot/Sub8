@@ -37,6 +37,12 @@ export interface CloudVaultEnvelope {
   v: 1;
   /** The whole VaultFile JSON, sealed under the vault key (which the passcode gate holds, wrapped). */
   data: Sealed;
+  /**
+   * Account metadata (id, group, label, site, username — never a password) plus
+   * grants, sealed under the cloud ESCROW key, so a cloud desk can list the
+   * logins a Bot may use without the vault key. Absent until escrow exists.
+   */
+  index?: Sealed;
   /** account id -> that account's password, sealed under the cloud ESCROW key. Present only for always-on logins. */
   escrow: Record<string, Sealed>;
   /** account ids the user marked "always-on" for unattended cloud autofill. Just ids. */
@@ -54,6 +60,7 @@ export interface CloudVaultStatus {
 
 const ENVELOPE_PATH = path.join(dataDir, "vault-cloud.json");
 const AAD = "sub8-vault-file";
+const INDEX_AAD = "sub8-vault-index";
 
 let keyset: Keyset | null = null;
 /** The cloud escrow key, imported into memory while we hold it (to seal always-on items). */
@@ -71,7 +78,7 @@ async function readEnvelope(): Promise<CloudVaultEnvelope | null> {
   try {
     const raw = JSON.parse(await fs.readFile(ENVELOPE_PATH, "utf8"));
     if (raw && raw.data) {
-      return { v: 1, data: raw.data, escrow: raw.escrow || {}, alwaysOn: Array.isArray(raw.alwaysOn) ? raw.alwaysOn : [], updatedAt: Number(raw.updatedAt) || 0 };
+      return { v: 1, data: raw.data, ...(raw.index ? { index: raw.index } : {}), escrow: raw.escrow || {}, alwaysOn: Array.isArray(raw.alwaysOn) ? raw.alwaysOn : [], updatedAt: Number(raw.updatedAt) || 0 };
     }
   } catch {
     /* fall through */
@@ -111,7 +118,15 @@ async function buildEnvelope(ks: Keyset, alwaysOn: string[]): Promise<CloudVault
       if (acc?.password) escrow[id] = await seal(acc.password, escrowKey, `escrow:${id}`);
     }
   }
-  return { v: 1, data, escrow, alwaysOn: alwaysOn.filter((id) => escrow[id] || !escrowKey), updatedAt: Date.now() };
+  let index: Sealed | undefined;
+  if (escrowKey) {
+    const meta = {
+      accounts: file.accounts.map((a) => ({ id: a.id, groupId: a.groupId, label: a.label, site: a.site, username: a.username })),
+      grants: file.grants || {},
+    };
+    index = await seal(JSON.stringify(meta), escrowKey, INDEX_AAD);
+  }
+  return { v: 1, data, ...(index ? { index } : {}), escrow, alwaysOn: alwaysOn.filter((id) => escrow[id] || !escrowKey), updatedAt: Date.now() };
 }
 
 /**

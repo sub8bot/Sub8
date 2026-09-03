@@ -150,6 +150,19 @@ export async function gateReset({ token }: { token?: string | undefined } = {}) 
   return http.cloudApi("/api/brain/vault/gate?op=reset", { baseUrl: needBase(), token, method: "POST", body: {} });
 }
 
+export async function getVaultFillPending({ token }: { token?: string | undefined } = {}) {
+  if (!token) return null;
+  return http.cloudApi("/api/brain/vault/fill/pending", { baseUrl: needBase(), token });
+}
+export async function approveVaultFill({ token, id, secret }: { token?: string | undefined; id: string; secret: string }) {
+  if (!token) return null;
+  return http.cloudApi("/api/brain/vault/fill/approve", { baseUrl: needBase(), token, method: "POST", body: { id, secret } });
+}
+export async function denyVaultFill({ token, id }: { token?: string | undefined; id: string }) {
+  if (!token) return null;
+  return http.cloudApi("/api/brain/vault/fill/deny", { baseUrl: needBase(), token, method: "POST", body: { id } });
+}
+
 export async function getCloudVault({ token }: { token?: string | undefined } = {}) {
   if (!token) return null;
   try {

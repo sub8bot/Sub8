@@ -3579,3 +3579,7 @@ select.pill { appearance: none; padding-right: 24px; }
 .rail .me { display: flex; align-items: center; justify-content: center; }
 .rail .me svg { display: block; border-radius: 50%; }
 .me-photo { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* Present-to-approve card: a cloud Bot is waiting on the user to approve a login fill. */
+.toast.vault-approve { max-width: 360px; }
+.toast.vault-approve b { display: block; margin-bottom: 2px; }

@@ -1508,17 +1508,50 @@ app.post("/api/vault/cloud/unlock", async (req, res) => {
     await vaultSync.unlockWithKey(r.vaultKey);
     await adoptCloudEscrow().catch(() => {});
     const remote = await account.getCloudVault().catch(() => null);
-    if (remote) {
-      await vaultSync.applyPulled(remote as unknown as vaultSync.CloudVaultEnvelope).catch(() => {});
-    } else {
-      // Self-heal: the cloud has no blob for this vault (the pre-fix PUT answered 400 and every
-      // best-effort push was swallowed). We hold the key now — push the local envelope up.
-      const env = await vaultSync.resync().catch(() => null);
-      if (env) await account.putCloudVault(env).catch((e: Error) => console.error("[vault] cloud push (unlock self-heal) failed:", e.message));
-    }
+    if (remote) await vaultSync.applyPulled(remote as unknown as vaultSync.CloudVaultEnvelope).catch(() => {});
+    // Always re-seal and push after an unlock: it self-heals a cloud with no blob, and it is the
+    // moment the escrow-sealed `index` (what cloud desks list) and escrow entries get refreshed.
+    const env = await vaultSync.resync().catch(() => null);
+    if (env) await account.putCloudVault(env).catch((e: Error) => console.error("[vault] cloud push (unlock) failed:", e.message));
     const local = await vaultSync.status();
     const gate = await account.vaultGateStatus().catch(() => null);
     res.json({ ...local, enabled: Boolean(gate?.exists) || local.enabled, gate });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+/** Cloud Bots waiting on the user to approve a login fill (present-to-approve). */
+app.get("/api/vault/cloud/pending", async (_req, res) => {
+  try {
+    res.json(await account.vaultFillPending());
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message, requests: [] });
+  }
+});
+
+/** Approve one fill: decrypt that login here (vault must be unlocked) and relay it to the Worker, which pastes it into the desk. */
+app.post("/api/vault/cloud/approve", async (req, res) => {
+  try {
+    const id = String(req.body?.id || "");
+    const accountId = String(req.body?.accountId || "");
+    if (!id || !accountId) return res.status(400).json({ error: "id and accountId required" });
+    if (!vaultSync.isUnlocked()) return res.status(409).json({ error: "Unlock the cloud vault first." });
+    const secret = await vaultSync.revealForRelay(accountId);
+    if (!secret) return res.status(404).json({ error: "That login has no password saved." });
+    await account.vaultFillApprove(id, secret);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/vault/cloud/deny", async (req, res) => {
+  try {
+    const id = String(req.body?.id || "");
+    if (!id) return res.status(400).json({ error: "id required" });
+    await account.vaultFillDeny(id);
+    res.json({ ok: true });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
   }

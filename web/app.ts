@@ -6541,6 +6541,56 @@ function repaintVault(): void {
   bindVaultPassModal();
 }
 
+/** A cloud Bot waiting on the user to approve a present-to-approve login fill. */
+interface VaultFillReq { id: string; botId: string; botName: string; computerId: string; accountId: string; label: string; site: string; username: string; ts: number }
+const vaultPendingSeen = new Set<string>();
+
+/** Poll the Worker (through the app) for fills awaiting approval — only while this client holds the vault key. */
+async function pollVaultPending(): Promise<void> {
+  if (!(state.vaultCloud?.enabled && state.vaultCloud?.unlocked)) return;
+  try {
+    const r = (await api("/api/vault/cloud/pending")) as { requests?: VaultFillReq[] };
+    for (const q of r.requests || []) {
+      if (vaultPendingSeen.has(q.id)) continue;
+      vaultPendingSeen.add(q.id);
+      showVaultApproveCard(q);
+    }
+  } catch {
+    /* offline or signed out — try again next tick */
+  }
+}
+
+/** The approve card: who, where, which username — Approve relays the password to that desk, Deny tells the Bot no. */
+function showVaultApproveCard(q: VaultFillReq): void {
+  let host = document.getElementById("toasts");
+  if (!host) { host = document.createElement("div"); host.id = "toasts"; document.body.appendChild(host); }
+  const el = document.createElement("div");
+  el.className = "toast vault-approve";
+  el.innerHTML = `<b>${escapeHtml(q.botName || "A cloud bot")} wants to sign in</b>
+    <span>${escapeHtml(q.site || q.label || "a site")} as <strong>${escapeHtml(q.username || "?")}</strong></span>
+    <div class="row" style="gap:8px;margin-top:8px;justify-content:flex-end">
+      <button type="button" class="pill" data-k="deny">Deny</button>
+      <button type="button" class="pill primary" data-k="approve">Approve</button>
+    </div>`;
+  const done = () => el.remove();
+  el.querySelector<HTMLButtonElement>('[data-k="deny"]')!.addEventListener("click", async () => {
+    try { await api("/api/vault/cloud/deny", { method: "POST", body: { id: q.id } }); } catch (err) { flashToast((err as CaughtError | undefined)?.message || "Could not deny."); }
+    done();
+  });
+  el.querySelector<HTMLButtonElement>('[data-k="approve"]')!.addEventListener("click", async () => {
+    const btn = el.querySelector<HTMLButtonElement>('[data-k="approve"]')!;
+    btn.disabled = true; btn.textContent = "Sending…";
+    try {
+      await api("/api/vault/cloud/approve", { method: "POST", body: { id: q.id, accountId: q.accountId } });
+      done();
+    } catch (err) {
+      btn.disabled = false; btn.textContent = "Approve";
+      flashToast((err as CaughtError | undefined)?.message || "Could not approve.");
+    }
+  });
+  host.appendChild(el);
+}
+
 async function loadVaultCloud(): Promise<void> {
   try {
     state.vaultCloud = (await api("/api/vault/cloud")) as typeof state.vaultCloud;
@@ -12398,6 +12448,7 @@ function watchStream(): void {
     resumeVm().catch(() => {});
   }
   setInterval(watchStream, 8_000);
+  setInterval(() => void pollVaultPending(), 6_000);
   setInterval(() => {
     api("/api/health")
       .then((h) => {
