@@ -1508,7 +1508,14 @@ app.post("/api/vault/cloud/unlock", async (req, res) => {
     await vaultSync.unlockWithKey(r.vaultKey);
     await adoptCloudEscrow().catch(() => {});
     const remote = await account.getCloudVault().catch(() => null);
-    if (remote) await vaultSync.applyPulled(remote as unknown as vaultSync.CloudVaultEnvelope).catch(() => {});
+    if (remote) {
+      await vaultSync.applyPulled(remote as unknown as vaultSync.CloudVaultEnvelope).catch(() => {});
+    } else {
+      // Self-heal: the cloud has no blob for this vault (the pre-fix PUT answered 400 and every
+      // best-effort push was swallowed). We hold the key now — push the local envelope up.
+      const env = await vaultSync.resync().catch(() => null);
+      if (env) await account.putCloudVault(env).catch(() => {});
+    }
     const local = await vaultSync.status();
     const gate = await account.vaultGateStatus().catch(() => null);
     res.json({ ...local, enabled: Boolean(gate?.exists) || local.enabled, gate });
