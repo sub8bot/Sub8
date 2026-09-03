@@ -8990,7 +8990,9 @@ async function onSend(e: ComposerSubmit): Promise<void> {
   const channelTeam = ownTeam && (leadView || (state.channelTeamId && ownTeam.id === state.channelTeamId)) ? ownTeam : null;
   if (channelTeam) {
     ((channelTeam.messages ||= []) as Message[]).push({
-      id: `pending-${Date.now()}`, role: "user", content, ts: Date.now(), speakerId: "user", speakerName: "You",
+      // speakerRole matches the persisted copy so the bubble does not relabel
+      // from "You" to "You · User" when the server's message replaces it.
+      id: `pending-${Date.now()}`, role: "user", content, ts: Date.now(), speakerId: "user", speakerName: "You", speakerRole: "user",
     });
     if (bot) paintChat(bot);
     try {
@@ -11323,6 +11325,15 @@ function listen(): void {
         }
         team = (state.teams || []).find((t) => t.id === msg.teamId) || team;
         team.messages = team.messages || [];
+        // The channel send pushed an optimistic "pending-" copy of this user
+        // message into team.messages; drop it when the persisted one arrives,
+        // exactly as the selected bot's thread does below — otherwise the
+        // channel shows the message twice ("You" and "You · User").
+        if (msg.role === "user") {
+          team.messages = team.messages.filter(
+            (m) => !(String(m.id).startsWith("pending-") && m.content === msg.content),
+          );
+        }
         if (!team.messages.some((m) => m.id === msg.id)) team.messages.push(msg);
       }
       const selected = state.bots.find((b) => b.id === state.selected);
