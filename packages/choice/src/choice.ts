@@ -68,11 +68,17 @@ export function cardFromSendMessageArgs(bot: ChoiceCardArgs["bot"], args: SendMe
   }
   if (type === "widget" || args.widget || args.question) {
     const w: WidgetSpec = args.widget && typeof args.widget === "object" ? (args.widget as WidgetSpec) : {};
-    const question = w.prompt || args.question || args.content || "What should we do?";
+    const question = String(w.prompt || args.question || args.content || "").trim();
     const choices = w.options || args.choices || [];
+    const hasChoices = Array.isArray(choices) && choices.length > 0;
+    // A widget with NO question and NO options is not a real question — it used
+    // to render a useless "What should we do?" card with an empty free-text box.
+    // Answer null so the caller tells the model to ask something specific or
+    // just continue, instead of stopping the turn on a blank prompt.
+    if (!question && !hasChoices) return null;
     return choiceCard({
       bot,
-      question,
+      question: question || "What would you like?",
       hint: w.helpText || args.hint || "",
       choices,
       allowCustom: w.allowCustom ?? args.allow_custom,

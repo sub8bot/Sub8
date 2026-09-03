@@ -1262,6 +1262,12 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     if (!bot) throw new Error("Bot not found");
     if (bot.awaitingUserSelection) return { content: [{ type: "text", text: AWAITING_BLOCKED }], isError: true };
     const card = cardFromSendMessageArgs(bot, args);
+    // A widget with no question and no options builds no card (choice.ts). Tell
+    // the model to ask something specific or just continue, rather than letting
+    // it fall through to the text path and post nothing useful.
+    if (!card && (String(args.type || "") === "widget" || args.widget)) {
+      return { content: [{ type: "text", text: "A question needs a specific prompt (and options if it's a pick). Either ask a real question, or just do the task / answer directly — do not send an empty widget." }], isError: true };
+    }
     if (card) {
       await store.patchBot(botId, (b) => {
         b.messages = b.messages || [];
