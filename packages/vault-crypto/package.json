@@ -1,0 +1,28 @@
+{
+  "name": "@sub8/vault-crypto",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The vault's end-to-end encryption core: a passphrase-derived master key wraps a random vault key; secrets are sealed with AES-256-GCM. Pure WebCrypto so the same code runs on the Mac server, the Cloudflare Worker, and the browser. The server never holds the passphrase or the plaintext.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3"
+  }
+}

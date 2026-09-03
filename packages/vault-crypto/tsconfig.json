@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "composite": true,
+    "lib": ["ES2022", "DOM"],
+    "tsBuildInfoFile": "../../node_modules/.cache/sub8-tsbuildinfo/vault-crypto.tsbuildinfo"
+  },
+  "include": ["src/**/*.ts"]
+}
