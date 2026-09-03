@@ -52,6 +52,7 @@ export const CLOUD_STATE_TOOLS = new Set([
   "upsert_routine",
   "list_routines",
   "disable_routine",
+  "delete_routine",
   // Worker already implements memory via desk-action. In-desk grok-build used
   // mcp-sub8's docker-container check, which Cloud desks fail, so "what's your
   // name?" never read /config/agent-data.
