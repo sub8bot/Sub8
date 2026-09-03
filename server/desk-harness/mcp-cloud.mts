@@ -49,6 +49,7 @@ export const CLOUD_STATE_TOOLS = new Set([
   "rename_bot",
   "update_bot",
   "delete_teammate",
+  "show_user",
   "upsert_routine",
   "list_routines",
   "disable_routine",
