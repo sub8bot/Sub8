@@ -19,6 +19,7 @@ import type {
   Trigger,
   UpsertResult,
   WeeklyTrigger,
+  OnceTrigger,
 } from "./types.js";
 
 const GROUPS = [
@@ -680,6 +681,12 @@ export function normalizeTrigger(raw: unknown): Trigger | null {
     lastRunAt: Number.isFinite(lastRunAt) ? lastRunAt : 0,
     nextRunAt: Number.isFinite(nextRunAt) ? nextRunAt : null,
   };
+  if (kind === "once") {
+    const at = Number(row.at);
+    if (!Number.isFinite(at) || at <= 0) return null;
+    const trigger: OnceTrigger = { id, kind: "once", at, ...stamp };
+    return trigger;
+  }
   if (kind === "hourly") {
     const trigger: IntervalTrigger = { id, kind: "hourly", intervalMs: 3600_000, ...stamp };
     return trigger;
@@ -816,6 +823,12 @@ export function nextTriggerOccurrence(
   const t = normalizeTrigger(trigger);
   if (!t) return null;
   const current = asMillis(now);
+  if (t.kind === "once") {
+    // Fired already → never again. Otherwise it is due at `at` (or now, if that
+    // moment has passed and it has not fired yet).
+    if (t.lastRunAt > 0 && t.lastRunAt >= t.at) return null;
+    return inclusive && t.at <= current ? current : t.at;
+  }
   if (isElapsedTrigger(t)) {
     const base = t.lastRunAt > 0 ? t.lastRunAt : current;
     const wait = t.intervalMs || 3600_000;
@@ -1073,7 +1086,10 @@ function applyRoutineUpsert(bot: RoutineBot, spec: RoutineSpec): UpsertResult {
   if (explicitInterval === 86400_000 && (parsed?.schedule || normalizeSchedule(spec.schedule))) {
     explicitInterval = null;
   }
-  const rejectedNew = isRejectedRoutineInstruction(text, { explicitInterval: Boolean(explicitInterval) });
+  // An explicit trigger list (a one-shot reminder, a cron) IS the schedule; the
+  // instruction-text classifier only applies when the model gave no trigger.
+  const explicitTriggers = Array.isArray(spec.triggers) && spec.triggers.length > 0;
+  const rejectedNew = explicitTriggers ? false : isRejectedRoutineInstruction(text, { explicitInterval: Boolean(explicitInterval) });
   const schedule = explicitInterval ? null : normalizeSchedule(spec.schedule || parsed?.schedule);
   const intervalMs = explicitInterval || (!schedule ? parsed?.intervalMs || 20 * 60_000 : null);
   const byId = spec.id ? rows.find((r) => r.id === spec.id) : null;

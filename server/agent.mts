@@ -2124,9 +2124,11 @@ async function execTool(
         schedule: args.schedule,
         timeZone: ctx.resolveZone(settings),
         groupKey: args.group_key || undefined,
-        forceNew: args.force_new === true,
+        // One-off reminder: its own job, fires once. The model computes the time.
+        triggers: args.once_at ? [{ kind: "once", at: Date.parse(String(args.once_at)) }] : undefined,
+        forceNew: args.force_new === true || Boolean(args.once_at),
+        solo: args.once_at ? false : args.solo !== false,
         forceReplace: args.force_replace === true || instruction.length > 80,
-        solo: args.solo !== false,
         replace: args.replace !== false,
         enabled: args.enabled,
       } as routines.RoutineSpec);

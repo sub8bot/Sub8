@@ -3819,7 +3819,19 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
         if (event === "harness-auth") {
           store.loadSettings().then((s) => collectHarnessStatus(s)).then((status) => broadcast("harness-status", status)).catch(() => {});
         }
-        if (event === "routine" || event === "message") return store.upsertBot(bot);
+        // Field-level persist. upsertBot(bot) here wrote the turn's whole
+        // in-memory row on EVERY message event, silently undoing anything the
+        // desk subprocess had just written (a routine, a reminder) — "Created
+        // Reminder" in the log, nothing on the bot a second later.
+        if (event === "routine" || event === "message") {
+          return store.patchBot(botId, (b) => {
+            b.messages = b.messages || [];
+            const have = new Set(b.messages.map((m) => m.id));
+            for (const m of bot.messages || []) if (m?.id && !have.has(m.id)) b.messages.push(m);
+            if (event === "routine") b.routines = bot.routines || [];
+            b.awaitingUserSelection = bot.awaitingUserSelection;
+          }).then(() => undefined);
+        }
       },
     } as RunTurnOptions);
     if (opts.replyTo && !settings.__didReply && !notifiedThisTurn.has(notifyKey(botId, opts.replyTo))) {

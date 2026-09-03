@@ -328,6 +328,7 @@ export const TOOLS: ToolSpec[] = [
           prompt: { type: "string", description: "routine standing brief (alias of instruction)" },
           schedule: { description: "Routine cadence: cron string or {type, hour, minute}" },
           interval_minutes: { type: "number" },
+        once_at: { type: "string", description: "ISO-8601 time for a ONE-OFF reminder ('remind me in 2 minutes' → now + 2 min). Creates a separate job that fires once; never claim a reminder is set without this." },
           body: { type: "string", description: "skill markdown body" },
           confirm: { type: "boolean", description: "required true to delete a skill" },
         },

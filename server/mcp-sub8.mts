@@ -94,6 +94,7 @@ export type ToolArgs = {
   content?: string | undefined;
   /** send_message: teammates to wake (names or ids). */
   to?: unknown;
+  once_at?: unknown;
   message?: unknown;
   reason?: unknown;
   id?: string | undefined;
@@ -408,6 +409,7 @@ export const TOOLS: ToolSpec[] = [
         name: { type: "string" },
         instruction: { type: "string" },
         interval_minutes: { type: "number" },
+        once_at: { type: "string", description: "ISO-8601 time for a ONE-OFF reminder ('remind me in 2 minutes' → now + 2 min). Creates a separate job that fires once; never claim a reminder is set without this." },
         schedule: {
           type: "object",
           properties: { type: { type: "string" }, hour: { type: "number" }, minute: { type: "number" } },
@@ -1114,9 +1116,11 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
         intervalMs: Number.isFinite(minutes) && minutes > 0 ? minutes * 60_000 : undefined,
         schedule: args.schedule,
         groupKey: args.group_key || undefined,
-        forceNew: args.force_new === true,
+        // One-off reminder: its own job, fires once. The model computes the time.
+        triggers: args.once_at ? [{ kind: "once", at: Date.parse(String(args.once_at)) }] : undefined,
+        forceNew: args.force_new === true || Boolean(args.once_at),
+        solo: args.once_at ? false : args.solo !== false,
         forceReplace: args.force_replace === true || instruction.length > 80,
-        solo: args.solo !== false,
         replace: args.replace !== false,
         enabled: args.enabled,
         // @sub8/store spells "no override" as `null`; `ContextSettings` spells it

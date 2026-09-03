@@ -26,6 +26,12 @@ export interface IntervalTrigger extends TriggerBase {
   intervalMs: number;
 }
 
+/** Fires once at `at` (epoch ms), then never again — a reminder. */
+export interface OnceTrigger extends TriggerBase {
+  kind: "once";
+  at: number;
+}
+
 export interface TimesTrigger extends TriggerBase {
   kind: "daily" | "weekdays";
   times: TimeOfDay[];
@@ -57,6 +63,7 @@ export interface CronTrigger extends TriggerBase {
 
 export type Trigger =
   | IntervalTrigger
+  | OnceTrigger
   | TimesTrigger
   | WeeklyTrigger
   | MonthlyTrigger

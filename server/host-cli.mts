@@ -165,6 +165,14 @@ export function claudeBin(): string {
  * model_not_found 404s no longer reproduce). Haiku was a stopgap and is not
  * good enough for team coordination — double-delegations, skipped summaries.
  */
+/**
+ * Claude Code built-ins a desk turn must never reach: peer messaging (a
+ * worker once sent its answer to the developer's terminal), and Claude Code's
+ * own scheduling/notification tools — "remind me in 2 minutes" created a
+ * claude.ai cloud routine instead of a Sub8 reminder (upsert_routine once_at).
+ */
+export const DESK_DISALLOWED_TOOLS = ["SendMessage", "ListAgents", "RemoteTrigger", "CronCreate", "CronDelete", "CronList", "ScheduleWakeup", "Monitor", "PushNotification"];
+
 export const CLAUDE_SAFE_SONNET = "claude-sonnet-5";
 export const CLAUDE_FALLBACK = "claude-sonnet-4-5";
 
@@ -1024,8 +1032,7 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
       // answer there — the answer vanished from the team channel and landed
       // in the developer's terminal as a held peer message. No peers here.
       "--disallowedTools",
-      "SendMessage",
-      "ListAgents",
+      ...DESK_DISALLOWED_TOOLS,
       "--append-system-prompt",
       rules,
       "--session-id",
