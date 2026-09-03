@@ -3517,3 +3517,8 @@ select.pill { appearance: none; padding-right: 24px; }
 .ctx-prompt.add-login .field { width: 100%; }
 
 .plugin-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+
+/* Rail foot: a small badge that lists items hidden from the sidebar. */
+.rail-hidden { width: 34px; height: 34px; border-radius: 10px; border: 1px dashed var(--line, rgba(0,0,0,.25)); background: none; color: var(--muted, #888); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; margin: 2px auto; }
+.rail-hidden:hover { background: var(--hover); color: inherit; }
+.ctx-menu .ctx-head { padding: 6px 12px 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted, #888); }

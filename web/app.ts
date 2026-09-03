@@ -2895,6 +2895,15 @@ function pullChannels(): Promise<void> {
     });
 }
 
+/** Hidden-from-sidebar items the restore control lists: hidden teams, and hidden bots that are not in a hidden team (those return with the team). */
+function hiddenRailItems(): { teams: { id: string; name: string }[]; bots: Bot[] } {
+  if (isCloudPlace()) return { teams: [], bots: [] };
+  const teams = (state.teams || []).filter((t) => t.hidden).map((t) => ({ id: t.id, name: t.name || "Team" }));
+  const hiddenTeamIds = new Set(teams.map((t) => t.id));
+  const bots = (state.bots || []).filter((b) => b.hidden && !(b.teamId && hiddenTeamIds.has(b.teamId)));
+  return { teams, bots };
+}
+
 function railLayout(): { pinned: Bot[]; pinnedTeams: RailTeam[]; groups: RailGroup[]; teamGroups: RailTeam[] } {
   const vis = viewBots().filter((b) => !b.hidden);
   if (isCloudPlace()) {
@@ -3051,6 +3060,7 @@ function paintRail(bot: Bot | null | undefined): void {
       <button class="plus" data-act="create" title="${isCloudPlace() ? "Create Cloud Bot" : "Create new Bot"}">+</button>
       <div class="rail-bots" id="rail-bots"></div>
       <div class="channel-rail" id="channel-rail" hidden></div>
+      <button class="rail-hidden" id="rail-hidden" data-act="hidden-restore" title="Hidden from sidebar" hidden></button>
       <button class="me" data-act="profile" title="App settings"></button>
       <div class="rail-resize" id="rail-resize" title="Drag to resize sidebar"></div>`;
     rail.dataset.ready = "scroll";
@@ -3065,6 +3075,14 @@ function paintRail(bot: Bot | null | undefined): void {
   // The block above writes #rail-bots on the first paint and never removes it.
   const host = $("#rail-bots")!;
   const { pinned, pinnedTeams, groups, teamGroups } = railLayout();
+  const hiddenItems = hiddenRailItems();
+  const hiddenBtn = rail.querySelector<HTMLElement>("#rail-hidden");
+  if (hiddenBtn) {
+    const n = hiddenItems.teams.length + hiddenItems.bots.length;
+    hiddenBtn.hidden = n === 0;
+    hiddenBtn.textContent = String(n);
+    hiddenBtn.title = `${n} hidden from sidebar`;
+  }
   const keep = new Set(viewBots().map((b) => b.id));
   const teamKeep = new Set((teamGroups || []).map((t) => t.id));
   const nodes = new Map<string, HTMLElement>();
@@ -3789,6 +3807,25 @@ function paintCtxMenu(): void {
   ].join("|");
   if (host.dataset.stamp === stamp && host.querySelector(".ctx-menu, .ctx-prompt, .ctx-sub")) return;
   host.dataset.stamp = stamp;
+  if (ctx.type === "hidden") {
+    const { teams, bots } = hiddenRailItems();
+    const top = Math.min(ctx.y, Math.max(8, window.innerHeight - 40 - (teams.length + bots.length) * 40));
+    const left = Math.min(ctx.x, Math.max(8, window.innerWidth - 240));
+    if (!teams.length && !bots.length) {
+      host.innerHTML = "";
+      return;
+    }
+    const teamRow = (t: { id: string; name: string }) =>
+      `<button type="button" class="ctx-item" data-act="ctx-team-hide" data-id="${escapeHtml(t.id)}">${ctxIcon("hide")}<span>Show ${escapeHtml(t.name)}</span></button>`;
+    const botRow = (b: Bot) =>
+      `<button type="button" class="ctx-item" data-act="ctx-hide" data-id="${escapeHtml(b.id)}">${ctxIcon("hide")}<span>Show ${escapeHtml(b.name || "Bot")}</span></button>`;
+    host.innerHTML = `<div class="ctx-menu" style="top:${top}px;left:${left}px">
+      <div class="ctx-head">Hidden from sidebar</div>
+      ${teams.map(teamRow).join("")}
+      ${bots.map(botRow).join("")}
+    </div>`;
+    return;
+  }
   if (ctx.type === "add-login") {
     // Settings → Harnesses "+ Add login": a small picker under the button.
     const top = Math.min(ctx.y, Math.max(8, window.innerHeight - 240));
@@ -8222,6 +8259,11 @@ const ACTIONS: Record<string, ActHandler> = {
     const id = String(el.dataset.id || state.harnessTab || "");
     if (id) void loadHarnessPlugins(id, true);
     paintModal();
+  },
+  "hidden-restore": (e, { el }) => {
+    const r = el.getBoundingClientRect();
+    state.ctx = { type: "hidden", x: Math.max(8, r.right), y: r.top };
+    paintCtxMenu();
   },
   "harness-place": (e, { el }) => {
     state.harnessPlace = el.dataset.id === "cloud" ? "cloud" : "local";
