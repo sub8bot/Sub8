@@ -735,6 +735,7 @@ interface AppState {
   localHarness: LocalHarness;
   harnessStatus: HarnessStatusFull | null;
   harnessPlugins: Record<string, HarnessPluginsState>;
+  avatarEdit: boolean;
   identities: IdentityRow[];
   identityCatalog: { id: string; label: string }[];
   harnessTab: string | undefined;
@@ -891,6 +892,7 @@ const state: AppState = {
   },
   harnessStatus: null,
   harnessPlugins: {},
+  avatarEdit: false,
   identities: [],
   identityCatalog: [],
   harnessTab: "grok-build",
@@ -2544,6 +2546,24 @@ function refreshAvatars(): void {
     const id = el.dataset.avatar as string;
     const bot = botById(id);
     if (!bot && id !== "create" && id !== "about") return [];
+    // A user photo replaces the drawn look: paint an <img> here and keep the
+    // element out of the WebGL views (syncAvatars then disposes any stale one;
+    // clearing the element drops its canvas, and a fresh one is created if the
+    // photo is later removed).
+    const photo = avatarPhoto(bot);
+    const photoKey = photo ? `${photo.length}:${photo.slice(-24)}` : "";
+    if (photo) {
+      if (el.dataset.avatarPhoto !== photoKey) {
+        el.dataset.avatarPhoto = photoKey;
+        const px = Number(el.dataset.avatarSize || 36);
+        el.innerHTML = `<img class="avatar-photo" src="${escapeHtml(photo)}" alt="" draggable="false" style="width:${px}px;height:${px}px" />`;
+      }
+      return [];
+    }
+    if (el.dataset.avatarPhoto) {
+      delete el.dataset.avatarPhoto;
+      el.innerHTML = "";
+    }
     const preview = el.dataset.preview === "1";
     const wake = state.railWake;
     const mood =
@@ -4036,6 +4056,127 @@ function paintPaneHead(bot: Bot | null | undefined): void {
   }
 }
 
+/**
+ * One avatar "type": a bundled body + face + motion the user picks as a whole,
+ * instead of three separate chip rows. Resolved by label against the live
+ * lists so it never hard-codes an id; defaultAvatar() validates the result.
+ */
+type AvatarType = { id: string; label: string; body: string; expression: string; animation: string };
+
+const AVATAR_TYPE_DEFS: { id: string; label: string; body: string; face: string; motion: string }[] = [
+  { id: "classic", label: "Classic", body: "Rounder", face: "Neutral", motion: "Idle" },
+  { id: "cheerful", label: "Cheerful", body: "Chubby", face: "Happy", motion: "Bounce" },
+  { id: "cool", label: "Cool", body: "Slim", face: "Smirk", motion: "Sway" },
+  { id: "dreamy", label: "Dreamy", body: "Soft", face: "Blush", motion: "Float" },
+  { id: "zippy", label: "Zippy", body: "Short", face: "Grin", motion: "Hop" },
+  { id: "thinker", label: "Thinker", body: "Tall", face: "Think", motion: "Nod" },
+  { id: "party", label: "Party", body: "Curl", face: "Star", motion: "Dance" },
+  { id: "cozy", label: "Cozy", body: "Plush", face: "Beam", motion: "Wiggle" },
+  { id: "sleepy", label: "Sleepy", body: "Long", face: "No mouth", motion: "Sleep" },
+];
+
+function avatarIdFor(list: { id: string; label: string }[], label: string, fallback: string): string {
+  return list.find((x) => x.label === label)?.id || fallback;
+}
+
+function avatarTypes(): AvatarType[] {
+  const bodies = bodyList();
+  const faces = faceList();
+  const motions = animList();
+  return AVATAR_TYPE_DEFS.map((d) => ({
+    id: d.id,
+    label: d.label,
+    body: avatarIdFor(bodies, d.body, "rounder"),
+    expression: avatarIdFor(faces, d.face, "neutral"),
+    animation: avatarIdFor(motions, d.motion, "idle"),
+  }));
+}
+
+/** The type whose three parts all match this avatar, or null when it is a custom mix. */
+function currentAvatarType(avatar: { body: string; expression: string; animation: string }): AvatarType | null {
+  return avatarTypes().find((t) => t.body === avatar.body && t.expression === avatar.expression && t.animation === avatar.animation) || null;
+}
+
+/** The user photo on a bot's avatar, if any. The client Bot type predates the field. */
+function avatarPhoto(bot: { avatar?: unknown } | null | undefined): string {
+  const a = bot?.avatar as { photo?: unknown } | undefined;
+  return typeof a?.photo === "string" ? a.photo : "";
+}
+
+function avatarPickerHtml(bot: Bot, avatar: { body: string; expression: string; animation: string }): string {
+  const photo = avatarPhoto(bot);
+  const current = photo ? null : currentAvatarType(avatar);
+  const types = avatarTypes()
+    .map(
+      (t) =>
+        `<button type="button" class="avatar-type ${current?.id === t.id ? "on" : ""}" data-act="avatar-type" data-id="${t.id}">
+          <span class="lbl">${escapeHtml(t.label)}</span>
+        </button>`,
+    )
+    .join("");
+  return `<div class="card avatar-picker">
+      <div class="lbl">Type</div>
+      <div class="sub">One look — body, face and motion together.${!photo && !current ? " Currently a custom mix." : ""}</div>
+      <div class="avatar-types">${types}</div>
+      <div class="lbl" style="margin-top:12px">Photo</div>
+      <div class="sub">Use a picture of your own instead of the drawn look.</div>
+      <div class="avatar-photo-row">
+        ${photo ? `<img class="avatar-photo-thumb" src="${escapeHtml(photo)}" alt="" />` : ""}
+        <label class="pill">${photo ? "Change photo…" : "Choose photo…"}<input type="file" accept="image/*" hidden data-role="avatar-photo" /></label>
+        ${photo ? `<button type="button" class="pill" data-act="avatar-photo-clear">Remove photo</button>` : ""}
+      </div>
+    </div>`;
+}
+
+/** Downscale a picked image to a small square-ish data URL so it stays cheap to store and render. */
+async function resizeImageToDataUrl(file: Blob, max = 256): Promise<string> {
+  const src = await blobToDataUrl(file);
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = () => reject(new Error("That file is not an image we can read."));
+    i.src = src;
+  });
+  const scale = Math.min(1, max / Math.max(img.naturalWidth || 1, img.naturalHeight || 1));
+  const w = Math.max(1, Math.round((img.naturalWidth || 1) * scale));
+  const h = Math.max(1, Math.round((img.naturalHeight || 1) * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return src;
+  ctx.drawImage(img, 0, 0, w, h);
+  return canvas.toDataURL("image/jpeg", 0.86);
+}
+
+function applyAvatarType(bot: Bot, t: AvatarType): void {
+  // Picking a drawn type is the "or" of "type OR photo": it also clears a photo.
+  bot.avatar = defaultAvatar({ body: t.body, expression: t.expression, animation: t.animation }) as NonNullable<Bot["avatar"]>;
+  persistEditorBot(bot, { avatar: { ...(bot.avatar as object), photo: "" } });
+  paintBotEditor(bot);
+  refreshAvatars();
+}
+
+async function onAvatarPhotoChange(e: Event): Promise<void> {
+  const input = e.target as HTMLInputElement | null;
+  if (!input || input.dataset.role !== "avatar-photo") return;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+  const bot = editorBot();
+  if (!bot || isLiveCloud()) return;
+  try {
+    const photo = await resizeImageToDataUrl(file, 256);
+    bot.avatar = { ...(defaultAvatar(bot.avatar) as object), photo } as NonNullable<Bot["avatar"]>;
+    persistEditorBot(bot, { avatar: bot.avatar });
+    paintBotEditor(bot);
+    refreshAvatars();
+  } catch (err) {
+    alert(String((err as Error)?.message || err));
+  }
+}
+document.addEventListener("change", (e) => { void onAvatarPhotoChange(e); });
+
 function paintBotEditor(bot: Bot): void {
   const host = $("#bot-editor");
   if (!host) return;
@@ -4051,6 +4192,7 @@ function paintBotEditor(bot: Bot): void {
   host.innerHTML = `
     <div class="avatar-studio">
       <div class="avatar-preview" data-avatar="${bot.id}" data-avatar-slot="editor" data-avatar-size="168" data-avatar-framing="body" data-preview="1"></div>
+      <button type="button" class="pill avatar-edit" data-act="avatar-edit">${state.avatarEdit ? "Done" : "Edit look"}</button>
     </div>
     <label class="muted">Name</label>
     <input class="field" id="bn" value="${escapeHtml(bot.name || "")}" placeholder="Bot name" />
@@ -4065,33 +4207,7 @@ function paintBotEditor(bot: Bot): void {
       </div>
       <button class="toggle ${bot.notificationsEnabled ? "on" : ""}" data-act="bot-notify"><i></i></button>
     </div>
-    <label class="muted">Body</label>
-    <div class="chips chips-scroll" id="body-chips">
-      ${bodyList()
-        .map(
-          (b) =>
-            `<button type="button" class="chip ${b.id === avatar.body ? "on" : ""}" data-act="avatar-body" data-id="${b.id}">${escapeHtml(b.label)}</button>`
-        )
-        .join("")}
-    </div>
-    <label class="muted">Face</label>
-    <div class="chips chips-scroll" id="face-chips">
-      ${faceList()
-        .map(
-          (f) =>
-            `<button type="button" class="chip ${f.id === avatar.expression ? "on" : ""}" data-act="avatar-face" data-id="${f.id}">${escapeHtml(f.label)}</button>`
-        )
-        .join("")}
-    </div>
-    <label class="muted">Motion</label>
-    <div class="chips chips-scroll" id="anim-chips">
-      ${animList()
-        .map(
-          (a) =>
-            `<button type="button" class="chip ${a.id === avatar.animation ? "on" : ""}" data-act="avatar-anim" data-id="${a.id}">${escapeHtml(a.label)}</button>`
-        )
-        .join("")}
-    </div>
+    ${state.avatarEdit ? avatarPickerHtml(bot, avatar) : ""}
     <label class="muted">Instructions</label>
     <textarea class="field" id="bi" placeholder="Standing rules this Bot always follows">${escapeHtml(bot.instructions || "")}</textarea>
     ${(() => {
@@ -6005,8 +6121,8 @@ function pluginsHtml(tab: string): string {
         p.status !== "connected" && p.connectUrl
           ? `<button type="button" class="pill" data-act="plugin-connect" data-url="${escapeHtml(p.connectUrl)}" title="Open the page where this plugin is connected">Connect</button>`
           : "";
-      return `<div class="row">
-          <div>
+      return `<div class="row plugin-row">
+          <div class="plugin-main">
             <div class="lbl">${escapeHtml(p.name)}</div>
             <div class="sub muted mono plugin-url" title="${escapeHtml(p.url || "")}">${escapeHtml(p.url || "")}${p.transport ? ` · ${escapeHtml(p.transport)}` : ""}</div>
           </div>
@@ -7126,6 +7242,25 @@ const ACTIONS: Record<string, ActHandler> = {
       refreshAvatars();
     }
     return FALL_THROUGH;
+  },
+  "avatar-edit": (e) => {
+    state.avatarEdit = !state.avatarEdit;
+    const bot = editorBot();
+    if (bot) paintBotEditor(bot);
+    refreshAvatars();
+  },
+  "avatar-type": (e, { el }) => {
+    const bot = editorBot();
+    const t = avatarTypes().find((x) => x.id === el.dataset.id);
+    if (bot && t && !isLiveCloud()) applyAvatarType(bot, t);
+  },
+  "avatar-photo-clear": (e) => {
+    const bot = editorBot();
+    if (!bot || isLiveCloud()) return;
+    bot.avatar = defaultAvatar(bot.avatar) as NonNullable<Bot["avatar"]>;
+    persistEditorBot(bot, { avatar: { ...(bot.avatar as object), photo: "" } });
+    paintBotEditor(bot);
+    refreshAvatars();
   },
   "avatar-anim": avatarBodyAct,
   "avatar-body": avatarBodyAct,

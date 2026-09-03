@@ -57,8 +57,7 @@ import {
   claudeLoginCode,
   claudeLogout,
   claudeExportCredentials,
-  claudeImportCredentials,
-} from "./harness.mjs";
+  claudeImportCredentials, harnessPlugins } from "./harness.mjs";
 
 import type { ChildProcess } from "node:child_process";
 
@@ -292,6 +291,21 @@ function serve(): void {
         running.delete(ctl);
       }
       res.end();
+      return;
+    }
+    if (req.method === "GET" && String(req.url || "").startsWith("/plugins")) {
+      // The Worker relays this to the app and phone: which plugins this
+      // harness has and whether each is connected. Same bearer as /claude/auth.
+      const auth = String(req.headers.authorization || "");
+      if (!TOKEN || auth !== `Bearer ${TOKEN}`) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "bad token" }));
+        return;
+      }
+      const provider = new URL(String(req.url), "http://desk").searchParams.get("provider") || "claude";
+      const out = await harnessPlugins(provider);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(out));
       return;
     }
     if (String(req.url || "").startsWith("/claude/auth")) {

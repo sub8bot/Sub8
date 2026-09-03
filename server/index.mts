@@ -2566,11 +2566,17 @@ app.patch("/api/bots/:id", async (req, res) => {
     }
   }
   if (body.avatar && typeof body.avatar === "object") {
-    // `BotAvatar` also carries `body`; this route has never written it, and
-    // `loadBots` fills a missing third field in on the way back out.
+    // All three drawn fields persist, plus an optional user photo. Sending
+    // photo as "" or null clears it; omitting it keeps whatever was there.
+    const hasPhotoKey = Object.prototype.hasOwnProperty.call(body.avatar, "photo");
+    const photo = hasPhotoKey
+      ? (typeof body.avatar.photo === "string" && body.avatar.photo ? body.avatar.photo : undefined)
+      : bot.avatar?.photo;
     bot.avatar = {
       expression: body.avatar.expression || bot.avatar?.expression || "neutral",
       animation: body.avatar.animation || bot.avatar?.animation || "idle",
+      body: body.avatar.body || bot.avatar?.body || "rounder",
+      ...(photo ? { photo } : {}),
     } as store.BotAvatar;
     delete body.avatar;
   }

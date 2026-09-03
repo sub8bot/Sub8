@@ -31,6 +31,7 @@ import os from "node:os";
 import path from "node:path";
 import { dataDir } from "../paths.mjs";
 import { getBot, patchBot } from "@sub8/store";
+import { pluginsForHarness, type HarnessExec } from "@sub8/harness-plugins";
 import {
   writeGrokHome,
   parseGrokStream,
@@ -514,6 +515,31 @@ export interface ClaudeAuthState {
   authMethod: string;
   raw?: unknown;
   error?: string;
+}
+
+/**
+ * The plugins this desk's harness exposes and whether each is connected, read
+ * from the harness's own CLI as the desk's claude user. Same JSON shape the
+ * local app's GET /api/harness/:provider/plugins answers, so every client
+ * renders one thing.
+ */
+export async function harnessPlugins(provider = "claude"): Promise<Record<string, unknown>> {
+  const src = pluginsForHarness(provider);
+  if (!src) return { ok: true, provider, supported: false, plugins: [] };
+  const opts = claudeSpawnOpts();
+  const exec: HarnessExec = {
+    async run(file, args, o) {
+      const bin = file === "claude" ? claudeBin() : file;
+      const r = spawnSync(bin, args, { ...opts, env: { ...opts.env, NO_COLOR: "1" }, encoding: "utf8", timeout: o?.timeoutMs ?? 45_000 });
+      return { stdout: String(r.stdout || ""), stderr: String(r.stderr || ""), code: r.status ?? 0 };
+    },
+  };
+  try {
+    const plugins = await src.listPlugins(exec);
+    return { ok: true, provider, supported: true, label: src.label, plugins, checkedAt: Date.now() };
+  } catch (e) {
+    return { ok: false, provider, supported: true, plugins: [], error: String((e as Error)?.message || e) };
+  }
 }
 
 /** `claude auth status` as the desk's claude user. Machine-readable JSON. */

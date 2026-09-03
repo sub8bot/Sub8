@@ -55,6 +55,8 @@ declare module "express" {
    * exactOptionalPropertyTypes is `?: string` and not `?: string | undefined`.
    */
   export interface RequestAvatar {
+    /** A user photo (data URL); "" clears it. */
+    photo?: string | undefined;
     animation?: string;
     body?: string;
     expression?: string;

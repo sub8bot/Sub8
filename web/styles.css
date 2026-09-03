@@ -3468,3 +3468,18 @@ select.pill { appearance: none; padding-right: 24px; }
 
 /* Plugins list in a harness panel: keep a long MCP URL on one line. */
 .plugin-url { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Plugin rows: let the name/url block shrink so the badge + Connect never clip. */
+.plugin-row { flex-wrap: wrap; gap: 8px; }
+.plugin-row .plugin-main { flex: 1 1 160px; min-width: 0; }
+.plugin-row .plugin-url { max-width: 100%; }
+
+/* Bot editor: one avatar with an Edit toggle instead of three chip rows. */
+.avatar-studio { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.avatar-photo { display: block; object-fit: cover; border-radius: 28%; }
+.avatar-picker { margin: 4px 0 12px; }
+.avatar-types { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; margin-top: 8px; }
+.avatar-type { border: 1px solid var(--line, rgba(0,0,0,.12)); border-radius: 12px; padding: 10px 8px; background: var(--card); text-align: center; cursor: pointer; font: inherit; color: inherit; }
+.avatar-type:hover { background: var(--hover); }
+.avatar-type.on { border-color: var(--accent, #6d4aff); box-shadow: inset 0 0 0 1px var(--accent, #6d4aff); }
+.avatar-photo-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.avatar-photo-thumb { width: 40px; height: 40px; border-radius: 12px; object-fit: cover; }

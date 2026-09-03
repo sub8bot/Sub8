@@ -22,6 +22,8 @@ export interface BotAvatar {
   expression: string;
   animation: string;
   body: string;
+  /** A user-chosen picture (data URL, downscaled client-side) shown instead of the drawn look. */
+  photo?: string | undefined;
 }
 
 /** The bot's computer, as the host last saw it. */

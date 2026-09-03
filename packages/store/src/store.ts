@@ -464,10 +464,12 @@ async function loadBotsUnlocked(only?: string): Promise<Bot[]> {
     } else {
       const ok = ["mantle","tall","chubby","slim","soft","rounder","short","long","curl","plush"];
       const body = b.avatar.body === "mantle" || !ok.includes(b.avatar.body) ? "rounder" : b.avatar.body;
+      const photo = typeof b.avatar.photo === "string" && b.avatar.photo ? b.avatar.photo : undefined;
       b.avatar = {
         expression: b.avatar.expression || "neutral",
         animation: b.avatar.animation || "idle",
         body,
+        ...(photo ? { photo } : {}),
       };
     }
   }
@@ -515,6 +517,7 @@ export function newBot(partial: BotSeed = {}): Bot {
       expression: partial.avatar?.expression || "neutral",
       animation: partial.avatar?.animation || "idle",
       body: partial.avatar?.body || "rounder",
+      ...(partial.avatar?.photo ? { photo: partial.avatar.photo } : {}),
     },
     notificationsEnabled: false,
     createdAt: Date.now(),
