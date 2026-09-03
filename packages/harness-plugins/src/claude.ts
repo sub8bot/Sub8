@@ -7,8 +7,12 @@
 
 import type { HarnessExec, HarnessPlugin, HarnessPluginProvider, PluginConnStatus } from "./types.js";
 
-/** Where a claude.ai connector is connected/authorized. */
-export const CLAUDE_CONNECTORS_PAGE = "https://claude.ai/settings/connectors";
+/**
+ * Where a claude.ai connector is connected/authorized. Connectors live under
+ * Customize now; the old /settings/connectors page is only a "moved" notice,
+ * so link straight to the list.
+ */
+export const CLAUDE_CONNECTORS_PAGE = "https://claude.ai/new#settings/customize-connectors";
 
 /** A stable, url-safe id from a plugin's full reported name. */
 export function pluginSlug(name: string): string {
