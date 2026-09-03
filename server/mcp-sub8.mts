@@ -401,7 +401,7 @@ export const TOOLS: ToolSpec[] = [
   {
     name: "upsert_routine",
     description:
-      "Create or UPDATE this Bot's standing routine. Pass id from list_routines to edit. The operator asking to change the routine is permission. Do not create a second job that overlaps (same group or similar interval); update the existing id. instruction must be the full standing brief. For every morning, pass schedule {type:\"daily\", hour:9, minute:0} and omit interval_minutes.",
+      "Create or UPDATE this Bot's standing routine — or, with once_at, a ONE-OFF reminder (its own job, fires once; use it for 'remind me in N minutes/at HH:MM'). Pass id from list_routines to edit. The operator asking to change the routine is permission. Do not create a second job that overlaps (same group or similar interval); update the existing id. instruction must be the full standing brief. For every morning, pass schedule {type:\"daily\", hour:9, minute:0} and omit interval_minutes.",
     inputSchema: {
       type: "object",
       properties: {
@@ -1145,7 +1145,7 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
         content: [
           {
             type: "text",
-            text: `Did not create a second job. ${rejected}. Call upsert_routine with that id to edit.`,
+            text: `Did not create a second standing job (a Bot keeps ONE). For a one-off reminder pass once_at (ISO time) — that creates its own job that fires once. ${rejected}. Call upsert_routine with that id to edit.`,
           },
         ],
         isError: true,

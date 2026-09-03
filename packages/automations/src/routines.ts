@@ -1105,17 +1105,27 @@ function applyRoutineUpsert(bot: RoutineBot, spec: RoutineSpec): UpsertResult {
     };
   }
   const overlap = overlappingRoutine(bot, { ...spec, groupKey: key, intervalMs, schedule });
-  if (spec.forceNew && overlap) {
+  // A one-off reminder (explicit trigger) never 'overlaps' a standing job.
+  if (spec.forceNew && overlap && !explicitTriggers) {
     return {
       routine: overlap,
       merged: false,
       rejected: `overlaps "${overlap.name}" (${overlap.id}) ${cadenceLabel(overlap).toLowerCase()}. Update that id instead of creating a second job.`,
     };
   }
-  const primary = rows.find((r) => r.groupKey === "general") || rows[0] || null;
-  const existing = byId || (!spec.forceNew && (overlap || primary)) || null;
+  // A one-off reminder is never the standing job: it must not absorb a new
+  // standing brief (that merged "every 30 minutes" into a fired reminder whose
+  // `once` trigger could never fire again), and a new standing job must not
+  // replace it.
+  const isOnce = (r: Routine): boolean => Array.isArray(r.triggers) && r.triggers.length > 0 && r.triggers.every((t) => t.kind === "once");
+  const standing = rows.filter((r) => !isOnce(r));
+  const primary = standing.find((r) => r.groupKey === "general") || standing[0] || null;
+  const existing = byId || (!spec.forceNew && ((overlap && !isOnce(overlap) ? overlap : null) || primary)) || null;
   if (existing) {
     hydrateRoutine(existing, spec.now ?? Date.now(), spec.timeZone);
+    // A new cadence replaces stale triggers on the merged row (a fired `once`
+    // would otherwise pin nextRunAt to null forever).
+    if ((explicitInterval || schedule) && isOnce(existing)) existing.triggers = [];
     // Refusing a casual rewrite used to RETURN here, which skipped everything
     // below — schedule, triggers, intervalMs, name, groupKey. So an upsert that
     // carried a new cadence alongside a short instruction kept the old cadence
