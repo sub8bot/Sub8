@@ -1455,6 +1455,13 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
           /* ignore */
         }
       }
+      {
+        // Free the teammate's X display + Chrome on the shared desk (see index.mts DELETE /api/bots/:id).
+        const gone = await store.getBot(targetId).catch(() => null);
+        const disp = gone ? vm.displayNum(gone as unknown as vm.Bot) : 0;
+        const box = String((gone as { vm?: { container?: unknown } } | null)?.vm?.container || "");
+        if (box && disp > 1) await vm.stopDisplay(box, disp).catch(() => {});
+      }
       await store.deleteBot(targetId);
       await emit("teammate", { gone: targetId });
     }

@@ -2088,6 +2088,11 @@ async function execTool(
         const target = await store.getBot(targetId);
         labels.push(target?.name || targetId);
         if (typeof stopBotFn === "function") stopBotFn(targetId);
+        {
+          const disp = target ? vm.displayNum(target as unknown as vm.Bot) : 0;
+          const box = String((target as { vm?: { container?: unknown } } | null)?.vm?.container || "");
+          if (box && disp > 1) await vm.stopDisplay(box, disp).catch(() => {});
+        }
         await store.deleteBot(targetId);
         emit("teammate", { gone: targetId });
       }

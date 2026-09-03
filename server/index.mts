@@ -2610,6 +2610,11 @@ app.delete("/api/bots/:id", async (req, res) => {
   if (!bot) return res.status(404).json({ error: "not found" });
   const keepComputer = req.body?.keepComputer !== false && String(req.query.keepComputer || "") !== "0";
   deletedIds.add(bot.id);
+  // A teammate on a shared desk owns one X display: tear it down (Chrome and
+  // all) or the desk keeps paying pids/memory for a bot that no longer exists.
+  if (bot.vm?.container && vm.displayNum(bot as vm.Bot) > 1) {
+    vm.stopDisplay(bot.vm.container, vm.displayNum(bot as vm.Bot)).catch(() => {});
+  }
   const row = await computers.ensureComputerForBot(bot as computers.ComputerBot).catch(() => null);
   try {
     if (keepComputer) {

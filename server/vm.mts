@@ -4040,3 +4040,33 @@ export async function shell(bot: DeskBot, command: unknown): Promise<{ ok: boole
     return { ok: r.ok, output: r.out.slice(0, 8000) };
   });
 }
+
+
+/**
+ * Tear down one teammate's X display in a shared container: every process
+ * whose environment carries DISPLAY=:n (Chrome, its helpers, the desk-display
+ * shell) and the Xvfb itself. :1 is the container's own and is never touched.
+ * Without this, removing a teammate left its Chrome + Xvfb running — pids and
+ * memory gone for good on a desk that shares limits across bots.
+ */
+export async function stopDisplay(container: string, display: number | string | null | undefined): Promise<{ ok: boolean; killed: number }> {
+  const n = Number(display || 0);
+  if (!container || !Number.isFinite(n) || n <= 1) return { ok: true, killed: 0 };
+  const script = `
+k=0
+for p in /proc/[0-9]*; do
+  pid=\${p#/proc/}
+  [ "$pid" = "1" ] && continue
+  if tr "\\0" "\\n" < $p/environ 2>/dev/null | grep -qx "DISPLAY=:${n}"; then kill $pid 2>/dev/null && k=$((k+1)); fi
+done
+pkill -f "Xvfb :${n}( |$)" 2>/dev/null && k=$((k+1))
+sleep 1
+for p in /proc/[0-9]*; do
+  pid=\${p#/proc/}
+  [ "$pid" = "1" ] && continue
+  if tr "\\0" "\\n" < $p/environ 2>/dev/null | grep -qx "DISPLAY=:${n}"; then kill -9 $pid 2>/dev/null; fi
+done
+echo $k`;
+  const r = await docker(["exec", container, "sh", "-c", script]);
+  return { ok: r.ok, killed: Number(String(r.out || "").trim()) || 0 };
+}
