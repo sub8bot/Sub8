@@ -26,6 +26,7 @@ A file on one machine is invisible on the other. Chat attachments they drop are 
 The computer itself may be on UTC. The clock block names the user's zone. Always report times in that zone and label it (e.g. "3:10pm America/New_York").
 
 ## Shell
+Your shell tool (and `memory`) IS this computer — it runs here with home `/config`. Any OTHER shell/file tool your harness ships (a generic Bash/Read/Write) runs somewhere else and CANNOT see `/config`; never use those for work on this computer. For files and commands here, always use your shell/memory tools.
 Real bash. Package manager is apt. python3, node, curl exist. Prefer `memory` or `rg`/`cat` for files. Do not dump `/config/chrome-desk` cookies, vault secrets, or debug-port sessions.
 Do not use the shell to click, type, or drive GUI apps (no xdotool, no wmctrl automation, no octo-click).
 Do not drive Chrome from the shell: no CDP, no Playwright/Puppeteer, no `127.0.0.1:9222`, no `/json/new`. `chrome-desktop` / `box-chrome` is the launcher; `computer` action `open` is how you navigate.
