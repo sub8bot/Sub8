@@ -739,6 +739,7 @@ interface AppState {
   harnessPlugins: Record<string, HarnessPluginsState>;
   avatarEdit: boolean;
   harnessOpen: Record<string, boolean | undefined>;
+  harnessPlace: "local" | "cloud" | null;
   cloudPlugins: Record<string, HarnessPluginsState>;
   identities: IdentityRow[];
   identityCatalog: { id: string; label: string }[];
@@ -898,6 +899,7 @@ const state: AppState = {
   harnessPlugins: {},
   avatarEdit: false,
   harnessOpen: {},
+  harnessPlace: null,
   cloudPlugins: {},
   identities: [],
   identityCatalog: [],
@@ -3774,6 +3776,45 @@ function paintCtxMenu(): void {
   ].join("|");
   if (host.dataset.stamp === stamp && host.querySelector(".ctx-menu, .ctx-prompt, .ctx-sub")) return;
   host.dataset.stamp = stamp;
+  if (ctx.type === "add-login") {
+    // Settings → Harnesses "+ Add login": a small picker under the button.
+    const top = Math.min(ctx.y, Math.max(8, window.innerHeight - 240));
+    const left = Math.min(ctx.x, Math.max(8, window.innerWidth - 300));
+    const cloud = ctx.sub === "cloud";
+    const deskId = cloudDeskIdOf(currentBot());
+    const opts = (state.identityCatalog || []).map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`).join("");
+    host.innerHTML = `<div class="ctx-prompt add-login" style="top:${top}px;left:${left}px">
+      <div class="lbl">${cloud ? "Add a Cloud login" : "Add a login"}</div>
+      <div class="sub">${cloud ? "Grok signs in for the whole account; Claude signs in per desk." : "A separate sign-in on this Mac, so two Bots can use different accounts."}</div>
+      ${
+        cloud
+          ? `<div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
+          <button type="button" class="pill primary" data-act="add-login-cloud" data-id="grok">Sign in with Grok</button>
+          <button type="button" class="pill primary" data-act="add-login-cloud" data-id="claude" ${deskId ? "" : "disabled title=\"Select a Cloud desk bot first\""}>Claude on this desk</button>
+          <button type="button" class="pill" data-act="ctx-close">Cancel</button></div>`
+          : `<select class="field" id="identity-add-provider" style="margin-top:10px">${opts}</select>
+        <div class="row" style="margin-top:10px;gap:8px"><button type="button" class="pill primary" data-act="identity-add">Add</button><button type="button" class="pill" data-act="ctx-close">Cancel</button></div>`
+      }
+    </div>`;
+    return;
+  }
+  if (ctx.type === "harness" && String(ctx.harnessId || "").startsWith("cloud:")) {
+    const rowId = String(ctx.harnessId || "").slice(6);
+    const row = (state.identities || []).find((r) => r.id === rowId);
+    const top = Math.min(ctx.y, Math.max(8, window.innerHeight - 200));
+    const left = Math.min(ctx.x, Math.max(8, window.innerWidth - 240));
+    const deskId = cloudDeskIdOf(currentBot());
+    const claude = row?.provider === "claude";
+    const item = (doWhat: string, label: string, icon: string, extra = "") =>
+      `<button type="button" class="ctx-item ${extra}" data-act="harness-ctx" data-id="${escapeHtml(rowId)}" data-do="${doWhat}">${ctxIcon(icon)}<span>${escapeHtml(label)}</span></button>`;
+    host.innerHTML = `<div class="ctx-menu" style="top:${top}px;left:${left}px">
+      ${claude && deskId ? item("cloud-plugins", "Refresh plugins", "round") : ""}
+      ${claude && state.claudeAuth?.loggedIn ? item("desk-logout", "Sign out on this desk", "hide") : ""}
+      ${claude && !state.claudeAuth?.loggedIn && deskId ? item("desk-login", "Sign in on this desk", "gear") : ""}
+      ${row && row.provider !== "grok-build" ? `<div class="ctx-sep"></div>${item("remove", "Remove login", "del", "ctx-danger")}` : ""}
+    </div>`;
+    return;
+  }
   if (ctx.type === "harness") {
     // Settings → Harnesses ⋯: the rarely-needed actions that used to be rows on
     // every card. Each item closes the menu itself (harness-ctx).
@@ -4381,7 +4422,9 @@ function pluginRowsHtml(st: HarnessPluginsState | undefined, refresh: { act: str
   if (st.supported === false) return "";
   const asOf = st.checkedAt ? ` · as of ${new Date(st.checkedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "";
   const head = `<div class="row"><div><div class="lbl">Plugins</div><div class="sub">What this harness can use in a turn, read live from its CLI${asOf}. claude.ai may also list web-only integrations it cannot call.</div></div>
-        <button type="button" class="pill" data-act="${refresh.act}" data-id="${escapeHtml(refresh.id)}" ${st.loading ? "disabled" : ""}>${st.loading ? "Checking…" : "Refresh"}</button></div>`;
+        <span class="plugin-actions">${
+          st.manageUrl ? `<button type="button" class="pill primary" data-act="plugin-connect" data-url="${escapeHtml(st.manageUrl)}" title="Open the page where plugins are enabled">+ Add plugins</button>` : ""
+        }<button type="button" class="pill" data-act="${refresh.act}" data-id="${escapeHtml(refresh.id)}" ${st.loading ? "disabled" : ""}>${st.loading ? "Checking…" : "Refresh"}</button></span></div>`;
   if (st.error && !st.plugins.length) return head + `<div class="row"><span class="muted">${escapeHtml(st.error)}</span></div>`;
   if (!st.plugins.length) return head + (st.loading ? "" : `<div class="row"><span class="muted">No plugins reported.</span></div>`);
   const rows = st.plugins
@@ -4423,10 +4466,12 @@ async function loadCloudPlugins(computerId: string, force = false): Promise<void
       plugins?: HarnessPluginRow[];
       error?: string;
       checkedAt?: number;
+      manageUrl?: string;
     };
     state.cloudPlugins[computerId] = {
       loading: false,
       supported: r?.supported !== false,
+      manageUrl: typeof r?.manageUrl === "string" && r.manageUrl ? r.manageUrl : undefined,
       plugins: Array.isArray(r?.plugins) ? r.plugins : [],
       error: r?.ok === false ? String(r?.error || "Could not read plugins") : undefined,
       checkedAt: typeof r?.checkedAt === "number" ? r.checkedAt : Date.now(),
@@ -4442,47 +4487,6 @@ function cloudPluginsHtml(computerId: string): string {
   return `<div class="card"><div class="row"><div class="lbl">This desk</div><span class="muted mono">${escapeHtml(computerId)}</span></div>${pluginRowsHtml(state.cloudPlugins[computerId], { act: "refresh-cloud-plugins", id: computerId })}</div>`;
 }
 
-function identityCardHtml(row: IdentityRow): string {
-    const tone = row.status === "signed_in" ? "ok" : row.status === "expired" || row.status === "not_installed" ? "bad" : "warn";
-    const who = row.subject ? escapeHtml(row.subject) : "—";
-    const place = row.place === "cloud" ? "Cloud" : row.runtimeRef === "host" ? "This Mac (shared)" : "This Mac (isolated)";
-    const cloudClaude = row.place === "cloud" && row.provider === "claude";
-    // Which bots are attached to this login — local bots by id, cloud bots by
-    // the Worker-level identity (cloud-claude-<desk> collapses to cloud-claude).
-    const attached = [...state.bots, ...(state.cloudDraft?.bots || [])].filter((b) => {
-      const id = String(b.identityId || "");
-      if (!id) return false;
-      return id === row.id || (row.place === "cloud" && workerCloudIdentityId(id) === workerCloudIdentityId(row.id));
-    });
-    const usedBy = [...new Set(attached.map((b) => b.name || "Bot"))].map((n) => escapeHtml(n)).join(", ");
-    const deskState = state.claudeAuth?.loggedIn
-      ? `Signed in${state.claudeAuth.email ? ` as ${escapeHtml(state.claudeAuth.email)}` : ""}`
-      : cloudDeskIdOf(currentBot()) ? "Not signed in" : "Select a Cloud desk bot to sign in";
-    return `<div class="card ident">
-      <div class="row ident-head">
-        <div class="ident-title">
-          <div class="lbl">${escapeHtml(row.label)}</div>
-          <div class="sub">${escapeHtml(place)} · ${escapeHtml(row.provider)}${row.model ? ` · ${escapeHtml(row.model)}` : ""}</div>
-        </div>
-        <span class="hbadge ${tone}">${escapeHtml(identityStatusLabel(row.status))}</span>
-      </div>
-      <div class="row ident-meta"><span class="k">Account</span><span class="v">${who === "—" ? "Not connected" : who}</span></div>
-      <div class="row ident-meta"><span class="k">Used by</span><span class="v ident-actions">${usedBy || "No bots yet"}${
-        row.place === "cloud" && row.provider !== "grok-build"
-          ? `<button type="button" class="pill" data-act="identity-remove" data-id="${escapeHtml(row.id)}" title="Forget this login">Remove</button>`
-          : ""
-      }</span></div>
-      ${
-        cloudClaude
-          ? `<div class="row ident-meta"><span class="k">This desk</span><span class="v ident-actions">${deskState}${
-              state.claudeAuth?.loggedIn
-                ? `<button type="button" class="pill" data-act="claude-logout">Sign out</button>`
-                : `<button type="button" class="pill primary" data-act="claude-login" ${cloudDeskIdOf(currentBot()) ? "" : "disabled"}>Sign in</button>`
-            }</span></div>`
-          : ""
-      }
-    </div>`;
-}
 
 function claudeCodePanelHtml(): string {
   return state.claudeAuth?.awaitingCode
@@ -4638,43 +4642,96 @@ function harnessCardHtml(id: string, h: HarnessSettingsState): string {
 }
 
 /** Settings → Harnesses: every engine that can run a Bot, with its login, model and plugins in one place. */
-function harnessesHtml(h: HarnessSettingsState): string {
-  const cards = harnessCatalog().map((item) => harnessCardHtml(item.id, h)).join("");
-  const rows = state.identities || [];
-  const cloud = rows.filter((r) => r.place === "cloud");
+
+
+/** One cloud login, as the same card shape a local harness gets. */
+function cloudHarnessCardHtml(row: IdentityRow): string {
+  const id = `cloud:${row.id}`;
+  const engine = harnessCatalog().find((x) => x.id === row.provider)?.label || row.provider;
+  const cloudClaude = row.provider === "claude";
   const deskId = cloudDeskIdOf(currentBot());
-  const addOpts = (state.identityCatalog || [])
-    .map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`)
-    .join("");
-  const cloudBlock = isCloudPlace()
-    ? `<div class="block"><h3>Cloud</h3>${
-        cloud.length
-          ? cloud.map(identityCardHtml).join("") + (cloud.some((r) => r.provider === "claude") && deskId ? cloudPluginsHtml(deskId) : "")
-          : `<div class="card">
-        <div class="sub">No Cloud sessions yet. Grok is account-wide; Claude is per desk (select a bot in the rail first).</div>
-        <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
-          <button type="button" class="pill primary" data-act="cloud-brain-grok">Sign in with Grok</button>
-          <button type="button" class="pill" data-act="claude-login" ${deskId ? "" : "disabled title=\"Select a Cloud desk bot first\""}>Sign in Claude on desk</button>
-        </div>
-        <p class="muted" id="cloud-grok-wait" hidden style="margin-top:8px"></p>
-      </div>`
+  // Cloud Claude signs in per desk, so the account-level token says little:
+  // the truth is the selected desk's claudeAuth. Until a Cloud desk bot is
+  // selected, say "Per desk" rather than a misleading "Not signed in".
+  // claudeAuth is only loaded in the Cloud place (loadClaudeAuth nulls it
+  // otherwise), and cloudDeskIdOf keeps answering the last cloud desk for a
+  // local bot — so a desk-aware status needs both, exactly like the loader.
+  const deskKnown = isCloudPlace() && Boolean(deskId);
+  const deskIn = Boolean(state.claudeAuth?.loggedIn);
+  const status = cloudClaude ? (deskKnown ? (deskIn ? "signed_in" : "not_signed_in") : "per_desk") : row.status;
+  const badgeLabel = status === "per_desk" ? "Per desk" : identityStatusLabel(status);
+  const tone = status === "signed_in" ? "ok" : status === "expired" || status === "not_installed" ? "bad" : "warn";
+  // Which bots are attached to this login — cloud bots by the Worker-level
+  // identity (cloud-claude-<desk> collapses to cloud-claude).
+  const attached = [...state.bots, ...(state.cloudDraft?.bots || [])].filter((b) => {
+    const bid = String(b.identityId || "");
+    return bid === row.id || workerCloudIdentityId(bid) === workerCloudIdentityId(row.id);
+  });
+  const usedBy = [...new Set(attached.map((b) => b.name || "Bot"))].map((n) => escapeHtml(n)).join(", ");
+  const open = state.harnessOpen[id] ?? status === "signed_in";
+  const detail = [row.subject, row.model].filter(Boolean).map((x) => escapeHtml(String(x))).join(" · ");
+  const head = `<div class="harness-card-head">
+      <button type="button" class="harness-card-toggle" data-act="harness-open" data-id="${escapeHtml(id)}" aria-expanded="${open ? "true" : "false"}">
+        <i class="hdot ${tone}"></i>
+        <span class="harness-card-title"><span class="lbl">${escapeHtml(engine)}</span></span>
+        <span class="sub harness-card-detail">${detail}</span>
+        <span class="hbadge ${tone}">${escapeHtml(badgeLabel)}</span>
+        <i class="chev ${open ? "open" : ""}"></i>
+      </button>
+      <button type="button" class="harness-card-menu" data-act="harness-menu" data-id="${escapeHtml(id)}" title="More" aria-label="More options">⋯</button>
+    </div>`;
+  if (!open) return `<div class="card harness-card">${head}</div>`;
+  const deskRow = cloudClaude
+    ? `<div class="row"><div><div class="lbl">This desk</div><div class="sub">${
+        state.claudeAuth?.loggedIn
+          ? `Signed in${state.claudeAuth.email ? ` as ${escapeHtml(state.claudeAuth.email)}` : ""}${deskId ? ` · ${escapeHtml(deskId)}` : ""}`
+          : deskKnown ? `Not signed in · ${escapeHtml(deskId)}` : "Select a Cloud desk bot to sign it in"
+      }</div></div>${
+        state.claudeAuth?.loggedIn || !deskKnown ? "" : `<button type="button" class="pill primary" data-act="claude-login">Sign in</button>`
       }</div>`
     : "";
-  return `<h2>Harnesses</h2>
-    <p class="muted" style="margin-top:-8px">Every engine that can run a Bot — its login, model and plugins in one place. Click a harness to expand it.</p>
-    <div class="block"><h3>This Mac</h3>${cards}</div>
-    ${cloudBlock}
-    ${claudeCodePanelHtml()}
-    <div class="card">
-      <div class="row">
-        <div>
-          <div class="lbl">Add another login</div>
-          <div class="sub">Starts a separate login so two bots can use different accounts.</div>
-        </div>
-        <select class="field" id="identity-add-provider" style="max-width:180px">${addOpts}</select>
-        <button type="button" class="pill primary" data-act="identity-add">Add</button>
+  const plugins = cloudClaude && deskKnown
+    ? (state.cloudPlugins[deskId] ? "" : (void loadCloudPlugins(deskId), "")) + pluginRowsHtml(state.cloudPlugins[deskId], { act: "refresh-cloud-plugins", id: deskId })
+    : `<div class="row"><div class="lbl">Plugins</div><span class="muted">${cloudClaude ? "Select a Cloud desk bot to see its plugins." : "None for this engine yet."}</span></div>`;
+  return `<div class="card harness-card open">${head}
+    <div class="harness-card-body">
+      <div class="row ident-row">
+        <div><div class="lbl">Account</div><div class="sub">${row.subject ? escapeHtml(row.subject) : "This account"} · cloud${usedBy ? ` · used by ${usedBy}` : " · no bots yet"}</div></div>
       </div>
+      ${deskRow}
+      <div class="row"><div class="lbl">Model</div><span class="muted">${escapeHtml(row.model || "—")}</span></div>
+      ${plugins}
+    </div>
+  </div>`;
+}
+
+/** Settings → Harnesses: This Mac | Cloud, the same card for every engine, and one Add login CTA. */
+function harnessesHtml(h: HarnessSettingsState): string {
+  const place = state.harnessPlace || (isCloudPlace() ? "cloud" : "local");
+  const bar = `<div class="harness-bar">
+      <div class="harness-places" role="tablist">
+        <button type="button" class="pill ${place === "local" ? "primary" : ""}" data-act="harness-place" data-id="local" role="tab" aria-selected="${place === "local"}">This Mac</button>
+        <button type="button" class="pill ${place === "cloud" ? "primary" : ""}" data-act="harness-place" data-id="cloud" role="tab" aria-selected="${place === "cloud"}">Cloud</button>
+      </div>
+      <button type="button" class="pill" data-act="add-login-open" data-place="${place}">+ Add login</button>
     </div>`;
+  let body: string;
+  if (place === "local") {
+    body = harnessCatalog().map((item) => harnessCardHtml(item.id, h)).join("");
+  } else if (!cloudOn()) {
+    body = `<div class="card"><div class="lbl">Cloud is off</div><div class="sub">Turn on Cloud under Account to run Bots on always-on desks.</div></div>`;
+  } else {
+    const cloud = (state.identities || []).filter((r) => r.place === "cloud");
+    body =
+      (cloud.length
+        ? cloud.map(cloudHarnessCardHtml).join("")
+        : `<div class="card"><div class="lbl">No Cloud logins yet</div><div class="sub">Grok is account-wide; Claude signs in per desk (select a Cloud desk bot first). Use + Add login.</div>
+          <p class="muted" id="cloud-grok-wait" hidden style="margin-top:8px"></p></div>`) + claudeCodePanelHtml();
+  }
+  return `<h2>Harnesses</h2>
+    <p class="muted" style="margin-top:-8px">Every engine that can run a Bot — its login, model and plugins. Click one to expand it.</p>
+    ${bar}
+    ${body}`;
 }
 
 function paintModal(): void {
@@ -6390,6 +6447,8 @@ type HarnessPluginRow = {
 type HarnessPluginsState = {
   loading?: boolean | undefined;
   supported?: boolean | undefined;
+  /** Where to add/manage this harness's plugins (the Add plugins CTA). */
+  manageUrl?: string | undefined;
   plugins: HarnessPluginRow[];
   error?: string | undefined;
   checkedAt?: number | undefined;
@@ -6419,10 +6478,12 @@ async function loadHarnessPlugins(id: string, force = false): Promise<void> {
       plugins?: HarnessPluginRow[];
       error?: string;
       checkedAt?: number;
+      manageUrl?: string;
     };
     state.harnessPlugins[id] = {
       loading: false,
       supported: r?.supported !== false,
+      manageUrl: typeof r?.manageUrl === "string" && r.manageUrl ? r.manageUrl : undefined,
       plugins: Array.isArray(r?.plugins) ? r.plugins : [],
       error: r?.ok === false ? String(r?.error || "Could not read plugins") : undefined,
       // The server's cache time, so "as of" is honest when the list is cached.
@@ -8041,6 +8102,25 @@ const ACTIONS: Record<string, ActHandler> = {
     if (id) void loadHarnessPlugins(id, true);
     paintModal();
   },
+  "harness-place": (e, { el }) => {
+    state.harnessPlace = el.dataset.id === "cloud" ? "cloud" : "local";
+    paintModal();
+  },
+  "add-login-open": (e, { el }) => {
+    const r = el.getBoundingClientRect();
+    state.ctx = { type: "add-login", sub: String(el.dataset.place || "local"), x: Math.max(8, r.right - 296), y: r.bottom + 6 };
+    paintCtxMenu();
+  },
+  "add-login-cloud": (e, { el }) => {
+    state.ctx = null;
+    paintCtxMenu();
+    if (el.dataset.id === "grok") startCloudGrokOAuth();
+    else void claudeDeskLogin();
+  },
+  "ctx-close": () => {
+    state.ctx = null;
+    paintCtxMenu();
+  },
   "harness-menu": (e, { el }) => {
     const r = el.getBoundingClientRect();
     state.ctx = { type: "harness", harnessId: String(el.dataset.id || ""), x: Math.max(8, r.right - 232), y: r.bottom + 4 };
@@ -8052,7 +8132,17 @@ const ACTIONS: Record<string, ActHandler> = {
     state.ctx = null;
     paintCtxMenu();
     if (!id) return;
-    if (doWhat === "test") {
+    if (doWhat === "cloud-plugins") {
+      const deskId = cloudDeskIdOf(currentBot());
+      if (deskId) void loadCloudPlugins(deskId, true);
+      paintModal();
+    } else if (doWhat === "desk-logout") {
+      void claudeDeskLogout();
+    } else if (doWhat === "desk-login") {
+      void claudeDeskLogin();
+    } else if (doWhat === "remove") {
+      ACTIONS["identity-remove"]?.(e, { el, act: "identity-remove" } as ActContext);
+    } else if (doWhat === "test") {
       state.harnessTab = id;
       state.harnessOpen[id] = true;
       void testHarness(id);
@@ -8154,6 +8244,8 @@ const ACTIONS: Record<string, ActHandler> = {
   },
   "identity-add": () => {
     const provider = $<ValueEl>("#identity-add-provider")?.value || "claude";
+    state.ctx = null;
+    paintCtxMenu();
     void (async () => {
       try {
         await api("/api/identities", { method: "POST", body: { provider, isolated: true } });

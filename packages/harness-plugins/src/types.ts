@@ -57,4 +57,6 @@ export interface HarnessPluginProvider {
   listPlugins(exec: HarnessExec): Promise<HarnessPlugin[]>;
   /** The page to open so the user can connect a plugin; null if unknown. */
   connectUrl(plugin: HarnessPlugin): string | null;
+  /** Where the user adds or manages this harness's plugins (an "Add plugins" CTA); null if there is no such page. */
+  readonly manageUrl: string | null;
 }

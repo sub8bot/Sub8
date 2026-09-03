@@ -3509,3 +3509,11 @@ select.pill { appearance: none; padding-right: 24px; }
 .ctx-item.ctx-info { cursor: default; opacity: .75; }
 .ctx-item.ctx-info:hover { background: none; }
 .ctx-item.ctx-info .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Settings → Harnesses header: This Mac | Cloud switch and the Add login CTA. */
+.harness-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 12px; }
+.harness-places { display: flex; gap: 6px; }
+.ctx-prompt.add-login { min-width: 280px; }
+.ctx-prompt.add-login .field { width: 100%; }
+
+.plugin-actions { display: flex; gap: 6px; flex: 0 0 auto; }

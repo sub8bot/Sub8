@@ -542,7 +542,7 @@ export async function harnessPlugins(provider = "claude", { force = false }: { f
   const e = await pluginsCache.get(provider, deskPluginsExec(), { force });
   return e.error && !e.plugins.length
     ? { ok: false, provider, supported: true, label: src.label, plugins: [], error: e.error }
-    : { ok: true, provider, supported: true, label: src.label, plugins: e.plugins, checkedAt: e.checkedAt, ...(e.error ? { stale: true, error: e.error } : {}) };
+    : { ok: true, provider, supported: true, label: src.label, manageUrl: src.manageUrl, plugins: e.plugins, checkedAt: e.checkedAt, ...(e.error ? { stale: true, error: e.error } : {}) };
 }
 
 /** Kick off the first listing so the first turn already knows its plugins. */

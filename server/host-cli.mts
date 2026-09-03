@@ -983,7 +983,7 @@ export async function hostPlugins(provider: string, { force = false }: { force?:
   const e = await hostPluginsCache.get(provider, hostPluginsExec, { force });
   return e.error && !e.plugins.length
     ? { ok: false, provider, supported: true, label: src.label, plugins: [], error: e.error }
-    : { ok: true, provider, supported: true, label: src.label, plugins: e.plugins, checkedAt: e.checkedAt, ...(e.error ? { stale: true, error: e.error } : {}) };
+    : { ok: true, provider, supported: true, label: src.label, manageUrl: src.manageUrl, plugins: e.plugins, checkedAt: e.checkedAt, ...(e.error ? { stale: true, error: e.error } : {}) };
 }
 
 export function warmHostPlugins(): void {

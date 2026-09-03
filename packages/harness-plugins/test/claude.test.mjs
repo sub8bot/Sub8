@@ -101,6 +101,7 @@ test("claudePlugins.listPlugins runs `claude mcp list` through the injected exec
   const indeed = withError.find((x) => x.name === "Indeed" && x.status === "error");
   assert.ok(indeed, "rate-limited Indeed parsed as error");
   assert.equal(indeed.connectUrl, undefined);
+  assert.equal(claudePlugins.manageUrl, CLAUDE_CONNECTORS_PAGE, "Add plugins opens the connectors page");
   // connectUrl() always gives the user somewhere to go.
   assert.equal(claudePlugins.connectUrl(p.find((x) => x.name === "Gmail")), CLAUDE_CONNECTORS_PAGE);
 });

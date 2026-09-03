@@ -75,6 +75,7 @@ export function parseClaudeMcpList(out: string): HarnessPlugin[] {
 export const claudePlugins: HarnessPluginProvider = {
   harness: "claude",
   label: "Claude",
+  manageUrl: CLAUDE_CONNECTORS_PAGE,
 
   async listPlugins(exec: HarnessExec): Promise<HarnessPlugin[]> {
     // `claude mcp list` probes every server's health, so it can take a while;
