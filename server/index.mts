@@ -3990,6 +3990,8 @@ async function tickRoutines() {
               for (const t of r.triggers) {
                 if (routines.triggerDue(t, now, timeZone)) routines.advanceTrigger(t, now, timeZone);
               }
+              // A one-off reminder that just fired is done — show it as such.
+              if (r.triggers.every((t) => t.kind === "once" && !t.nextRunAt)) r.enabled = false;
             } else if (routines.isCalendarRoutine(r as routines.Routine)) routines.advanceCalendarRoutine(r as routines.Routine, now, timeZone);
             r.updatedAt = now;
             r.runs = [...(Array.isArray(r.runs) ? r.runs : []), { ts: now }].slice(-24);
