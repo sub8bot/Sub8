@@ -275,6 +275,7 @@ interface Computer {
   ram?: string;
   sku?: string;
   streamUrl?: string;
+  novncPort?: number;
   error?: string;
 }
 
@@ -2202,16 +2203,39 @@ async function loadOlderChat(): Promise<void> {
   }
 }
 
+/** A day+time separator label like the reference chat: "Today 3:10 PM", "Yesterday 12:46 PM", "Mon, Aug 24 7:28 AM". */
+function chatDayLabel(ts: unknown): string {
+  const d = new Date(Number(ts) || Date.now());
+  const now = new Date();
+  const floor = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((floor(now) - floor(d)) / 86_400_000);
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (diff === 0) return `Today ${time}`;
+  if (diff === 1) return `Yesterday ${time}`;
+  const opts: Intl.DateTimeFormatOptions =
+    d.getFullYear() === now.getFullYear()
+      ? { weekday: "short", month: "short", day: "numeric" }
+      : { weekday: "short", month: "short", day: "numeric", year: "numeric" };
+  return `${d.toLocaleDateString([], opts)} ${time}`;
+}
+
+/** The day a message falls on, for deciding when to draw a separator; null when it has no timestamp. */
+function chatDayKey(ts: unknown): number | null {
+  const n = Number(ts);
+  if (!n) return null;
+  const d = new Date(n);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
 function namedBubble(m: Message, assistant: boolean): string {
+  // The user's own line in a channel is a right-side dark bubble, same as a 1:1
+  // thread — no name, no avatar.
+  if (!assistant && (m.speakerRole === "user" || m.speakerId === "user" || !m.speakerId)) {
+    return `<div class="bubble user" data-mid="${escapeHtml(m.id || "")}">${escapeHtml(m.content || "")}</div>`;
+  }
   const name = escapeHtml(m.speakerName || "Bot");
   const role = m.speakerRole ? ` · ${escapeHtml(m.speakerRole)}` : "";
   const aid = m.speakerId && m.speakerId !== "user" && m.speakerId !== "teammate" ? m.speakerId : "";
-  const who = aid ? viewBots().find((b) => b.id === aid) : null;
-  const letter = (m.speakerName || who?.name || "?").slice(0, 1).toUpperCase();
-  const color = who?.color || "#a1a1aa";
-  const avatar = aid
-    ? `<span class="msg-ava msg-ava-ink" style="background:${escapeHtml(color)}">${escapeHtml(letter)}</span>`
-    : `<span class="msg-ava msg-ava-empty"></span>`;
   const raw = String(m.content || "").trim();
   const first = (raw.split("\n").find((l) => l.trim()) || "").replace(/^To [^:]+:\s*/i, "");
   // The lead handing a teammate a task reads as a delegation line — "→ Nova:
@@ -2228,7 +2252,6 @@ function namedBubble(m: Message, assistant: boolean): string {
         ${openBtn}</div>`
       : `<div class="bubble">${m.content ? formatChatText(m.content) : ""}${chatShotHtml(m)}${openBtn}</div>`;
   return `<div class="msg ${assistant ? "asst" : "mate"}" data-mid="${escapeHtml(m.id || "")}">
-    ${avatar}
     <div class="msg-col">
       <div class="msg-meta">${name}${role}</div>
       ${body}
@@ -2251,12 +2274,16 @@ function renderTeamChannel(thread: HTMLElement, team: Team): void {
   // card as in a 1:1 thread. Its live state (pending / picked) is on the
   // lead's own copy, found by id.
   const leadBot = chief;
+  let lastDay: number | null = null;
   thread.innerHTML = head + msgs.slice(-100).map((m) => {
+    let sep = "";
+    const k = chatDayKey(m.ts);
+    if (k && k !== lastDay) { lastDay = k; sep = `<div class="chat-day">${escapeHtml(chatDayLabel(m.ts))}</div>`; }
     if (m.kind === "choices" || m.kind === "secret-request") {
       const live = (leadBot?.messages || []).find((x: Message) => x.id === m.id) || m;
-      return `<div class="msg asst" data-mid="${escapeHtml(m.id || "")}">${renderChoiceCard(live)}</div>`;
+      return sep + `<div class="msg asst" data-mid="${escapeHtml(m.id || "")}">${renderChoiceCard(live)}</div>`;
     }
-    return namedBubble(m, m.speakerRole !== "user");
+    return sep + namedBubble(m, m.speakerRole !== "user");
   }).join("");
   thread.scrollTop = thread.scrollHeight;
   const input = $<HTMLTextAreaElement>('textarea[name="q"]');
@@ -2321,9 +2348,18 @@ function paintChat(bot: Bot | null | undefined): void {
   }
   const pendingChoices: Message[] = [];
   let liveActivity = false;
+  let lastDay: number | null = null;
+  const dayBreak = (m: Message) => {
+    const k = chatDayKey(m.ts);
+    if (k && k !== lastDay) {
+      lastDay = k;
+      html.push(`<div class="chat-day">${escapeHtml(chatDayLabel(m.ts))}</div>`);
+    }
+  };
   // Every rows[i] below sits under the i < rows.length guard of this loop.
   for (let i = 0; i < rows.length; ) {
     const m = rows[i]!;
+    dayBreak(m);
     if (m.kind === "choices" || m.kind === "secret-request") {
       if (m.pending !== false) pendingChoices.push(m);
       else html.push(renderChoiceCard(m));
@@ -5754,6 +5790,61 @@ function computerSnapshotsHtml(row: Computer): string {
   </div>`;
 }
 
+/** One computer as a card in Settings → Computers: status, who's on it, and its own actions. */
+function computerCardHtml(c: Computer): string {
+  const st = c.status === "running" ? "ok" : c.status === "paused" ? "warn" : "bad";
+  const cloud = c.kind === "cloud-draft" || isCloudPlace();
+  const port = !cloud && c.status === "running" && c.novncPort ? ` · stream port ${c.novncPort}` : "";
+  const canOpen = c.status === "running" && (cloud ? Boolean(c.streamUrl) : Boolean(c.novncPort));
+  const open = canOpen ? `<button type="button" class="pill" data-act="open-computer" data-id="${escapeHtml(c.id)}">Open</button>` : "";
+  return `<div class="card computer-card">
+    <div class="row">
+      <div><div class="lbl"><i class="hdot ${st}"></i> ${escapeHtml(c.name || "Computer")}</div>
+        <div class="sub">${c.attachedBotName ? escapeHtml(c.attachedBotName) : "Unattached"} · ${escapeHtml(computerStateLabel(c.status, c))}${port}</div></div>
+      ${harnessPill(c.harness)}<span class="hbadge ${st}">${escapeHtml(computerStateLabel(c.status, c))}</span>
+    </div>
+    ${memBarHtml(c.container, true)}
+    <div class="row computer-acts">${open}${computerActions(c)}</div>
+  </div>`;
+}
+
+/** Settings → Computers: every computer on This Mac / Cloud, each with its own controls. */
+function settingsComputersHtml(): string {
+  const place = isCloudPlace() ? "cloud" : "local";
+  const bar = `<div class="harness-bar">
+      <div class="harness-places" role="tablist">
+        <button type="button" class="pill ${place === "local" ? "primary" : ""}" data-act="computer-place" data-id="local" role="tab" aria-selected="${place === "local"}">This Mac</button>
+        ${cloudOn() ? `<button type="button" class="pill ${place === "cloud" ? "primary" : ""}" data-act="computer-place" data-id="cloud" role="tab" aria-selected="${place === "cloud"}">Cloud</button>` : ""}
+      </div>
+      ${place === "cloud" ? `<button type="button" class="pill primary" data-act="cloud-new-computer">New computer</button>` : ""}
+    </div>`;
+  const dockerCard =
+    place === "local"
+      ? `<div class="card"><div class="row"><div><div class="lbl">Docker</div><div class="sub">${
+          dockerMissing()
+            ? escapeHtml(state.docker?.hint || "Required to run computers.")
+            : state.docker?.engine
+              ? `Running · ${escapeHtml(state.docker.engine)}`
+              : "Required. Each Bot’s computer is a Linux desktop in Docker."
+        }</div></div>${
+          dockerMissing()
+            ? state.docker?.cli === false
+              ? `<button type="button" class="pill primary" data-act="install-docker" ${state.dockerBusy ? "disabled" : ""}>${dockerInstalling() ? "Installing…" : "Install Docker"}</button>`
+              : `<button type="button" class="pill primary" data-act="recover-docker" ${state.dockerBusy ? "disabled" : ""}>${state.dockerBusy ? "Recovering…" : "Recover"}</button>`
+            : `<span class="muted">Ready</span>`
+        }</div></div>`
+      : "";
+  const rows = sortedComputers();
+  const cards = rows.length
+    ? rows.map(computerCardHtml).join("")
+    : `<div class="card"><div class="sub">${place === "cloud" ? "No Cloud desks yet. Press New computer." : "No computers yet. Start a Bot and it gets a desk."}</div></div>`;
+  return `<h2>Computers</h2>
+    <p class="muted" style="margin-top:-8px">Every Linux desktop your Bots run on — start, open, or reset any of them here.</p>
+    ${bar}
+    ${dockerCard}
+    ${cards}`;
+}
+
 function computersHtml(): string {
   const rows = sortedComputers();
   const id = state.computerId || rows[0]?.id || "";
@@ -6801,39 +6892,7 @@ function settingsHtml(): string {
               }
             </div>
           </div>`
-              : `<h2>Computer</h2>
-          <div class="block">
-            <div class="card">
-              <div class="row"><div><div class="lbl">Docker</div><div class="sub">${
-                dockerMissing()
-                  ? escapeHtml(state.docker?.hint || "Required to run computers.")
-                  : state.docker?.engine
-                    ? `Running · ${escapeHtml(state.docker.engine)}`
-                    : "Required. Each Bot’s computer is a Linux desktop in Docker."
-              }</div></div>${
-                dockerMissing()
-                  ? state.docker?.cli === false
-                    ? `<button type="button" class="pill primary" data-act="install-docker" ${state.dockerBusy ? "disabled" : ""}>${
-                        dockerInstalling() ? "Installing…" : "Install Docker"
-                      }</button>`
-                    : `<button type="button" class="pill primary" data-act="recover-docker" ${state.dockerBusy ? "disabled" : ""}>${
-                        state.dockerBusy ? "Recovering…" : "Recover"
-                      }</button>`
-                  : `<span class="muted">Ready</span>`
-              }</div>
-              <div class="row"><div><div class="lbl">This Bot's desktop</div><div class="sub">${
-                state.bots.find((b) => b.id === state.selected)?.vm?.status === "running"
-                  ? `Running · stream port ${state.bots.find((b) => b.id === state.selected)?.vm?.novncPort || "—"}`
-                  : "Not attached. Reload to start or reconnect the existing computer."
-              }</div></div></div>
-              <div class="row"><div><div class="lbl">Reload computer</div><div class="sub">Start it if it’s down, or attach the existing one. Does not wipe files.</div></div>
-                <button class="pill primary" data-act="reload-vm">Reload</button></div>
-              <div class="row"><div><div class="lbl">Open in browser</div><div class="sub">Full desktop in a browser tab (the same stream as this window). You can drive it there.</div></div>
-                <button class="pill" data-act="open-vm-browser">Open</button></div>
-              <div class="row"><div><div class="lbl">Reset computer</div><div class="sub">Destroys this Bot’s Linux desktop and makes a new empty one.</div></div>
-                <button class="danger" data-act="reset-vm">Reset</button></div>
-            </div>
-          </div>`
+              : settingsComputersHtml()
         }
       </div>
     </div>
@@ -7290,6 +7349,11 @@ const ACTIONS: Record<string, ActHandler> = {
         if (state.modal === "settings" && state.section === "harnesses") paintModal();
       });
     }
+    if (el.dataset.id === "updates") {
+      void loadComputers().then(() => {
+        if (state.modal === "settings" && state.section === "updates") paintModal();
+      });
+    }
     if (el.dataset.id === "harnesses") {
       state.harnessTab = state.settings?.harness?.provider || state.harnessTab || "grok-build";
       loadHarnessStatus().then(() => {
@@ -7616,6 +7680,19 @@ const ACTIONS: Record<string, ActHandler> = {
   "computer-attach": (e, { el }) => {
     computerAction(el.dataset.id, "attach", { botId: el.dataset.bot });
     return;
+  },
+  "computer-place": (e, { el }) => {
+    // The computers board and its per-card actions are place-aware, so the tab
+    // drives the global place; Settings stays open.
+    void switchPlace(el.dataset.id).then(() => {
+      if (state.modal === "settings" && state.section === "updates") paintModal();
+    });
+  },
+  "open-computer": (e, { el }) => {
+    const c = viewComputers().find((x) => x.id === el.dataset.id);
+    if (!c) return;
+    const url = c.kind === "cloud-draft" || isCloudPlace() ? (c.streamUrl as string | undefined) : c.novncPort ? `http://127.0.0.1:${c.novncPort}/` : undefined;
+    if (url) window.open(url, "_blank");
   },
   "computer-act": (e, { el }) => {
     const doit = el.dataset.do;

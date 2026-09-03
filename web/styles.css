@@ -12,9 +12,9 @@
   --on-fg: #fff;
   --pill: #fff;
   --bubble: #f3f4f6;
-  --bubble-user: #eceefe;
-  --bubble-user-fg: #111;
-  --bubble-user-link: #4f46e5;
+  --bubble-user: #18181b;
+  --bubble-user-fg: #ffffff;
+  --bubble-user-link: #c7d2fe;
   --composer: #f4f4f5;
   --composer-focus: #ececee;
   --input: #f4f4f5;
@@ -39,9 +39,9 @@ html[data-theme="dark"] {
   --on-fg: #111;
   --pill: #1c1c1f;
   --bubble: #1c1c1f;
-  --bubble-user: #27272a;
-  --bubble-user-fg: #f4f4f5;
-  --bubble-user-link: #c7d2fe;
+  --bubble-user: #e7e7ea;
+  --bubble-user-fg: #18181b;
+  --bubble-user-link: #4f46e5;
   --composer: #1c1c1f;
   --composer-focus: #27272a;
   --input: #27272a;
@@ -63,9 +63,9 @@ html[data-theme="dark"] {
     --on-fg: #111;
     --pill: #1c1c1f;
     --bubble: #1c1c1f;
-    --bubble-user: #27272a;
-    --bubble-user-fg: #f4f4f5;
-    --bubble-user-link: #c7d2fe;
+    --bubble-user: #e7e7ea;
+    --bubble-user-fg: #18181b;
+    --bubble-user-link: #4f46e5;
     --composer: #1c1c1f;
     --composer-focus: #27272a;
     --input: #27272a;
@@ -3522,3 +3522,14 @@ select.pill { appearance: none; padding-right: 24px; }
 .rail-hidden { width: 34px; height: 34px; border-radius: 10px; border: 1px dashed var(--line, rgba(0,0,0,.25)); background: none; color: var(--muted, #888); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; margin: 2px auto; }
 .rail-hidden:hover { background: var(--hover); color: inherit; }
 .ctx-menu .ctx-head { padding: 6px 12px 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted, #888); }
+
+/* Settings → Computers cards. */
+.computer-card .computer-acts { flex-wrap: wrap; gap: 6px; justify-content: flex-start; }
+.computer-card + .computer-card { margin-top: 8px; }
+.computer-card .hdot { display: inline-block; vertical-align: middle; margin-right: 4px; }
+
+/* Chat: day/time separators, and no more per-message avatars. */
+.chat-day { text-align: center; font-size: 12px; color: var(--muted, #8a8f98); margin: 16px 0 10px; }
+.chat-day:first-child { margin-top: 4px; }
+.msg { max-width: 86%; }
+.msg.asst, .msg.mate { align-self: flex-start; }
