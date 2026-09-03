@@ -567,6 +567,15 @@ export async function raiseDeskResources(container: string, ramMb: number): Prom
   return { ok: r.code === 0, memory: l.memory, pids: l.pids, ...(r.code === 0 ? {} : { error: String(r.out || "docker update failed").slice(0, 200) }) };
 }
 
+/** Raise ONLY the process (pids) limit, live — the cheap fix for pids pressure.
+ * Unlike raiseDeskResources this does not touch memory, so it never runs into
+ * the Docker Desktop VM ceiling. */
+export async function raiseDeskPids(container: string, pids: number): Promise<{ ok: boolean; pids: number; error?: string }> {
+  const n = Math.max(256, Math.min(8192, Math.round(pids)));
+  const r = await docker(["update", "--pids-limit", String(n), container]);
+  return { ok: r.code === 0, pids: n, ...(r.code === 0 ? {} : { error: String(r.out || "docker update failed").slice(0, 200) }) };
+}
+
 export function deskShm(): string {
   return process.env.LOCALBOT_SHM || "256m";
 }

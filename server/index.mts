@@ -3435,9 +3435,12 @@ app.post("/api/bots/:id/choice", async (req, res) => {
   const intent = card?.context?.intent;
   const name = card?.context?.name || "Worker";
   if (intent === "desk-resources") {
-    const ctx = card?.context as { container?: string; ramMb?: number; action?: string } | undefined;
+    const ctx = card?.context as { container?: string; ramMb?: number; pids?: number; action?: string } | undefined;
     let note = "Left as is.";
-    if (selectedId === "increase" && ctx?.container && ctx.ramMb) {
+    if (selectedId === "increase" && ctx?.action === "raise-pids" && ctx?.container && ctx.pids) {
+      const r = await vm.raiseDeskPids(ctx.container, ctx.pids);
+      note = r.ok ? `Done — this computer now allows ${r.pids} processes.` : `Couldn't raise it: ${r.error}`;
+    } else if (selectedId === "increase" && ctx?.container && ctx.ramMb) {
       const r = await vm.raiseDeskResources(ctx.container, ctx.ramMb);
       note = r.ok ? `Done — this computer now has ${r.memory} memory and a ${r.pids}-process limit.` : `Couldn't raise it: ${r.error}`;
       await store.patchBot(bot.id, (b) => {
@@ -4105,9 +4108,29 @@ setInterval(async () => {
       if (owner.awaitingUserSelection) continue;
       deskPressureCardAt.set(container, Date.now());
       const nextRamMb = Math.min(16384, Math.max(4096, (st.memMaxMb || 2048) * 2));
+      const nextPids = Math.min(8192, Math.max(1024, (st.pidsMax || 768) * 2));
       const vmCeiling = st.vmTotalMb > 0 && nextRamMb > st.vmTotalMb * 0.8;
       const facts = `memory ${st.memUsedMb}/${st.memMaxMb || "∞"} MiB, processes ${st.pids}/${st.pidsMax || "∞"}`;
-      const card = vmCeiling
+      // Pids pressure is cheap to fix (raise the process limit, live, no VM
+      // impact). Only MEMORY pressure can hit the Docker Desktop VM ceiling.
+      const card = st.pressure === "pids"
+        ? {
+            id: `dr${Date.now()}`,
+            role: "assistant",
+            kind: "choices",
+            content: `My computer is running low on process slots (${facts}). Give it more?`,
+            hint: `Raises the process limit to ${nextPids}, live — nothing restarts, no extra memory needed.`,
+            choices: [
+              { id: "increase", label: `Raise to ${nextPids} processes` },
+              { id: "keep", label: "Keep as is" },
+            ],
+            pending: true,
+            context: { intent: "desk-resources", container, pids: nextPids, action: "raise-pids" },
+            speakerId: owner.id,
+            speakerName: owner.name,
+            ts: Date.now(),
+          }
+        : vmCeiling
         ? {
             id: `dr${Date.now()}`,
             role: "assistant",
