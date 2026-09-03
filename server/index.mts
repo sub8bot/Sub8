@@ -15,7 +15,6 @@ import * as identities from "./identities.mjs";
 import type { Identity } from "@sub8/identities";
 import { applySimulate } from "../web/brain-setup.mjs";
 import { looksLikeAuthFailure, rewriteHarnessOutput } from "@sub8/harness-auth";
-import { pluginsForHarness, type HarnessExec } from "@sub8/harness-plugins";
 import { randomBytes, randomUUID } from "node:crypto";
 import { setHumanControl, isHumanControl, releaseHumanControl, boxHelpReleasedWake } from "@sub8/control";
 import { appRoot, dataDir } from "./paths.mjs";
@@ -1984,51 +1983,14 @@ app.get("/api/harness/grok-login", async (req, res) => {
 });
 
 /**
- * Runs a harness CLI on this Mac for the plugin providers. They ask for a bare
- * command name ("claude"); this resolves it to the binary the rest of the app
- * already uses, so an Electron PATH that lacks it still works. NO_COLOR keeps
- * ANSI codes out of the output the parsers read.
- */
-const hostHarnessExec: HarnessExec = {
-  run(file, args, opts) {
-    const bin = file === "claude" ? hostCli.claudeBin() : file;
-    const timeoutMs = opts?.timeoutMs ?? 30_000;
-    return new Promise((resolve) => {
-      let stdout = "";
-      let stderr = "";
-      let done = false;
-      const finish = (code: number) => {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        resolve({ stdout, stderr, code });
-      };
-      const child = spawn(bin, args, { env: { ...process.env, NO_COLOR: "1" } });
-      const timer = setTimeout(() => {
-        stderr += `\n[timed out after ${timeoutMs}ms]`;
-        try { child.kill("SIGKILL"); } catch { /* already gone */ }
-        finish(124);
-      }, timeoutMs);
-      child.stdout?.on("data", (d) => { stdout += String(d); });
-      child.stderr?.on("data", (d) => { stderr += String(d); });
-      child.on("error", (e) => { stderr += String((e as Error)?.message || e); finish(127); });
-      child.on("close", (code) => finish(code ?? 0));
-    });
-  },
-};
-
-/**
- * The plugins a harness exposes and whether each is connected, read live from
- * that harness's own CLI. A harness with no plugin surface answers
- * `supported:false` rather than 404 so the UI can simply show nothing.
+ * The plugins a harness exposes and whether each is connected, from this Mac's
+ * cached listing (?refresh=1 forces a fresh one). A harness with no plugin
+ * surface answers `supported:false` rather than 404 so the UI shows nothing.
  */
 app.get("/api/harness/:provider/plugins", async (req, res) => {
   const provider = String(req.params.provider || "").trim();
-  const src = pluginsForHarness(provider);
-  if (!src) return res.json({ ok: true, provider, supported: false, plugins: [] });
   try {
-    const plugins = await src.listPlugins(hostHarnessExec);
-    res.json({ ok: true, provider, supported: true, label: src.label, plugins, checkedAt: Date.now() });
+    res.json(await hostCli.hostPlugins(provider, { force: String(req.query.refresh || "") === "1" }));
   } catch (e) {
     res.status(500).json({ ok: false, provider, supported: true, error: String((e as Error)?.message || e) });
   }
@@ -4639,6 +4601,7 @@ async function restoreDeskAutomations(bot: IndexBot) {
 }
 
 const httpServer = app.listen(PORT, "127.0.0.1", async () => {
+  hostCli.warmHostPlugins();
   const migrated = store.migrateUserData(dataDir, { extraSources: [path.join(appRoot, "data")] });
   if (migrated.copied.length || migrated.clonedFrom) {
     console.log(

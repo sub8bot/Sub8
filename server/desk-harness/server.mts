@@ -57,7 +57,7 @@ import {
   claudeLoginCode,
   claudeLogout,
   claudeExportCredentials,
-  claudeImportCredentials, harnessPlugins } from "./harness.mjs";
+  claudeImportCredentials, harnessPlugins, warmPlugins } from "./harness.mjs";
 
 import type { ChildProcess } from "node:child_process";
 
@@ -302,8 +302,9 @@ function serve(): void {
         res.end(JSON.stringify({ error: "bad token" }));
         return;
       }
-      const provider = new URL(String(req.url), "http://desk").searchParams.get("provider") || "claude";
-      const out = await harnessPlugins(provider);
+      const u = new URL(String(req.url), "http://desk");
+      const provider = u.searchParams.get("provider") || "claude";
+      const out = await harnessPlugins(provider, { force: u.searchParams.get("refresh") === "1" });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(out));
       return;
@@ -369,7 +370,10 @@ function serve(): void {
     res.end(JSON.stringify({ error: "not found" }));
   });
   refreshMcp(); // first tools probe, off the request path; /health omits mcp until it lands
-  server.listen(PORT, () => console.log(`desk-harness on :${PORT} (grok=${grokPresent()})`));
+  server.listen(PORT, () => {
+    console.log(`desk-harness on :${PORT} (grok=${grokPresent()})`);
+    warmPlugins();
+  });
 }
 
 if (SELFTEST) {

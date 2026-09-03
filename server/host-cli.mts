@@ -4,6 +4,7 @@ import fsSync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { appRoot, dataDir } from "./paths.mjs";
+import { pluginsForHarness, createPluginsCache, pluginsPromptBlock, type HarnessExec, type ExecResult } from "@sub8/harness-plugins";
 import * as vault from "./vault.mjs";
 import * as ctx from "./context.mjs";
 import * as memory from "./memory.mjs";
@@ -933,6 +934,68 @@ async function writeCursorWorkspace(work: string, mcpEnv: McpEnv): Promise<void>
   );
 }
 
+/**
+ * Run a command and capture its output without blocking the event loop — the
+ * plugin listing takes 10–20s and this process serves the UI.
+ */
+export function spawnCapture(bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv | undefined; cwd?: string | undefined; uid?: number | undefined; gid?: number | undefined }, timeoutMs: number): Promise<ExecResult> {
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let done = false;
+    const finish = (code: number) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve({ stdout, stderr, code });
+    };
+    const child = spawn(bin, args, opts);
+    const timer = setTimeout(() => {
+      stderr += `\n[timed out after ${timeoutMs}ms]`;
+      try { child.kill("SIGKILL"); } catch { /* already gone */ }
+      finish(124);
+    }, timeoutMs);
+    child.stdout?.on("data", (d) => { stdout += String(d); });
+    child.stderr?.on("data", (d) => { stderr += String(d); });
+    child.on("error", (e) => { stderr += String((e as Error)?.message || e); finish(127); });
+    child.on("close", (code) => finish(code ?? 0));
+  });
+}
+
+/**
+ * Plugins of this Mac's harness login, cached: a turn reads the cache
+ * (`withHostPluginsBlock`, never waits) and only Settings → Refresh waits for
+ * a fresh listing.
+ */
+const hostPluginsCache = createPluginsCache({ ttlMs: 10 * 60_000 });
+
+export const hostPluginsExec: HarnessExec = {
+  run(file, args, opts) {
+    const bin = file === "claude" ? claudeBin() : file;
+    return spawnCapture(bin, args, { env: { ...hostEnv(), NO_COLOR: "1" } }, opts?.timeoutMs ?? 45_000);
+  },
+};
+
+/** Same JSON shape the desk harness's GET /plugins answers. */
+export async function hostPlugins(provider: string, { force = false }: { force?: boolean } = {}): Promise<Record<string, unknown>> {
+  const src = pluginsForHarness(provider);
+  if (!src) return { ok: true, provider, supported: false, plugins: [] };
+  const e = await hostPluginsCache.get(provider, hostPluginsExec, { force });
+  return e.error && !e.plugins.length
+    ? { ok: false, provider, supported: true, label: src.label, plugins: [], error: e.error }
+    : { ok: true, provider, supported: true, label: src.label, plugins: e.plugins, checkedAt: e.checkedAt, ...(e.error ? { stale: true, error: e.error } : {}) };
+}
+
+export function warmHostPlugins(): void {
+  void hostPluginsCache.get("claude", hostPluginsExec);
+}
+
+/** The turn's rules plus which plugins are connected right now (from cache). */
+export function withHostPluginsBlock(system: string): string {
+  const block = pluginsPromptBlock(hostPluginsCache.peek("claude", hostPluginsExec) || [], { settingsPath: "Settings → This Mac → Plugins" });
+  return block ? `${system}\n\n${block}` : system;
+}
+
 export async function runHostCli({ provider, model, userText, signal, bot, settings, hidden = false, emit, internalToken, port }: RunHostCliOptions): Promise<string> {
   const box = bot?.vm?.container;
   if (!box) return "This harness only runs after the Bot computer is up.";
@@ -1039,7 +1102,7 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
       "--disallowedTools",
       ...DESK_DISALLOWED_TOOLS,
       "--append-system-prompt",
-      rules,
+      withHostPluginsBlock(rules),
       "--session-id",
       sessionId,
       ...claudeModelArgs(model),

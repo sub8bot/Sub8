@@ -6084,7 +6084,7 @@ async function loadHarnessPlugins(id: string, force = false): Promise<void> {
   if (!force && cur && (cur.loading || cur.checkedAt)) return;
   state.harnessPlugins[id] = { ...(cur || { plugins: [] }), loading: true, error: undefined };
   try {
-    const r = (await api(`/api/harness/${encodeURIComponent(id)}/plugins`)) as {
+    const r = (await api(`/api/harness/${encodeURIComponent(id)}/plugins${force ? "?refresh=1" : ""}`)) as {
       ok?: boolean;
       supported?: boolean;
       plugins?: HarnessPluginRow[];

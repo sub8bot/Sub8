@@ -31,7 +31,7 @@ import os from "node:os";
 import path from "node:path";
 import { dataDir } from "../paths.mjs";
 import { getBot, patchBot } from "@sub8/store";
-import { pluginsForHarness, type HarnessExec } from "@sub8/harness-plugins";
+import { pluginsForHarness, createPluginsCache, pluginsPromptBlock, type HarnessExec } from "@sub8/harness-plugins";
 import {
   writeGrokHome,
   parseGrokStream,
@@ -45,6 +45,7 @@ import {
   foldGrokVisibleText,
   grokBin,
   hostEnv,
+  spawnCapture,
 } from "../host-cli.mjs";
 import type { StreamAcc } from "../host-cli.mjs";
 import type {
@@ -518,28 +519,45 @@ export interface ClaudeAuthState {
 }
 
 /**
- * The plugins this desk's harness exposes and whether each is connected, read
- * from the harness's own CLI as the desk's claude user. Same JSON shape the
- * local app's GET /api/harness/:provider/plugins answers, so every client
- * renders one thing.
+ * Plugins of this desk's harness, cached: listing probes every server's health
+ * (10–20s), so turns read the cache (`withPluginsBlock`) and only Settings →
+ * Refresh waits for a fresh list. Runs as the desk's claude user.
  */
-export async function harnessPlugins(provider = "claude"): Promise<Record<string, unknown>> {
-  const src = pluginsForHarness(provider);
-  if (!src) return { ok: true, provider, supported: false, plugins: [] };
+const pluginsCache = createPluginsCache({ ttlMs: 10 * 60_000 });
+
+function deskPluginsExec(): HarnessExec {
   const opts = claudeSpawnOpts();
-  const exec: HarnessExec = {
-    async run(file, args, o) {
+  return {
+    run(file, args, o) {
       const bin = file === "claude" ? claudeBin() : file;
-      const r = spawnSync(bin, args, { ...opts, env: { ...opts.env, NO_COLOR: "1" }, encoding: "utf8", timeout: o?.timeoutMs ?? 45_000 });
-      return { stdout: String(r.stdout || ""), stderr: String(r.stderr || ""), code: r.status ?? 0 };
+      return spawnCapture(bin, args, { ...opts, env: { ...opts.env, NO_COLOR: "1" } }, o?.timeoutMs ?? 45_000);
     },
   };
-  try {
-    const plugins = await src.listPlugins(exec);
-    return { ok: true, provider, supported: true, label: src.label, plugins, checkedAt: Date.now() };
-  } catch (e) {
-    return { ok: false, provider, supported: true, plugins: [], error: String((e as Error)?.message || e) };
-  }
+}
+
+/** Same JSON shape the local app's GET /api/harness/:provider/plugins answers. */
+export async function harnessPlugins(provider = "claude", { force = false }: { force?: boolean } = {}): Promise<Record<string, unknown>> {
+  const src = pluginsForHarness(provider);
+  if (!src) return { ok: true, provider, supported: false, plugins: [] };
+  const e = await pluginsCache.get(provider, deskPluginsExec(), { force });
+  return e.error && !e.plugins.length
+    ? { ok: false, provider, supported: true, label: src.label, plugins: [], error: e.error }
+    : { ok: true, provider, supported: true, label: src.label, plugins: e.plugins, checkedAt: e.checkedAt, ...(e.error ? { stale: true, error: e.error } : {}) };
+}
+
+/** Kick off the first listing so the first turn already knows its plugins. */
+export function warmPlugins(): void {
+  void pluginsCache.get("claude", deskPluginsExec());
+}
+
+/**
+ * The turn's system prompt plus a note of which plugins are connected right
+ * now, from cache — a turn never waits on the listing.
+ */
+export function withPluginsBlock(system: string): string {
+  const plugins = pluginsCache.peek("claude", deskPluginsExec()) || [];
+  const block = pluginsPromptBlock(plugins, { settingsPath: "the app's Plugins screen" });
+  return block ? `${system}\n\n${block}` : system;
 }
 
 /** `claude auth status` as the desk's claude user. Machine-readable JSON. */
@@ -1111,7 +1129,7 @@ export async function runTurn(body: TurnBody, emit: EmitTurnEvent, opts: RunTurn
     // below hands it ownership -- 0600 alone would make it unreadable there.
     mcpFilePath = mcpFile;
     await fs.writeFile(mcpFile, mcpJson, { mode: 0o600 });
-    args = claudeArgs({ prompt, model: t.model, sessionId: randomUUID(), mcpFile, system: t.system });
+    args = claudeArgs({ prompt, model: t.model, sessionId: randomUUID(), mcpFile, system: withPluginsBlock(t.system) });
     // Claude authenticates by ANTHROPIC_API_KEY, or by an OAuth login already on
     // the desk (~/.claude). A stray XAI key must not leak into its env.
     delete env.XAI_API_KEY;
