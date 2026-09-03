@@ -130,7 +130,12 @@ export function slug(text: unknown): string {
 export function resolveMemoryPath(bot: MemoryBot, raw: unknown): string {
   const p = String(raw || "").trim();
   if (!p) throw new Error("path required");
-  const abs = p.startsWith("/") ? p : path.posix.join(agentRoot(bot), p);
+  // A relative path is a NOTE, and notes live in `<root>/memory/` — the place
+  // the prompt advertises and the digest reads. Resolving "profile.md" against
+  // the agent root put lasting facts one directory too high, where nothing
+  // ever read them back ("Saved" one turn, "no memory of that" the next).
+  const rel = p.startsWith("memory/") ? p.slice("memory/".length) : p;
+  const abs = p.startsWith("/") ? p : path.posix.join(agentRoot(bot), "memory", rel);
   const n = path.posix.normalize(abs);
   if (n.includes("..") || n === "/" || n === "/config") throw new Error("invalid path");
   const ok =
