@@ -925,12 +925,14 @@ app.patch("/api/cloud/draft/bots/:id", async (req, res) => {
   try {
     if (!(await requireCloudSession(req, res))) return;
     if (!account.useMockAuth()) {
+      const photo = typeof req.body?.avatar?.photo === "string" ? req.body.avatar.photo : typeof req.body?.photo === "string" ? req.body.photo : undefined;
       const snap = await account.livePatchMate({
         computerId: req.body?.computerId,
         botId: req.params.id,
         name: req.body?.name,
         job: req.body?.job || req.body?.description || req.body?.instructions,
         identityId: typeof req.body?.identityId === "string" ? req.body.identityId : undefined,
+        photo,
       });
       // Same key, same object: `snap.bot` spread back over itself.
       res.json({ bot: snap.bot, ...(snap as Omit<typeof snap, "bot">) });
@@ -1105,6 +1107,18 @@ app.post("/api/cloud/brain/key", async (req, res) => {
 // Cloud routines are stored per desk in Worker KV, so these are scoped by
 // computerId, not by bot id the way /api/bots/:id/routines is. A local bot owns
 // its own routines; every bot on a Cloud desk shares one list.
+// The plugins a Cloud desk's harness exposes and whether each is connected,
+// read live from that desk. Same shape as GET /api/harness/:provider/plugins.
+app.get("/api/cloud/brain/plugins", async (req, res) => {
+  try {
+    if (!(await requireCloudSession(req, res))) return;
+    const provider = typeof req.query.provider === "string" && req.query.provider ? req.query.provider : "claude";
+    res.json(await account.liveBrainPlugins(String(req.query.computerId || ""), provider));
+  } catch (err) {
+    sendAccountError(res, err);
+  }
+});
+
 app.get("/api/cloud/brain/routines", async (req, res) => {
   try {
     if (!(await requireCloudSession(req, res))) return;

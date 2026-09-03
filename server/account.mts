@@ -18,6 +18,7 @@ import {
   liveBrain as cloudLiveBrain,
   liveBrainStartGrok as cloudLiveBrainStartGrok,
   liveBrainClaudeAuth as cloudLiveBrainClaudeAuth,
+  liveBrainPlugins as cloudLiveBrainPlugins,
   liveBrainClaudeAuthStart as cloudLiveBrainClaudeAuthStart,
   liveBrainClaudeAuthCode as cloudLiveBrainClaudeAuthCode,
   liveBrainClaudeAuthLogout as cloudLiveBrainClaudeAuthLogout,
@@ -209,6 +210,8 @@ export interface CloudBrain {
 
 /** One row of `GET /api/brain/team`'s `members`. */
 export interface CloudTeamMember {
+  /** A user photo (data URL) shown instead of the drop avatar. */
+  photo?: string | undefined;
   id: string;
   name?: string | undefined;
   color?: string | undefined;
@@ -400,6 +403,8 @@ export interface MateOptions extends DeskOptions {
   name?: string | undefined;
   job?: string | undefined;
   identityId?: string | undefined;
+  /** A user photo (data URL); "" clears it. */
+  photo?: string | undefined;
 }
 
 export interface ChatOptions extends DeskOptions {
@@ -726,7 +731,7 @@ export function botFromCloudMember(c: LiveComputer, member: CloudTeamMember, bra
     instructions: member.job || "",
     teamId: `team-${desk.id}`,
     teamRole: member.role || "worker",
-    avatar: { ...base.avatar, color: member.color || base.color },
+    avatar: { ...base.avatar, color: member.color || base.color, ...(member.photo ? { photo: member.photo } : {}) },
     identityId,
     harness: harnessForCloudIdentity(identityId, brain),
     vm: {
@@ -855,6 +860,10 @@ async function claudeAuthToken(): Promise<string> {
 
 export async function liveBrainClaudeAuth(computerId: string): Promise<unknown> {
   return cloudLiveBrainClaudeAuth({ token: await claudeAuthToken(), computerId });
+}
+
+export async function liveBrainPlugins(computerId: string, provider = "claude"): Promise<unknown> {
+  return cloudLiveBrainPlugins({ token: await claudeAuthToken(), computerId, provider });
 }
 
 export async function liveBrainClaudeAuthStart(computerId: string): Promise<unknown> {
@@ -1026,7 +1035,7 @@ export async function liveSaveThread({
   });
 }
 
-export async function livePatchMate({ computerId, botId, name, job, identityId }: MateOptions = {}) {
+export async function livePatchMate({ computerId, botId, name, job, identityId, photo }: MateOptions = {}) {
   const row = await requireLiveSession();
   const id = liveDeskId(computerId, botId);
   if (!id || !botId) {
@@ -1034,7 +1043,7 @@ export async function livePatchMate({ computerId, botId, name, job, identityId }
     err.status = 404;
     throw err;
   }
-  await cloudLivePatchMate({ token: row.session.token, computerId: id, botId, name, job, identityId });
+  await cloudLivePatchMate({ token: row.session.token, computerId: id, botId, name, job, identityId, photo });
   const snap = await liveSnapshot();
   const bot = (snap.bots || []).find((b) => b.id === botId) || null;
   return { bot, ...snap };
