@@ -185,6 +185,7 @@ interface TriggerFields {
  * string inside the "cron" branch, without an assertion at either site.
  */
 type Trigger =
+  | (TriggerFields & { kind: "once"; at: number })
   | (TriggerFields & { kind: "hourly"; intervalMs: number })
   | (TriggerFields & { kind: "interval"; intervalMs: number })
   | (TriggerFields & { kind: "daily"; times: TriggerTime[] })
@@ -198,6 +199,7 @@ type Trigger =
 interface RawTrigger {
   id?: string;
   kind?: string;
+  at?: number;
   intervalMs?: number;
   times?: TriggerTime[];
   weekday?: number;
@@ -4360,6 +4362,11 @@ function normalizeClientTrigger(raw: RawTrigger | null | undefined): Trigger | n
         .filter((t) => Number.isInteger(t.hour) && t.hour >= 0 && t.hour <= 23 && Number.isInteger(t.minute) && t.minute >= 0 && t.minute <= 59)
     : [];
   const id = raw.id || newTriggerId();
+  if (kind === "once") {
+    const at = Number(raw.at);
+    if (!Number.isFinite(at) || at <= 0) return null;
+    return { id, kind: "once", at };
+  }
   if (kind === "hourly") return { id, kind: "hourly", intervalMs: 3600_000 };
   if (kind === "interval") {
     const intervalMs = Number(raw.intervalMs);
@@ -4403,6 +4410,11 @@ function clientTriggerLabel(t: RawTrigger): string {
   if (!row) return "Schedule";
   const clocks = (row.times || []).map((x) => routineClock(x.hour, x.minute)).filter(Boolean);
   const clock = clocks.join(", ");
+  if (row.kind === "once") {
+    const d = new Date(row.at);
+    const when = d.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: state.timezone || undefined });
+    return row.at > Date.now() ? `Once, ${when}` : `Reminder (fired ${when})`;
+  }
   if (row.kind === "hourly") return "Every hour";
   if (row.kind === "interval") {
     const mins = Math.max(1, Math.round(row.intervalMs / 60_000));
