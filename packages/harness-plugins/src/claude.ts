@@ -81,8 +81,11 @@ export const claudePlugins: HarnessPluginProvider = {
     // give it room rather than reporting a healthy connector as unknown.
     const { stdout } = await exec.run("claude", ["mcp", "list"], { timeoutMs: 45_000 });
     const plugins = parseClaudeMcpList(stdout);
+    // Only a plugin that needs sign-in gets somewhere to connect. A probe that
+    // failed (rate limit, timeout) is not a sign-in problem; pointing the user at
+    // the connectors page for it would send them to fix nothing.
     for (const p of plugins) {
-      if (p.status !== "connected") p.connectUrl = CLAUDE_CONNECTORS_PAGE;
+      if (p.status === "needs_auth") p.connectUrl = CLAUDE_CONNECTORS_PAGE;
     }
     return plugins;
   },

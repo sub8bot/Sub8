@@ -8,6 +8,6 @@ export {
   claudePlugins,
 } from "./claude.js";
 export { PLUGIN_PROVIDERS, pluginsForHarness, harnessesWithPlugins } from "./registry.js";
-export { pluginsPromptBlock } from "./prompt.js";
+export { pluginsPromptBlock, shortDetail } from "./prompt.js";
 export type { PluginsCache, PluginsCacheEntry } from "./cache.js";
 export { createPluginsCache } from "./cache.js";

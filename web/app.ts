@@ -6071,7 +6071,7 @@ function pluginTone(status: string): string {
 }
 
 function pluginStatusLabel(status: string): string {
-  return status === "connected" ? "Connected" : status === "needs_auth" ? "Needs sign-in" : status === "error" ? "Error" : "Unknown";
+  return status === "connected" ? "Connected" : status === "needs_auth" ? "Needs sign-in" : status === "error" ? "Unavailable" : "Unknown";
 }
 
 /**
@@ -6089,13 +6089,15 @@ async function loadHarnessPlugins(id: string, force = false): Promise<void> {
       supported?: boolean;
       plugins?: HarnessPluginRow[];
       error?: string;
+      checkedAt?: number;
     };
     state.harnessPlugins[id] = {
       loading: false,
       supported: r?.supported !== false,
       plugins: Array.isArray(r?.plugins) ? r.plugins : [],
       error: r?.ok === false ? String(r?.error || "Could not read plugins") : undefined,
-      checkedAt: Date.now(),
+      // The server's cache time, so "as of" is honest when the list is cached.
+      checkedAt: typeof r?.checkedAt === "number" ? r.checkedAt : Date.now(),
     };
   } catch (e) {
     state.harnessPlugins[id] = { loading: false, supported: true, plugins: [], error: String((e as Error)?.message || e), checkedAt: Date.now() };
@@ -6111,14 +6113,16 @@ function pluginsHtml(tab: string): string {
     return `<div class="row"><div class="lbl">Plugins</div><span class="muted">Checking…</span></div>`;
   }
   if (st.supported === false) return "";
-  const head = `<div class="row"><div><div class="lbl">Plugins</div><div class="sub">Connectors this harness can use, read live from its CLI.</div></div>
+  const asOf = st.checkedAt ? ` · as of ${new Date(st.checkedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "";
+  const head = `<div class="row"><div><div class="lbl">Plugins</div><div class="sub">What this harness can use in a turn, read live from its CLI${asOf}. claude.ai may also list web-only integrations it cannot call.</div></div>
         <button type="button" class="pill" data-act="refresh-plugins" data-id="${escapeHtml(tab)}" ${st.loading ? "disabled" : ""}>${st.loading ? "Checking…" : "Refresh"}</button></div>`;
   if (st.error) return head + `<div class="row"><span class="muted">${escapeHtml(st.error)}</span></div>`;
   if (!st.plugins.length) return head + (st.loading ? "" : `<div class="row"><span class="muted">No plugins reported.</span></div>`);
   const rows = st.plugins
     .map((p) => {
+      // Connect only when signing in would fix it; a failed check just shows why.
       const connect =
-        p.status !== "connected" && p.connectUrl
+        p.status === "needs_auth" && p.connectUrl
           ? `<button type="button" class="pill" data-act="plugin-connect" data-url="${escapeHtml(p.connectUrl)}" title="Open the page where this plugin is connected">Connect</button>`
           : "";
       return `<div class="row plugin-row">

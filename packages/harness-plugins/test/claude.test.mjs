@@ -96,6 +96,11 @@ test("claudePlugins.listPlugins runs `claude mcp list` through the injected exec
   // Not-connected plugins get somewhere to connect; connected ones do not.
   assert.equal(p.find((x) => x.name === "Google Calendar").connectUrl, CLAUDE_CONNECTORS_PAGE);
   assert.equal(p.find((x) => x.name === "Gmail").connectUrl, undefined);
+  // A failed probe is not a sign-in problem: no Connect link for it.
+  const withError = await claudePlugins.listPlugins({ async run() { return { stdout: SAMPLE + "claude.ai Indeed: https://mcp.indeed.com/claude/mcp - ✘ Failed to connect — -32429: Rate limit exceeded. Try again in 28 seconds.\n", stderr: "", code: 0 }; } });
+  const indeed = withError.find((x) => x.name === "Indeed" && x.status === "error");
+  assert.ok(indeed, "rate-limited Indeed parsed as error");
+  assert.equal(indeed.connectUrl, undefined);
   // connectUrl() always gives the user somewhere to go.
   assert.equal(claudePlugins.connectUrl(p.find((x) => x.name === "Gmail")), CLAUDE_CONNECTORS_PAGE);
 });
