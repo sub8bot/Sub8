@@ -3460,3 +3460,8 @@ select.pill { appearance: none; padding-right: 24px; }
 /* Card hints that carry a link: buttons, not a wrapped raw URL. */
 .choice-links { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .choice-links .pill { text-decoration: none; }
+
+/* A screenshot a bot posted to the chat (show_user). */
+.chat-shot-link { display: block; margin-top: 8px; max-width: 420px; }
+.chat-shot { width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--line, #8883); display: block; }
+.chat-shot-link:hover .chat-shot { filter: brightness(1.03); }

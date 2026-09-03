@@ -78,6 +78,7 @@ export interface McpResult {
  * only what is forwarded straight into a typed callee is spelled tighter.
  */
 export type ToolArgs = {
+  caption?: unknown;
   action?: string | undefined;
   x?: unknown;
   y?: unknown;
@@ -438,6 +439,14 @@ export const TOOLS: ToolSpec[] = [
       type: "object",
       properties: { id: { type: "string" } },
       required: ["id"],
+    },
+  },
+  {
+    name: "show_user",
+    description: "Post a screenshot of your screen INTO the chat so the user actually sees it. Use it at meaningful moments only — a finished page/app/result to show off, a blocker or error you need them to see, or a critical state before an irreversible action. NOT for routine looks (use computer screenshot for those). Optional caption explains what they are looking at.",
+    inputSchema: {
+      type: "object",
+      properties: { caption: { type: "string", description: "One line telling the user what this screenshot shows." } },
     },
   },
   {
@@ -948,6 +957,46 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
         message: "Ask the human to press Take control. You never see their password. External host files are not available.",
       }),
     );
+  }
+  if (name === "show_user") {
+    const bot = await store.getBot(botId) as McpBot | null;
+    if (!bot) throw new Error("Bot not found");
+    const shot = await vm.screenshot(bot as unknown as vm.DeskBot);
+    // Save a UNIQUE copy (vm.screenshot overwrites <bot>.png every look) into
+    // the already-served /screens dir, and post it as a real chat message.
+    const name2 = `${bot.id}-show-${Date.now()}.png`;
+    const dest = path.join(store.dataDir, "screens", name2);
+    try {
+      await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+      await fs.promises.writeFile(dest, shot.buf);
+    } catch {
+      /* fall back to text-only below */
+    }
+    const caption = String(args.caption || "").trim();
+    const msg = {
+      id: `sh${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
+      role: "assistant",
+      content: caption,
+      image: `/screens/${name2}`,
+      speakerId: bot.id,
+      speakerName: bot.name,
+      speakerRole: bot.teamRole || undefined,
+      ts: Date.now(),
+    };
+    await store.patchBot(botId, (b) => { b.messages = b.messages || []; b.messages.push(msg as store.Message); });
+    await emit("message", { botId, ...msg });
+    if (emitUrl && token && (bot as { teamId?: string }).teamId) {
+      try {
+        await fetch(`${emitUrl}/api/internal/show-user`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-sub8-token": token },
+          body: JSON.stringify({ botId, image: msg.image, content: caption }),
+        });
+      } catch {
+        /* the 1:1 view still has it from bot.messages */
+      }
+    }
+    return { content: [{ type: "text", text: "showed the user a screenshot in the chat" }] };
   }
   if (name === "computer") return runComputer(args);
   if (name === "browser") return runBrowser(args);

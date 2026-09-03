@@ -107,6 +107,8 @@ interface MessageAttachment extends CodeAgentSession {
 
 /** One line in a thread: chat, a thought, a tool tick, or a question card. */
 interface Message extends CodeAgentSession {
+  /** A screenshot the bot chose to show (show_user tool): a /screens/... URL or data URL. */
+  image?: string;
   id?: string;
   role?: string;
   kind?: string;
@@ -2201,9 +2203,9 @@ function namedBubble(m: Message, assistant: boolean): string {
   const body = delegation
     ? `<div class="bubble delegation">→ <b>${escapeHtml(String(m.toName))}</b>: ${escapeHtml(first.slice(0, 200))}${first.length > 200 ? "…" : ""}</div>`
     : fromWorker
-      ? `<div class="bubble mate-card">${escapeHtml(first.slice(0, 140))}${first.length > 140 ? "…" : ""}
+      ? `<div class="bubble mate-card">${escapeHtml(first.slice(0, 140))}${first.length > 140 ? "…" : ""}${chatShotHtml(m)}
         ${openBtn}</div>`
-      : `<div class="bubble">${formatChatText(m.content)}${openBtn}</div>`;
+      : `<div class="bubble">${m.content ? formatChatText(m.content) : ""}${chatShotHtml(m)}${openBtn}</div>`;
   return `<div class="msg ${assistant ? "asst" : "mate"}" data-mid="${escapeHtml(m.id || "")}">
     ${avatar}
     <div class="msg-col">
@@ -2238,6 +2240,13 @@ function renderTeamChannel(thread: HTMLElement, team: Team): void {
   thread.scrollTop = thread.scrollHeight;
   const input = $<HTMLTextAreaElement>('textarea[name="q"]');
   if (input) input.placeholder = `Message ${lead} · @name to reach a teammate`;
+}
+
+/** A screenshot a bot posted to the chat via show_user. Click to open full size. */
+function chatShotHtml(m: Message): string {
+  const src = String(m.image || "").trim();
+  if (!src) return "";
+  return `<a class="chat-shot-link" href="${escapeHtml(src)}" target="_blank" rel="noreferrer"><img class="chat-shot" src="${escapeHtml(src)}" alt="Screenshot from the bot" loading="lazy" /></a>`;
 }
 
 function paintChat(bot: Bot | null | undefined): void {
@@ -2325,8 +2334,8 @@ function paintChat(bot: Bot | null | undefined): void {
       html.push(renderActivity(batch, live));
       continue;
     }
-    if (String(m.content || "").trim()) {
-      html.push(m.speakerName ? namedBubble(m, true) : `<div class="bubble" data-mid="${escapeHtml(m.id || "")}">${formatChatText(m.content)}</div>`);
+    if (String(m.content || "").trim() || m.image) {
+      html.push(m.speakerName ? namedBubble(m, true) : `<div class="bubble" data-mid="${escapeHtml(m.id || "")}">${m.content ? formatChatText(m.content) : ""}${chatShotHtml(m)}</div>`);
     }
     i += 1;
   }

@@ -1378,6 +1378,26 @@ app.post("/api/internal/desk-tool", async (req, res) => {
   }
 });
 
+app.post("/api/internal/show-user", async (req, res) => {
+  if (req.get("x-sub8-token") !== internalToken) return res.status(401).json({ error: "unauthorized" });
+  const botId = String(req.body?.botId || "");
+  const image = String(req.body?.image || "");
+  const caption = String(req.body?.content || "").trim();
+  if (!botId || !image) return res.status(400).json({ error: "botId and image required" });
+  const bot = await store.getBot(botId) as IndexBot | null;
+  if (!bot?.teamId) return res.json({ ok: true, channel: false });
+  const posted = await teams.appendMessage(bot.teamId, {
+    role: "assistant",
+    speakerId: bot.id,
+    speakerName: bot.name,
+    speakerRole: bot.teamRole || "worker",
+    content: caption,
+    image,
+  } as Partial<store.Message>);
+  broadcast("team-message", { teamId: bot.teamId, ...posted });
+  res.json({ ok: true, channel: true });
+});
+
 app.post("/api/internal/team-dispatch", async (req, res) => {
   if (req.get("x-sub8-token") !== internalToken) return res.status(401).json({ error: "unauthorized" });
   if (req.body?.stopId) {
