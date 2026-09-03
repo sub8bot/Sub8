@@ -3084,6 +3084,9 @@ async function deliverLeadAnswer(bot: IndexBot | null | undefined, last: { conte
   if (bot?.teamRole !== "chief" || !bot.teamId || !last) return;
   const content = String(last.content || "").trim();
   if (!content) return;
+  // The model sometimes WRITES the tool's name instead of calling it. That is
+  // the quiet end it meant, not a message for the user.
+  if (content === "nothing_to_add") return;
   const recent = (await teams.loadMessages(bot.teamId)).slice(-30);
   const handedOffThisTurn = recent.some((m) => m.speakerId === bot.id && Boolean(m.toId) && Number(m.ts || 0) >= since);
   if (handedOffThisTurn) return;

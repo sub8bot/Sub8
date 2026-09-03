@@ -127,6 +127,6 @@ export function chiefReportLlm(fromName: unknown, short: unknown, opts: ChiefRep
     userAsk ? `The user asked you: "${userAsk.slice(0, 300)}"` : "",
     handed.length ? `You handed out:\n${handed.map((h) => `- ${h.slice(0, 160)}`).join("\n")}` : "",
     stored,
-    "(Nothing to add → nothing_to_add.)",
+    "(Nothing to add → call the nothing_to_add tool; do not write its name.)",
   ].filter(Boolean).join("\n");
 }
