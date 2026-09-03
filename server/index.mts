@@ -1466,7 +1466,7 @@ function syncVaultToCloud(): void {
   if (!vaultSync.isEnabled() || !vaultSync.isUnlocked()) return;
   void vaultSync
     .resync()
-    .then((env) => (env ? account.putCloudVault(env).catch(() => {}) : undefined))
+    .then((env) => (env ? account.putCloudVault(env).catch((e: Error) => console.error("[vault] cloud push failed:", e.message)) : undefined))
     .catch(() => {});
 }
 
@@ -1490,7 +1490,7 @@ app.post("/api/vault/cloud/enable", async (req, res) => {
     await account.vaultGateSetup(passcode, vk); // Worker wraps the key under passcode+pepper
     await adoptCloudEscrow().catch(() => {});
     const env = await vaultSync.enableWithKey(vk);
-    await account.putCloudVault(env).catch(() => {});
+    await account.putCloudVault(env).catch((e: Error) => console.error("[vault] cloud push failed:", e.message));
     const local = await vaultSync.status();
     const gate = await account.vaultGateStatus().catch(() => null);
     res.json({ ...local, enabled: Boolean(gate?.exists) || local.enabled, gate });
@@ -1514,7 +1514,7 @@ app.post("/api/vault/cloud/unlock", async (req, res) => {
       // Self-heal: the cloud has no blob for this vault (the pre-fix PUT answered 400 and every
       // best-effort push was swallowed). We hold the key now — push the local envelope up.
       const env = await vaultSync.resync().catch(() => null);
-      if (env) await account.putCloudVault(env).catch(() => {});
+      if (env) await account.putCloudVault(env).catch((e: Error) => console.error("[vault] cloud push (unlock self-heal) failed:", e.message));
     }
     const local = await vaultSync.status();
     const gate = await account.vaultGateStatus().catch(() => null);
@@ -1554,7 +1554,7 @@ app.post("/api/vault/cloud/disable", async (_req, res) => {
 app.put("/api/vault/cloud/always-on/:id", async (req, res) => {
   try {
     const env = await vaultSync.setAlwaysOn(req.params.id, req.body?.on !== false);
-    await account.putCloudVault(env).catch(() => {});
+    await account.putCloudVault(env).catch((e: Error) => console.error("[vault] cloud push failed:", e.message));
     res.json(await vaultSync.status());
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
