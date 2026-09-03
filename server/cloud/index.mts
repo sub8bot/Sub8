@@ -132,6 +132,42 @@ export async function liveBrainClaudeAuth({ token, computerId }: ClaudeAuthOptio
 }
 
 /** GET /api/brain/plugins — the plugins a desk's harness exposes and their live status. */
+export async function getCloudVault({ token }: { token?: string | undefined } = {}) {
+  if (!token) return null;
+  try {
+    return await http.cloudApi("/api/brain/vault", { baseUrl: needBase(), token });
+  } catch (e) {
+    // 404 = no cloud vault yet; treat as "nothing to pull".
+    if (String((e as Error)?.message || "").includes("404")) return null;
+    throw e;
+  }
+}
+
+export async function putCloudVault({ token, envelope }: { token?: string | undefined; envelope?: unknown } = {}) {
+  if (!token) return null;
+  return http.cloudApi("/api/brain/vault", { baseUrl: needBase(), token, method: "PUT", body: envelope });
+}
+
+export async function deleteCloudVault({ token }: { token?: string | undefined } = {}) {
+  if (!token) return null;
+  return http.cloudApi("/api/brain/vault", { baseUrl: needBase(), token, method: "DELETE" });
+}
+
+export async function getCloudEscrowKey({ token }: { token?: string | undefined } = {}) {
+  if (!token) return null;
+  try {
+    return await http.cloudApi("/api/brain/vault/escrow", { baseUrl: needBase(), token });
+  } catch (e) {
+    if (String((e as Error)?.message || "").includes("404")) return null;
+    throw e;
+  }
+}
+
+export async function putCloudEscrowKey({ token, key }: { token?: string | undefined; key?: string } = {}) {
+  if (!token) return null;
+  return http.cloudApi("/api/brain/vault/escrow", { baseUrl: needBase(), token, method: "PUT", body: { key } });
+}
+
 export async function liveBrainPlugins({ token, computerId, provider, refresh }: ClaudeAuthOptions & { provider?: string | undefined; refresh?: boolean | undefined } = {}) {
   const q = `computerId=${encodeURIComponent(computerId || "")}&provider=${encodeURIComponent(provider || "claude")}${refresh ? "&refresh=1" : ""}`;
   return http.cloudApi(`/api/brain/plugins?${q}`, {

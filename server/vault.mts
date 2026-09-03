@@ -271,6 +271,27 @@ async function writeVault(data: VaultFile): Promise<void> {
   }
 }
 
+/**
+ * The whole decrypted vault, passwords included. Only the cloud-sync layer uses
+ * this — to seal the file under the user's passphrase for sync. Never route it
+ * to a client.
+ */
+export function _decryptedVaultFile(): Promise<VaultFile> {
+  return withLock(readVault);
+}
+
+/** Replace the whole vault (cloud sync pulling a newer copy). Under the same lock as every write. */
+export function _replaceVaultFile(file: VaultFile): Promise<void> {
+  return withLock(() =>
+    writeVault({
+      version: 1,
+      groups: Array.isArray(file.groups) ? file.groups : [],
+      accounts: Array.isArray(file.accounts) ? file.accounts : [],
+      grants: file.grants && typeof file.grants === "object" ? file.grants : {},
+    }),
+  );
+}
+
 export function publicAccount(acc: VaultAccount | null | undefined): PublicAccount | null;
 export function publicAccount(acc: VaultAccount): PublicAccount;
 export function publicAccount(acc: VaultAccount | null | undefined): PublicAccount | null {

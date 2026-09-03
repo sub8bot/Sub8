@@ -20,6 +20,7 @@ import { setHumanControl, isHumanControl, releaseHumanControl, boxHelpReleasedWa
 import { appRoot, dataDir } from "./paths.mjs";
 import * as appUpdate from "./update.mjs";
 import * as vault from "./vault.mjs";
+import * as vaultSync from "./vault-sync.mjs";
 import * as computers from "./computers.mjs";
 import * as deskImages from "./desk-images.mjs";
 import { copyArchiveToDesk, identityStamp, stampAgentsMdShell } from "./move-to-cloud.mjs";
@@ -1445,6 +1446,102 @@ app.get("/api/update", async (req, res) => {
   res.json(await appUpdate.checkForAppUpdate({ current } as { current?: string }));
 });
 
+/**
+ * After any local vault change, keep the cloud copy in step: re-seal and push to
+ * the Worker. Best-effort and non-blocking — a local edit never waits on the
+ * network, and a sync failure never fails the edit.
+ */
+/** Make sure this computer holds the cloud escrow key (fetch it, or mint + upload one), so always-on can be offered. No-op offline. */
+async function adoptCloudEscrow(): Promise<void> {
+  const existing = await account.getCloudEscrowKey().catch(() => null);
+  if (existing) {
+    await vaultSync.setEscrowKey(existing);
+    return;
+  }
+  const fresh = await vaultSync.freshEscrowKey();
+  await account.putCloudEscrowKey(fresh).catch(() => {});
+}
+
+function syncVaultToCloud(): void {
+  if (!vaultSync.isEnabled() || !vaultSync.isUnlocked()) return;
+  void vaultSync
+    .resync()
+    .then((env) => (env ? account.putCloudVault(env).catch(() => {}) : undefined))
+    .catch(() => {});
+}
+
+app.get("/api/vault/cloud", async (_req, res) => {
+  try {
+    res.json(await vaultSync.status());
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Turn on the cloud vault: set the passphrase here (never sent to the Worker),
+// seal the current vault, and push the ciphertext. If cloud is signed in, adopt
+// the account escrow key so always-on can be offered.
+app.post("/api/vault/cloud/enable", async (req, res) => {
+  try {
+    const passphrase = String(req.body?.passphrase || "");
+    await adoptCloudEscrow().catch(() => {});
+    const env = await vaultSync.enable(passphrase);
+    await account.putCloudVault(env).catch(() => {});
+    res.json(await vaultSync.status());
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/vault/cloud/unlock", async (req, res) => {
+  try {
+    await adoptCloudEscrow().catch(() => {});
+    // Pull a newer copy from the Worker before unlocking, so other devices' edits land.
+    const remote = await account.getCloudVault().catch(() => null);
+    if (remote) await vaultSync.applyPulled(remote as unknown as vaultSync.CloudVaultEnvelope).catch(() => {});
+    await vaultSync.unlock(String(req.body?.passphrase || ""));
+    res.json(await vaultSync.status());
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/vault/cloud/lock", async (_req, res) => {
+  vaultSync.lock();
+  res.json(await vaultSync.status());
+});
+
+app.post("/api/vault/cloud/passphrase", async (req, res) => {
+  try {
+    const env = await vaultSync.changePassphrase(String(req.body?.passphrase || ""));
+    await account.putCloudVault(env).catch(() => {});
+    res.json(await vaultSync.status());
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+app.post("/api/vault/cloud/disable", async (_req, res) => {
+  try {
+    await vaultSync.disable();
+    await account.deleteCloudVault().catch(() => {});
+    res.json(await vaultSync.status());
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+// Mark a login always-on (unattended cloud autofill escrows its password).
+app.put("/api/vault/cloud/always-on/:id", async (req, res) => {
+  try {
+    const env = await vaultSync.setAlwaysOn(req.params.id, req.body?.on !== false);
+    await account.putCloudVault(env).catch(() => {});
+    res.json(await vaultSync.status());
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
 app.get("/api/vault", async (_req, res) => {
   try {
     res.json(await vault.snapshot());
@@ -1456,24 +1553,29 @@ app.get("/api/vault", async (_req, res) => {
 app.post("/api/vault/groups", async (req, res) => {
   const group = await vault.upsertGroup({ id: req.body?.id, name: req.body?.name });
   res.json(group);
+  syncVaultToCloud();
 });
 
 app.delete("/api/vault/groups/:id", async (req, res) => {
   res.json(await vault.deleteGroup(req.params.id));
+  syncVaultToCloud();
 });
 
 app.post("/api/vault/accounts", async (req, res) => {
   const acc = await vault.upsertAccount(req.body || {});
   res.json(acc);
+  syncVaultToCloud();
 });
 
 app.patch("/api/vault/accounts/:id", async (req, res) => {
   const acc = await vault.upsertAccount({ ...(req.body || {}), id: req.params.id });
   res.json(acc);
+  syncVaultToCloud();
 });
 
 app.delete("/api/vault/accounts/:id", async (req, res) => {
   res.json(await vault.deleteAccount(req.params.id));
+  syncVaultToCloud();
 });
 
 app.get("/api/vault/accounts/:id/reveal", async (req, res) => {

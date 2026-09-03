@@ -65,12 +65,13 @@ export function newVaultKey(): Promise<CryptoKey> {
 }
 
 /**
- * A fresh random 256-bit wrapping key — used as the cloud escrow key. Unlike the
- * vault key it carries wrap/unwrap usage (not encrypt/decrypt) and is exportable
+ * A fresh random 256-bit key — the cloud escrow key. Carries encrypt/decrypt AND
+ * wrap/unwrap usage (per-item escrow seals a secret directly; whole-vault escrow
+ * wraps the vault key), and is exportable
  * so the cloud side can persist it in a protected store.
  */
 export function newWrappingKey(): Promise<CryptoKey> {
-  return subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["wrapKey", "unwrapKey"]);
+  return subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt", "wrapKey", "unwrapKey"]);
 }
 
 /** Export a wrapping/escrow key to base64 raw bytes for storage. */
@@ -80,7 +81,7 @@ export async function exportKeyRaw(key: CryptoKey): Promise<B64> {
 
 /** Import a base64 raw wrapping/escrow key produced by {@link exportKeyRaw}. */
 export function importWrappingKey(raw: B64): Promise<CryptoKey> {
-  return subtle.importKey("raw", bs(b64decode(raw)), { name: "AES-GCM" }, true, ["wrapKey", "unwrapKey"]);
+  return subtle.importKey("raw", bs(b64decode(raw)), { name: "AES-GCM" }, true, ["encrypt", "decrypt", "wrapKey", "unwrapKey"]);
 }
 
 /** Seal a data key under a wrapping key (master or escrow). */

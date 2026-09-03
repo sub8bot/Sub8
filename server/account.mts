@@ -19,6 +19,11 @@ import {
   liveBrainStartGrok as cloudLiveBrainStartGrok,
   liveBrainClaudeAuth as cloudLiveBrainClaudeAuth,
   liveBrainPlugins as cloudLiveBrainPlugins,
+  getCloudVault as cloudGetVault,
+  putCloudVault as cloudPutVault,
+  deleteCloudVault as cloudDeleteVault,
+  getCloudEscrowKey as cloudGetEscrowKey,
+  putCloudEscrowKey as cloudPutEscrowKey,
   liveBrainClaudeAuthStart as cloudLiveBrainClaudeAuthStart,
   liveBrainClaudeAuthCode as cloudLiveBrainClaudeAuthCode,
   liveBrainClaudeAuthLogout as cloudLiveBrainClaudeAuthLogout,
@@ -860,6 +865,25 @@ async function claudeAuthToken(): Promise<string> {
 
 export async function liveBrainClaudeAuth(computerId: string): Promise<unknown> {
   return cloudLiveBrainClaudeAuth({ token: await claudeAuthToken(), computerId });
+}
+
+/** The synced envelope, as account.mts moves it (opaque here). */
+export type CloudVaultEnvelopeLike = { header: unknown; data: unknown; updatedAt?: number };
+export async function getCloudVault(): Promise<CloudVaultEnvelopeLike | null> {
+  return (await cloudGetVault({ token: await claudeAuthToken() })) as CloudVaultEnvelopeLike | null;
+}
+export async function putCloudVault(envelope: unknown): Promise<void> {
+  await cloudPutVault({ token: await claudeAuthToken(), envelope });
+}
+export async function deleteCloudVault(): Promise<void> {
+  await cloudDeleteVault({ token: await claudeAuthToken() });
+}
+export async function getCloudEscrowKey(): Promise<string | null> {
+  const r = (await cloudGetEscrowKey({ token: await claudeAuthToken() })) as { key?: string } | null;
+  return r && typeof r.key === "string" && r.key ? r.key : null;
+}
+export async function putCloudEscrowKey(key: string): Promise<void> {
+  await cloudPutEscrowKey({ token: await claudeAuthToken(), key });
 }
 
 export async function liveBrainPlugins(computerId: string, provider = "claude", refresh = false): Promise<unknown> {
