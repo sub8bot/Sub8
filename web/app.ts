@@ -571,6 +571,8 @@ interface CtxMenu {
   mids?: string;
   sub?: string | null;
   naming?: boolean;
+  /** Settings → Harnesses ⋯ menu: which harness it is for. */
+  harnessId?: string | undefined;
 }
 
 /** The Advanced/Custom panel of the schedule popover, mid-edit. */
@@ -736,6 +738,8 @@ interface AppState {
   harnessStatus: HarnessStatusFull | null;
   harnessPlugins: Record<string, HarnessPluginsState>;
   avatarEdit: boolean;
+  harnessOpen: Record<string, boolean | undefined>;
+  cloudPlugins: Record<string, HarnessPluginsState>;
   identities: IdentityRow[];
   identityCatalog: { id: string; label: string }[];
   harnessTab: string | undefined;
@@ -893,6 +897,8 @@ const state: AppState = {
   harnessStatus: null,
   harnessPlugins: {},
   avatarEdit: false,
+  harnessOpen: {},
+  cloudPlugins: {},
   identities: [],
   identityCatalog: [],
   harnessTab: "grok-build",
@@ -3764,9 +3770,30 @@ function paintCtxMenu(): void {
     ctx.x,
     ctx.y,
     ctx.mid || "",
+    ctx.harnessId || "",
   ].join("|");
   if (host.dataset.stamp === stamp && host.querySelector(".ctx-menu, .ctx-prompt, .ctx-sub")) return;
   host.dataset.stamp = stamp;
+  if (ctx.type === "harness") {
+    // Settings → Harnesses ⋯: the rarely-needed actions that used to be rows on
+    // every card. Each item closes the menu itself (harness-ctx).
+    const id = String(ctx.harnessId || "");
+    const info = harnessInfo(id);
+    const isDef = (state.settings?.harness?.provider || "grok-build") === id;
+    const top = Math.min(ctx.y, Math.max(8, window.innerHeight - 220));
+    const left = Math.min(ctx.x, Math.max(8, window.innerWidth - 240));
+    const item = (doWhat: string, label: string, icon: string) =>
+      `<button type="button" class="ctx-item" data-act="harness-ctx" data-id="${escapeHtml(id)}" data-do="${doWhat}">${ctxIcon(icon)}<span>${escapeHtml(label)}</span></button>`;
+    host.innerHTML = `<div class="ctx-menu" style="top:${top}px;left:${left}px">
+      ${item("test", "Test connection", "globe")}
+      ${item("refresh", "Refresh status", "round")}
+      ${id === "grok-build" ? item("session", info?.signedIn ? "Refresh session" : "Sign in", "gear") : ""}
+      ${isDef ? "" : item("default", "Use as default", "pin")}
+      <div class="ctx-sep"></div>
+      <div class="ctx-item ctx-info" title="${escapeHtml(info?.binary || "")}">${ctxIcon("info")}<span class="mono">${escapeHtml(info?.binary || "No binary found")}</span></div>
+    </div>`;
+    return;
+  }
   if (ctx.type === "section") {
     const sec = sidebarSections().find((s) => s.id === ctx.secId);
     if (!sec) {
@@ -4346,6 +4373,308 @@ function previewRoutine(text: string | undefined): string {
   const first = t.split(/\n/).find((l) => l.trim()) || t;
   if (t.length <= 180) return first;
   return `${first.slice(0, 160).trim()}…`;
+}
+
+/** The Plugins block body for one cached state; `refresh` names the act + id its Refresh button fires. */
+function pluginRowsHtml(st: HarnessPluginsState | undefined, refresh: { act: string; id: string }): string {
+  if (!st) return `<div class="row"><div class="lbl">Plugins</div><span class="muted">Checking…</span></div>`;
+  if (st.supported === false) return "";
+  const asOf = st.checkedAt ? ` · as of ${new Date(st.checkedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "";
+  const head = `<div class="row"><div><div class="lbl">Plugins</div><div class="sub">What this harness can use in a turn, read live from its CLI${asOf}. claude.ai may also list web-only integrations it cannot call.</div></div>
+        <button type="button" class="pill" data-act="${refresh.act}" data-id="${escapeHtml(refresh.id)}" ${st.loading ? "disabled" : ""}>${st.loading ? "Checking…" : "Refresh"}</button></div>`;
+  if (st.error && !st.plugins.length) return head + `<div class="row"><span class="muted">${escapeHtml(st.error)}</span></div>`;
+  if (!st.plugins.length) return head + (st.loading ? "" : `<div class="row"><span class="muted">No plugins reported.</span></div>`);
+  const rows = st.plugins
+    .map((p) => {
+      // Connect only when signing in would fix it; a failed check just shows why.
+      const connect =
+        p.status === "needs_auth" && p.connectUrl
+          ? `<button type="button" class="pill" data-act="plugin-connect" data-url="${escapeHtml(p.connectUrl)}" title="Open the page where this plugin is connected">Connect</button>`
+          : "";
+      const sub = p.status === "error" && p.detail ? escapeHtml(p.detail) : `${escapeHtml(p.url || "")}${p.transport ? ` · ${escapeHtml(p.transport)}` : ""}`;
+      return `<div class="row plugin-row">
+          <div class="plugin-main">
+            <div class="lbl">${escapeHtml(p.name)}</div>
+            <div class="sub muted mono plugin-url" title="${escapeHtml(p.detail || p.url || "")}">${sub}</div>
+          </div>
+          <span class="hbadge ${pluginTone(p.status)}" title="${escapeHtml(p.detail || "")}">${escapeHtml(pluginStatusLabel(p.status))}</span>
+          ${connect}
+        </div>`;
+    })
+    .join("");
+  return head + rows;
+}
+
+/** This Mac's plugins for a harness (kicks off the first load). */
+function pluginsHtml(tab: string): string {
+  if (!state.harnessPlugins[tab]) void loadHarnessPlugins(tab);
+  return pluginRowsHtml(state.harnessPlugins[tab], { act: "refresh-plugins", id: tab });
+}
+
+/** A Cloud desk's plugins, read through the Worker from that desk's harness. */
+async function loadCloudPlugins(computerId: string, force = false): Promise<void> {
+  const cur = state.cloudPlugins[computerId];
+  if (!force && cur && (cur.loading || cur.checkedAt)) return;
+  state.cloudPlugins[computerId] = { ...(cur || { plugins: [] }), loading: true, error: undefined };
+  try {
+    const r = (await api(`/api/cloud/brain/plugins?computerId=${encodeURIComponent(computerId)}${force ? "&refresh=1" : ""}`)) as {
+      ok?: boolean;
+      supported?: boolean;
+      plugins?: HarnessPluginRow[];
+      error?: string;
+      checkedAt?: number;
+    };
+    state.cloudPlugins[computerId] = {
+      loading: false,
+      supported: r?.supported !== false,
+      plugins: Array.isArray(r?.plugins) ? r.plugins : [],
+      error: r?.ok === false ? String(r?.error || "Could not read plugins") : undefined,
+      checkedAt: typeof r?.checkedAt === "number" ? r.checkedAt : Date.now(),
+    };
+  } catch (e) {
+    state.cloudPlugins[computerId] = { loading: false, supported: true, plugins: [], error: String((e as Error)?.message || e), checkedAt: Date.now() };
+  }
+  if (state.modal === "settings" && state.section === "harnesses") paintModal();
+}
+
+function cloudPluginsHtml(computerId: string): string {
+  if (!state.cloudPlugins[computerId]) void loadCloudPlugins(computerId);
+  return `<div class="card"><div class="row"><div class="lbl">This desk</div><span class="muted mono">${escapeHtml(computerId)}</span></div>${pluginRowsHtml(state.cloudPlugins[computerId], { act: "refresh-cloud-plugins", id: computerId })}</div>`;
+}
+
+function identityCardHtml(row: IdentityRow): string {
+    const tone = row.status === "signed_in" ? "ok" : row.status === "expired" || row.status === "not_installed" ? "bad" : "warn";
+    const who = row.subject ? escapeHtml(row.subject) : "—";
+    const place = row.place === "cloud" ? "Cloud" : row.runtimeRef === "host" ? "This Mac (shared)" : "This Mac (isolated)";
+    const cloudClaude = row.place === "cloud" && row.provider === "claude";
+    // Which bots are attached to this login — local bots by id, cloud bots by
+    // the Worker-level identity (cloud-claude-<desk> collapses to cloud-claude).
+    const attached = [...state.bots, ...(state.cloudDraft?.bots || [])].filter((b) => {
+      const id = String(b.identityId || "");
+      if (!id) return false;
+      return id === row.id || (row.place === "cloud" && workerCloudIdentityId(id) === workerCloudIdentityId(row.id));
+    });
+    const usedBy = [...new Set(attached.map((b) => b.name || "Bot"))].map((n) => escapeHtml(n)).join(", ");
+    const deskState = state.claudeAuth?.loggedIn
+      ? `Signed in${state.claudeAuth.email ? ` as ${escapeHtml(state.claudeAuth.email)}` : ""}`
+      : cloudDeskIdOf(currentBot()) ? "Not signed in" : "Select a Cloud desk bot to sign in";
+    return `<div class="card ident">
+      <div class="row ident-head">
+        <div class="ident-title">
+          <div class="lbl">${escapeHtml(row.label)}</div>
+          <div class="sub">${escapeHtml(place)} · ${escapeHtml(row.provider)}${row.model ? ` · ${escapeHtml(row.model)}` : ""}</div>
+        </div>
+        <span class="hbadge ${tone}">${escapeHtml(identityStatusLabel(row.status))}</span>
+      </div>
+      <div class="row ident-meta"><span class="k">Account</span><span class="v">${who === "—" ? "Not connected" : who}</span></div>
+      <div class="row ident-meta"><span class="k">Used by</span><span class="v ident-actions">${usedBy || "No bots yet"}${
+        row.place === "cloud" && row.provider !== "grok-build"
+          ? `<button type="button" class="pill" data-act="identity-remove" data-id="${escapeHtml(row.id)}" title="Forget this login">Remove</button>`
+          : ""
+      }</span></div>
+      ${
+        cloudClaude
+          ? `<div class="row ident-meta"><span class="k">This desk</span><span class="v ident-actions">${deskState}${
+              state.claudeAuth?.loggedIn
+                ? `<button type="button" class="pill" data-act="claude-logout">Sign out</button>`
+                : `<button type="button" class="pill primary" data-act="claude-login" ${cloudDeskIdOf(currentBot()) ? "" : "disabled"}>Sign in</button>`
+            }</span></div>`
+          : ""
+      }
+    </div>`;
+}
+
+function claudeCodePanelHtml(): string {
+  return state.claudeAuth?.awaitingCode
+    ? `<div class="card claude-code-panel">
+      <div class="lbl">Claude sign-in</div>
+      <div class="sub">Approve in the browser, then paste the code claude.com shows you.</div>
+      ${
+        state.claudeAuth.signInUrl
+          ? `<div class="row"><a class="pill" href="${escapeHtml(state.claudeAuth.signInUrl)}" target="_blank" rel="noreferrer">Open sign-in page</a></div>`
+          : ""
+      }
+      <div class="row">
+        <input class="field" id="claude-auth-code" type="text" autocomplete="off" placeholder="Paste code" />
+        <button type="button" class="pill primary" data-act="claude-code-submit">Continue</button>
+        <button type="button" class="pill" data-act="claude-login-cancel">Cancel</button>
+      </div>
+      ${state.claudeAuth.error ? `<div class="sub" style="color:var(--danger)">${escapeHtml(state.claudeAuth.error)}</div>` : ""}
+    </div>`
+    : "";
+}
+
+/** One identity of a local harness, as a row inside that harness's card. */
+function identityRowHtml(row: IdentityRow): string {
+  const tone = row.status === "signed_in" ? "ok" : row.status === "expired" || row.status === "not_installed" ? "bad" : "warn";
+  // Grok-style logins carry no email; say what the status already proves
+  // instead of "Not connected" next to a Signed in badge.
+  const who = row.subject ? escapeHtml(row.subject) : row.status === "signed_in" ? "This Mac\u2019s login" : "Not connected";
+  const scope = row.runtimeRef === "host" ? "shared" : "isolated";
+  const usedBy = [...new Set(state.bots.filter((b) => String(b.identityId || "") === row.id).map((b) => b.name || "Bot"))]
+    .map((n) => escapeHtml(n))
+    .join(", ");
+  return `<div class="row ident-row">
+      <div><div class="lbl">${row.status === "signed_in" ? "Signed in" : "Login"}</div><div class="sub">${who} · ${scope}${usedBy ? ` · used by ${usedBy}` : " · no bots yet"}</div></div>
+      <span class="hbadge ${tone}">${escapeHtml(identityStatusLabel(row.status))}</span>
+    </div>`;
+}
+
+/**
+ * One harness, one card: what it is (status, version), its logins, the model,
+ * its plugins right under the login, provider-specific settings, a test, and
+ * whether it is the default. Collapsed unless it is in use, so the list stays
+ * short even with every engine listed.
+ */
+/**
+ * One harness, one card: what it is (status, version), its logins, the model,
+ * its plugins right under the login, provider-specific settings, and whether
+ * it is the default. Rare actions (test, refresh, session, binary path) live
+ * behind the ⋯ menu. Collapsed unless it is in use, so the list stays short.
+ */
+function harnessCardHtml(id: string, h: HarnessSettingsState): string {
+  const def = h.provider || "grok-build";
+  const info = harnessInfo(id);
+  const item = harnessCatalog().find((x) => x.id === id);
+  const label = item?.label || info?.label || id;
+  const tone = info ? statusTone(info) : "";
+  const badge = info ? statusLabel(info) : state.harnessStatus ? "Not set up" : "Checking…";
+  const detail = info?.detail || (state.harnessStatus ? "" : "Checking this Mac…");
+  const test = state.harnessTests[id] || {};
+  const models = localModels(id);
+  const isDef = def === id;
+  const logins = (state.identities || []).filter((r) => r.place !== "cloud" && r.provider === id);
+  // Open by default only when it is actually in use: the default engine, a
+  // signed-in login, or a login some bot is attached to. A mere identity row
+  // that is not connected does not count, or every host CLI would start open.
+  const inUse =
+    isDef ||
+    Boolean(info?.signedIn) ||
+    logins.some((r) => r.status === "signed_in" || state.bots.some((b) => String(b.identityId || "") === r.id));
+  const open = state.harnessOpen[id] ?? (inUse || state.harnessTab === id);
+  const version = info?.version ? `${detail ? " · " : ""}${escapeHtml(info.version)}` : "";
+  const head = `<div class="harness-card-head">
+      <button type="button" class="harness-card-toggle" data-act="harness-open" data-id="${escapeHtml(id)}" aria-expanded="${open ? "true" : "false"}">
+        <i class="hdot ${tone}"></i>
+        <span class="harness-card-title"><span class="lbl">${escapeHtml(label)}</span>${isDef ? `<em class="harness-default">default</em>` : ""}</span>
+        <span class="sub harness-card-detail">${escapeHtml(detail)}${version}</span>
+        <span class="hbadge ${tone}">${escapeHtml(badge)}</span>
+        <i class="chev ${open ? "open" : ""}"></i>
+      </button>
+      <button type="button" class="harness-card-menu" data-act="harness-menu" data-id="${escapeHtml(id)}" title="More" aria-label="More options">⋯</button>
+    </div>`;
+  if (!open) return `<div class="card harness-card">${head}</div>`;
+  const modelValue = isDef && h.model ? h.model : info?.model || (id === "grok-build" || id === "spacexai" ? "grok-4.6" : "");
+  const modelField = models.length
+    ? `<select class="field" data-harness-text="model" data-harness-id="${escapeHtml(id)}">${models
+        .map((m) => `<option value="${escapeHtml(m)}" ${modelValue === m ? "selected" : ""}>${escapeHtml(m)}</option>`)
+        .join("")}</select>`
+    : `<input class="field" data-harness-text="model" data-harness-id="${escapeHtml(id)}" value="${escapeHtml(isDef ? h.model || "" : modelValue)}" placeholder="${
+        id === "claude" ? "auto" : id === "codex" ? "CLI default" : id === "cursor" ? "cursor-grok-4.6-low" : id === "hermes" || id === "ollama" || id === "lmstudio" ? "start LM Studio to list models" : "grok-4.6"
+      }" />`;
+  const loginRows =
+    logins.map(identityRowHtml).join("") +
+    (!logins.length && id === "grok-build"
+      ? `<div class="row"><div><div class="lbl">Login</div><div class="sub">${info?.signedIn ? "Signed in on this Mac." : "Needs a browser login once."}</div></div>${
+          info?.signedIn ? "" : `<button type="button" class="pill primary" data-act="grok-oauth">Sign in</button>`
+        }</div>`
+      : !logins.length && info?.extra?.email
+        ? `<div class="row"><div class="lbl">${info.signedIn ? "Signed in" : "Last account"}</div><span class="muted">${escapeHtml(info.extra.email)}</span></div>`
+        : "");
+  const apiKind = id === "spacexai" || id === "openrouter" || id === "openai" || id === "custom";
+  const selected = state.harnessTab === id;
+  const testBlock =
+    test.busy || test.log || test.note
+      ? `<div class="row"><div><div class="lbl">Test</div><div class="sub"${selected ? ` id="harness-ping"` : ""}>${escapeHtml(test.note || (test.busy ? "Testing…" : ""))}</div></div></div>
+      ${test.log ? `<pre class="harness-log"${selected ? ` id="harness-log"` : ""}>${escapeHtml(test.log)}</pre>` : ""}`
+      : "";
+  return `<div class="card harness-card open">${head}
+    <div class="harness-card-body">
+      ${loginRows}
+      <div class="row"><div class="lbl">Model</div>${modelField}</div>
+      ${pluginsHtml(id)}
+      ${
+        info?.extra?.hermesProvider
+          ? `<div class="row"><div class="lbl">Hermes provider</div><span class="muted">${escapeHtml(info.extra.hermesProvider)}${
+              info.extra.hermesBaseUrl ? ` · ${escapeHtml(info.extra.hermesBaseUrl)}` : ""
+            }</span></div>`
+          : ""
+      }
+      ${
+        id === "hermes"
+          ? `<div class="row"><div class="lbl">LM Studio</div><div class="sub">${
+              state.localHarness?.lmstudio?.ok
+                ? `${(state.localHarness.lmstudio.models || []).length} models on :1234`
+                : "Not running. Start LM Studio so Hermes can use Qwen 3.8."
+            }</div></div>`
+          : ""
+      }
+      ${
+        apiKind
+          ? `<div class="row"><div><div class="lbl">Base URL</div><div class="sub">OpenAI-compatible /v1.</div></div>
+        <input class="field" data-harness-text="baseUrl" data-harness-id="${escapeHtml(id)}" value="${escapeHtml(isDef ? h.baseUrl || "" : apiPreset(id).baseUrl)}" /></div>
+      <div class="row"><div><div class="lbl">API key</div><div class="sub">${
+        id === "spacexai" ? "Leave blank to use XAI_API_KEY." : "Required for this endpoint."
+      }</div></div>
+        <input class="field" style="max-width:220px" type="password" data-harness-text="apiKey" data-harness-id="${escapeHtml(id)}" placeholder="••••" /></div>`
+          : ""
+      }
+      ${
+        id === "ollama" || id === "lmstudio"
+          ? `<div class="row"><div class="lbl">Detected</div><div class="sub">${escapeHtml((info?.extra?.models || []).join(", ") || info?.detail || "—")}</div></div>`
+          : ""
+      }
+      ${info?.hint ? `<div class="row"><div class="lbl">Fix</div><div class="sub">${escapeHtml(info.hint)}</div></div>` : ""}
+      ${testBlock}
+      ${
+        isDef
+          ? ""
+          : `<div class="row"><div class="sub">${
+              apiKind ? "Not the default \u2014 press \u201cUse as default\u201d before entering a key; nothing here is saved until you do." : "Not the default engine for new Bots."
+            }</div><button type="button" class="pill primary" data-act="harness-default" data-id="${escapeHtml(id)}">Use as default</button></div>`
+      }
+    </div>
+  </div>`;
+}
+
+/** Settings → Harnesses: every engine that can run a Bot, with its login, model and plugins in one place. */
+function harnessesHtml(h: HarnessSettingsState): string {
+  const cards = harnessCatalog().map((item) => harnessCardHtml(item.id, h)).join("");
+  const rows = state.identities || [];
+  const cloud = rows.filter((r) => r.place === "cloud");
+  const deskId = cloudDeskIdOf(currentBot());
+  const addOpts = (state.identityCatalog || [])
+    .map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`)
+    .join("");
+  const cloudBlock = isCloudPlace()
+    ? `<div class="block"><h3>Cloud</h3>${
+        cloud.length
+          ? cloud.map(identityCardHtml).join("") + (cloud.some((r) => r.provider === "claude") && deskId ? cloudPluginsHtml(deskId) : "")
+          : `<div class="card">
+        <div class="sub">No Cloud sessions yet. Grok is account-wide; Claude is per desk (select a bot in the rail first).</div>
+        <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
+          <button type="button" class="pill primary" data-act="cloud-brain-grok">Sign in with Grok</button>
+          <button type="button" class="pill" data-act="claude-login" ${deskId ? "" : "disabled title=\"Select a Cloud desk bot first\""}>Sign in Claude on desk</button>
+        </div>
+        <p class="muted" id="cloud-grok-wait" hidden style="margin-top:8px"></p>
+      </div>`
+      }</div>`
+    : "";
+  return `<h2>Harnesses</h2>
+    <p class="muted" style="margin-top:-8px">Every engine that can run a Bot — its login, model and plugins in one place. Click a harness to expand it.</p>
+    <div class="block"><h3>This Mac</h3>${cards}</div>
+    ${cloudBlock}
+    ${claudeCodePanelHtml()}
+    <div class="card">
+      <div class="row">
+        <div>
+          <div class="lbl">Add another login</div>
+          <div class="sub">Starts a separate login so two bots can use different accounts.</div>
+        </div>
+        <select class="field" id="identity-add-provider" style="max-width:180px">${addOpts}</select>
+        <button type="button" class="pill primary" data-act="identity-add">Add</button>
+      </div>
+    </div>`;
 }
 
 function paintModal(): void {
@@ -4937,7 +5266,7 @@ function identityOptions(selected: string | undefined, providerFallback?: string
   const effective = selected || resolved?.id || "";
   if (cloud) {
     if (!rows.length) {
-      return `<option value="" selected>No cloud identities — sign in under Settings → Identities</option>`;
+      return `<option value="" selected>No cloud identities — sign in under Settings → Harnesses</option>`;
     }
     return rows
       .map((row) => {
@@ -6102,164 +6431,11 @@ async function loadHarnessPlugins(id: string, force = false): Promise<void> {
   } catch (e) {
     state.harnessPlugins[id] = { loading: false, supported: true, plugins: [], error: String((e as Error)?.message || e), checkedAt: Date.now() };
   }
-  if (state.modal === "settings" && state.section === "harness") paintModal();
+  if (state.modal === "settings" && state.section === "harnesses") paintModal();
 }
 
 /** The Plugins block of a harness panel; empty for a harness with no plugin surface. */
-function pluginsHtml(tab: string): string {
-  const st = state.harnessPlugins[tab];
-  if (!st) {
-    void loadHarnessPlugins(tab);
-    return `<div class="row"><div class="lbl">Plugins</div><span class="muted">Checking…</span></div>`;
-  }
-  if (st.supported === false) return "";
-  const asOf = st.checkedAt ? ` · as of ${new Date(st.checkedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "";
-  const head = `<div class="row"><div><div class="lbl">Plugins</div><div class="sub">What this harness can use in a turn, read live from its CLI${asOf}. claude.ai may also list web-only integrations it cannot call.</div></div>
-        <button type="button" class="pill" data-act="refresh-plugins" data-id="${escapeHtml(tab)}" ${st.loading ? "disabled" : ""}>${st.loading ? "Checking…" : "Refresh"}</button></div>`;
-  if (st.error) return head + `<div class="row"><span class="muted">${escapeHtml(st.error)}</span></div>`;
-  if (!st.plugins.length) return head + (st.loading ? "" : `<div class="row"><span class="muted">No plugins reported.</span></div>`);
-  const rows = st.plugins
-    .map((p) => {
-      // Connect only when signing in would fix it; a failed check just shows why.
-      const connect =
-        p.status === "needs_auth" && p.connectUrl
-          ? `<button type="button" class="pill" data-act="plugin-connect" data-url="${escapeHtml(p.connectUrl)}" title="Open the page where this plugin is connected">Connect</button>`
-          : "";
-      return `<div class="row plugin-row">
-          <div class="plugin-main">
-            <div class="lbl">${escapeHtml(p.name)}</div>
-            <div class="sub muted mono plugin-url" title="${escapeHtml(p.url || "")}">${escapeHtml(p.url || "")}${p.transport ? ` · ${escapeHtml(p.transport)}` : ""}</div>
-          </div>
-          <span class="hbadge ${pluginTone(p.status)}" title="${escapeHtml(p.detail || "")}">${escapeHtml(pluginStatusLabel(p.status))}</span>
-          ${connect}
-        </div>`;
-    })
-    .join("");
-  return head + rows;
-}
 
-function harnessHtml(h: HarnessSettingsState): string {
-  const def = h.provider || "grok-build";
-  const tab = state.harnessTab || def;
-  const info = harnessInfo(tab);
-  const tone = statusTone(info);
-  const test = state.harnessTests[tab] || {};
-  const models = localModels(tab);
-  const modelValue =
-    tab === def && h.model
-      ? h.model
-      : info?.model || (tab === "grok-build" || tab === "spacexai" ? "grok-4.6" : "");
-  const tabs = harnessCatalog()
-    .map((item) => {
-      const row = harnessInfo(item.id);
-      const on = tab === item.id ? "on" : "";
-      const used = def === item.id ? " default" : "";
-      return `<button type="button" class="harness-tab ${on}${used}" data-act="harness-tab" data-id="${item.id}">
-        <i class="hdot ${statusTone(row)}"></i>
-        <span>${escapeHtml(item.label)}</span>
-        ${def === item.id ? `<em>default</em>` : ""}
-      </button>`;
-    })
-    .join("");
-  const modelField = models.length
-    ? `<select class="field" data-harness-text="model">${models
-        .map((m) => `<option value="${escapeHtml(m)}" ${modelValue === m ? "selected" : ""}>${escapeHtml(m)}</option>`)
-        .join("")}</select>`
-    : `<input class="field" data-harness-text="model" value="${escapeHtml(tab === def ? h.model || "" : modelValue)}" placeholder="${
-        tab === "claude" ? "auto" : tab === "codex" ? "CLI default" : tab === "cursor" ? "cursor-grok-4.6-low" : tab === "hermes" || tab === "ollama" || tab === "lmstudio" ? "start LM Studio to list models" : "grok-4.6"
-      }" />`;
-  return `<h2>This Mac</h2>
-    <p class="muted" style="margin-top:-8px">Runtimes on this computer — binaries, local servers, default engine. Sign-ins live under Identities.</p>
-    <div class="harness-layout">
-      <div class="harness-tabs" role="tablist">${tabs}</div>
-      <div class="card harness-panel">
-        <div class="row">
-          <div>
-            <div class="lbl">${escapeHtml(info?.label || tab)}</div>
-            <div class="sub">${escapeHtml(info?.detail || "Checking this Mac…")}</div>
-          </div>
-          <span class="hbadge ${tone}">${escapeHtml(statusLabel(info))}</span>
-        </div>
-        <div class="row"><div class="lbl">Binary</div><span class="muted mono">${escapeHtml(info?.binary || "—")}</span></div>
-        ${info?.version ? `<div class="row"><div class="lbl">Version</div><span class="muted">${escapeHtml(info.version)}</span></div>` : ""}
-        ${
-          info?.extra?.email
-            ? `<div class="row"><div class="lbl">${info.signedIn ? "Account" : "Last account"}</div><span class="muted">${escapeHtml(info.extra.email)}</span></div>`
-            : ""
-        }
-        ${
-          info?.extra?.hermesProvider
-            ? `<div class="row"><div class="lbl">Hermes provider</div><span class="muted">${escapeHtml(info.extra.hermesProvider)}${
-                info.extra.hermesBaseUrl ? ` · ${escapeHtml(info.extra.hermesBaseUrl)}` : ""
-              }</span></div>`
-            : ""
-        }
-        <div class="row"><div class="lbl">Model</div>${modelField}</div>
-        ${pluginsHtml(tab)}
-        ${
-          tab === "hermes"
-            ? `<div class="row"><div class="lbl">LM Studio</div><div class="sub">${
-                state.localHarness?.lmstudio?.ok
-                  ? `${(state.localHarness.lmstudio.models || []).length} models on :1234`
-                  : "Not running. Start LM Studio so Hermes can use Qwen 3.8."
-              }</div>
-              <button type="button" class="pill" data-act="refresh-harness-status">Refresh</button></div>`
-            : ""
-        }
-        ${
-          tab === "spacexai" || tab === "openrouter" || tab === "openai" || tab === "custom"
-            ? `<div class="row"><div><div class="lbl">Base URL</div><div class="sub">OpenAI-compatible /v1.</div></div>
-          <input class="field" data-harness-text="baseUrl" value="${escapeHtml(tab === def ? h.baseUrl || "" : apiPreset(tab).baseUrl)}" /></div>
-        <div class="row"><div><div class="lbl">API key</div><div class="sub">${
-          tab === "spacexai" ? "Leave blank to use XAI_API_KEY." : "Required for this endpoint."
-        }</div></div>
-          <input class="field" style="max-width:220px" type="password" data-harness-text="apiKey" placeholder="••••" /></div>`
-            : ""
-        }
-        ${
-          tab === "ollama" || tab === "lmstudio"
-            ? `<div class="row"><div class="lbl">Detected</div><div class="sub">${escapeHtml(
-                (info?.extra?.models || []).join(", ") || info?.detail || "—",
-              )}</div>
-              <button type="button" class="pill" data-act="refresh-harness-status">Refresh</button></div>`
-            : ""
-        }
-        ${
-          tab === "grok-build"
-            ? `<div class="row"><div><div class="lbl">Login</div><div class="sub">${
-                info?.signedIn
-                  ? "Grok CLI on this Mac. It drives the Bot computer through Sub8 tools, like Claude."
-                  : "Needs a browser login once."
-              }</div></div>
-              <button type="button" class="pill" data-act="grok-oauth">${info?.signedIn ? "Refresh session" : "Sign in"}</button></div>`
-            : ""
-        }
-        ${
-          info?.hint
-            ? `<div class="row"><div class="lbl">Fix</div><div class="sub">${escapeHtml(info.hint)}</div></div>`
-            : ""
-        }
-        <div class="row">
-          <div>
-            <div class="lbl">Test</div>
-            <div class="sub" id="harness-ping">${escapeHtml(test.note || "Sends a one-word ping. Logs stay on this tab.")}</div>
-          </div>
-          <button type="button" class="pill" data-act="test-harness" data-id="${escapeHtml(tab)}" ${test.busy ? "disabled" : ""}>${
-            test.busy ? "Testing…" : "Test"
-          }</button>
-        </div>
-        <pre class="harness-log" id="harness-log">${escapeHtml(test.log || "No test yet.")}</pre>
-        <div class="row">
-          <div class="sub">${def === tab ? "This is the default for new Bots." : "Not the default \u2014 press \u201cUse as default\u201d before entering a key. Nothing here is saved until you do."}</div>
-          ${
-            def === tab
-              ? ""
-              : `<button type="button" class="pill primary" data-act="harness-default" data-id="${escapeHtml(tab)}">Use as default</button>`
-          }
-        </div>
-      </div>
-    </div>`;
-}
 
 function claudeCodeHtml(): string {
   const auth = state.claudeAuth || {};
@@ -6296,105 +6472,6 @@ function claudeCodeHtml(): string {
   </div>`;
 }
 
-function identitiesHtml(): string {
-  const rows = state.identities || [];
-  const local = rows.filter((r) => r.place !== "cloud");
-  const cloud = rows.filter((r) => r.place === "cloud");
-  const addOpts = (state.identityCatalog || [])
-    .map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`)
-    .join("");
-  const card = (row: IdentityRow) => {
-    const tone = row.status === "signed_in" ? "ok" : row.status === "expired" || row.status === "not_installed" ? "bad" : "warn";
-    const who = row.subject ? escapeHtml(row.subject) : "—";
-    const place = row.place === "cloud" ? "Cloud" : row.runtimeRef === "host" ? "This Mac (shared)" : "This Mac (isolated)";
-    const cloudClaude = row.place === "cloud" && row.provider === "claude";
-    // Which bots are attached to this login — local bots by id, cloud bots by
-    // the Worker-level identity (cloud-claude-<desk> collapses to cloud-claude).
-    const attached = [...state.bots, ...(state.cloudDraft?.bots || [])].filter((b) => {
-      const id = String(b.identityId || "");
-      if (!id) return false;
-      return id === row.id || (row.place === "cloud" && workerCloudIdentityId(id) === workerCloudIdentityId(row.id));
-    });
-    const usedBy = [...new Set(attached.map((b) => b.name || "Bot"))].map((n) => escapeHtml(n)).join(", ");
-    const deskState = state.claudeAuth?.loggedIn
-      ? `Signed in${state.claudeAuth.email ? ` as ${escapeHtml(state.claudeAuth.email)}` : ""}`
-      : cloudDeskIdOf(currentBot()) ? "Not signed in" : "Select a Cloud desk bot to sign in";
-    return `<div class="card ident">
-      <div class="row ident-head">
-        <div class="ident-title">
-          <div class="lbl">${escapeHtml(row.label)}</div>
-          <div class="sub">${escapeHtml(place)} · ${escapeHtml(row.provider)}${row.model ? ` · ${escapeHtml(row.model)}` : ""}</div>
-        </div>
-        <span class="hbadge ${tone}">${escapeHtml(identityStatusLabel(row.status))}</span>
-      </div>
-      <div class="row ident-meta"><span class="k">Account</span><span class="v">${who === "—" ? "Not connected" : who}</span></div>
-      <div class="row ident-meta"><span class="k">Used by</span><span class="v ident-actions">${usedBy || "No bots yet"}${
-        row.place === "cloud" && row.provider !== "grok-build"
-          ? `<button type="button" class="pill" data-act="identity-remove" data-id="${escapeHtml(row.id)}" title="Forget this login">Remove</button>`
-          : ""
-      }</span></div>
-      ${
-        cloudClaude
-          ? `<div class="row ident-meta"><span class="k">This desk</span><span class="v ident-actions">${deskState}${
-              state.claudeAuth?.loggedIn
-                ? `<button type="button" class="pill" data-act="claude-logout">Sign out</button>`
-                : `<button type="button" class="pill primary" data-act="claude-login" ${cloudDeskIdOf(currentBot()) ? "" : "disabled"}>Sign in</button>`
-            }</span></div>`
-          : ""
-      }
-    </div>`;
-  };
-  const claudeCodePanel =
-    state.claudeAuth?.awaitingCode
-      ? `<div class="card claude-code-panel">
-      <div class="lbl">Claude sign-in</div>
-      <div class="sub">Approve in the browser, then paste the code claude.com shows you.</div>
-      ${
-        state.claudeAuth.signInUrl
-          ? `<div class="row"><a class="pill" href="${escapeHtml(state.claudeAuth.signInUrl)}" target="_blank" rel="noreferrer">Open sign-in page</a></div>`
-          : ""
-      }
-      <div class="row">
-        <input class="field" id="claude-auth-code" type="text" autocomplete="off" placeholder="Paste code" />
-        <button type="button" class="pill primary" data-act="claude-code-submit">Continue</button>
-        <button type="button" class="pill" data-act="claude-login-cancel">Cancel</button>
-      </div>
-      ${state.claudeAuth.error ? `<div class="sub" style="color:var(--danger)">${escapeHtml(state.claudeAuth.error)}</div>` : ""}
-    </div>`
-      : "";
-  return `<h2>Identities</h2>
-    <p class="muted" style="margin-top:-8px">Named logins. Any bot can attach to one. Add another Claude or Grok to switch when credits run out — the chat stays.</p>
-    ${
-      isCloudPlace()
-        ? `<div class="block"><h3>Cloud</h3>${
-            cloud.length
-              ? cloud.map(card).join("")
-              : `<div class="card">
-            <div class="sub">No Cloud sessions yet. Grok is account-wide; Claude is per desk (select a bot in the rail first).</div>
-            <div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
-              <button type="button" class="pill primary" data-act="cloud-brain-grok">Sign in with Grok</button>
-              <button type="button" class="pill" data-act="claude-login" ${cloudDeskIdOf(currentBot()) ? "" : "disabled title=\"Select a Cloud desk bot first\""}>Sign in Claude on desk</button>
-            </div>
-            <p class="muted" id="cloud-grok-wait" hidden style="margin-top:8px"></p>
-          </div>`
-          }</div>`
-        : ""
-    }
-    ${claudeCodePanel}
-    <div class="block"><h3>This Mac</h3>
-      ${local.length ? local.map(card).join("") : `<div class="card"><div class="sub">No local identities yet. Open This Mac and sign in, or add another below.</div></div>`}
-    </div>
-    <div class="card">
-      <div class="row">
-        <div>
-          <div class="lbl">Add another</div>
-          <div class="sub">Starts a separate login so two bots can use different accounts.</div>
-        </div>
-        <select class="field" id="identity-add-provider" style="max-width:180px">${addOpts}</select>
-        <button type="button" class="pill primary" data-act="identity-add">Add</button>
-      </div>
-    </div>`;
-}
 
 function accountHtml(): string {
   const a = state.account || {};
@@ -6494,6 +6571,8 @@ function settingsHtml(): string {
   const s = state.settings || {};
   const h = s.harness || {};
   if (state.section === "usage") state.section = "general";
+  // The old "This Mac" and "Identities" sections merged; every deep link to either lands here.
+  if (state.section === "harness" || state.section === "identities") state.section = "harnesses";
   if (state.section === "account" && !cloudOn()) state.section = "general";
   const sec = state.section;
   return `<div class="overlay">
@@ -6501,8 +6580,7 @@ function settingsHtml(): string {
       <nav class="snav">
         ${cloudOn() ? `<button type="button" class="${sec === "account" ? "active" : ""}" data-act="sec" data-id="account">${iconPerson()} <span>Account</span></button>` : ""}
         <button type="button" class="${sec === "general" ? "active" : ""}" data-act="sec" data-id="general">${iconGear()} <span>General</span></button>
-        <button type="button" class="${sec === "harness" ? "active" : ""}" data-act="sec" data-id="harness">${iconHarness()} <span>This Mac</span></button>
-        <button type="button" class="${sec === "identities" ? "active" : ""}" data-act="sec" data-id="identities">${iconPerson()} <span>Identities</span></button>
+        <button type="button" class="${sec === "harnesses" ? "active" : ""}" data-act="sec" data-id="harnesses">${iconHarness()} <span>Harnesses</span></button>
         <button type="button" class="${sec === "updates" ? "active" : ""}" data-act="sec" data-id="updates">${iconMonitor()} <span>Computer</span></button>
         <button type="button" class="${sec === "about" ? "active" : ""}" data-act="sec" data-id="about">${iconAbout()} <span>About</span></button>
       </nav>
@@ -6511,10 +6589,8 @@ function settingsHtml(): string {
         ${
           sec === "account" && cloudOn()
             ? accountHtml()
-            : sec === "harness"
-            ? harnessHtml(h)
-            : sec === "identities"
-            ? identitiesHtml()
+            : sec === "harnesses"
+            ? harnessesHtml(h)
             : sec === "about"
             ? aboutHtml()
             : sec === "general"
@@ -7040,15 +7116,16 @@ const ACTIONS: Record<string, ActHandler> = {
   },
   "sec": (e, { el }) => {
     state.section = el.dataset.id;
-    if (el.dataset.id === "identities") {
+    // The merged section needs both what Identities and This Mac used to load.
+    if (el.dataset.id === "harnesses") {
       Promise.all([loadIdentities(), loadClaudeAuth(), loadHarnessStatus()]).then(() => {
-        if (state.modal === "settings" && state.section === "identities") paintModal();
+        if (state.modal === "settings" && state.section === "harnesses") paintModal();
       });
     }
-    if (el.dataset.id === "harness") {
+    if (el.dataset.id === "harnesses") {
       state.harnessTab = state.settings?.harness?.provider || state.harnessTab || "grok-build";
       loadHarnessStatus().then(() => {
-        if (state.modal === "settings" && state.section === "harness") paintModal();
+        if (state.modal === "settings" && state.section === "harnesses") paintModal();
       });
       const h = state.settings?.harness;
       // A harness with no model set is not in the list either, so widening the
@@ -7964,10 +8041,43 @@ const ACTIONS: Record<string, ActHandler> = {
     if (id) void loadHarnessPlugins(id, true);
     paintModal();
   },
-  "harness-tab": (e, { el }) => {
-    state.harnessTab = el.dataset.id;
+  "harness-menu": (e, { el }) => {
+    const r = el.getBoundingClientRect();
+    state.ctx = { type: "harness", harnessId: String(el.dataset.id || ""), x: Math.max(8, r.right - 232), y: r.bottom + 4 };
+    paintCtxMenu();
+  },
+  "harness-ctx": (e, { el }) => {
+    const id = String(el.dataset.id || "");
+    const doWhat = String(el.dataset.do || "");
+    state.ctx = null;
+    paintCtxMenu();
+    if (!id) return;
+    if (doWhat === "test") {
+      state.harnessTab = id;
+      state.harnessOpen[id] = true;
+      void testHarness(id);
+      paintModal();
+    } else if (doWhat === "refresh") {
+      void loadHarnessStatus().then(() => {
+        if (state.modal === "settings" && state.section === "harnesses") paintModal();
+      });
+    } else if (doWhat === "session") {
+      startGrokOAuth();
+    } else if (doWhat === "default") {
+      setHarnessAct(e, { el, act: "harness-default" } as ActContext);
+    }
+  },
+  "harness-open": (e, { el }) => {
+    const id = String(el.dataset.id || "");
+    if (!id) return;
+    state.harnessOpen[id] = el.getAttribute("aria-expanded") !== "true";
+    state.harnessTab = id;
     paintModal();
-    return;
+  },
+  "refresh-cloud-plugins": (e, { el }) => {
+    const id = String(el.dataset.id || "");
+    if (id) void loadCloudPlugins(id, true);
+    paintModal();
   },
   "refresh-harness-status": (e) => {
     loadHarnessStatus().then(() => {
@@ -8009,6 +8119,9 @@ const ACTIONS: Record<string, ActHandler> = {
     return;
   },
   "test-harness": (e, { el }) => {
+    // The test writes its log into the selected card; select this one first.
+    state.harnessTab = String(el.dataset.id || "");
+    state.harnessOpen[state.harnessTab] = true;
     testHarness(el.dataset.id);
     return;
   },
@@ -8032,7 +8145,7 @@ const ACTIONS: Record<string, ActHandler> = {
       try {
         await api(`/api/identities/${encodeURIComponent(id)}`, { method: "DELETE" });
         await loadIdentities();
-        if (state.modal === "settings" && state.section === "identities") paintModal();
+        if (state.modal === "settings" && state.section === "harnesses") paintModal();
       } catch (err) {
         window.alert((err as CaughtError).message || "Could not remove that identity.");
       }
@@ -8045,7 +8158,7 @@ const ACTIONS: Record<string, ActHandler> = {
       try {
         await api("/api/identities", { method: "POST", body: { provider, isolated: true } });
         await loadIdentities();
-        if (state.modal === "settings" && state.section === "identities") paintModal();
+        if (state.modal === "settings" && state.section === "harnesses") paintModal();
       } catch (err) {
         window.alert((err as CaughtError).message || "Could not add that identity.");
       }
@@ -8420,7 +8533,7 @@ function bindDelegated(): void {
       await refreshSettings();
     }
     if (el.dataset.harnessText) {
-      const tab = state.harnessTab || state.settings?.harness?.provider;
+      const tab = el.dataset.harnessId || state.harnessTab || state.settings?.harness?.provider;
       if (tab === "hermes" && el.dataset.harnessText === "model") {
         await api("/api/harness/hermes", { method: "PUT", body: { model: el.value } });
         if (state.harnessStatus?.harnesses?.hermes) state.harnessStatus.harnesses.hermes.model = el.value;
@@ -8524,7 +8637,7 @@ function bindDelegated(): void {
 function restoreIdentitiesModal(): void {
   if (state.modal === "claude-code") {
     state.modal = "settings";
-    state.section = "identities";
+    state.section = "harnesses";
   }
 }
 
@@ -8705,7 +8818,7 @@ async function startGrokOAuth(): Promise<void> {
 async function testHarness(provider: string | undefined): Promise<void> {
   const id = provider || state.harnessTab || state.settings?.harness?.provider || "grok-build";
   state.harnessTests[id] = { ...(state.harnessTests[id] || {}), busy: true, note: "Testing…" };
-  if (state.modal === "settings" && state.section === "harness") paintModal();
+  if (state.modal === "settings" && state.section === "harnesses") paintModal();
   try {
     const r = await api("/api/harness/test", { method: "POST", body: { botId: state.selected, provider: id } }) as HarnessTestResult;
     const line = r.ok
@@ -8721,7 +8834,7 @@ async function testHarness(provider: string | undefined): Promise<void> {
   } catch (err) {
     state.harnessTests[id] = { busy: false, note: `Failed · ${(err as CaughtError).message}`, log: (err as CaughtError).message, ok: false };
   }
-  if (state.modal === "settings" && state.section === "harness") paintModal();
+  if (state.modal === "settings" && state.section === "harnesses") paintModal();
 }
 
 function setupQuery(): URLSearchParams {
@@ -11260,7 +11373,7 @@ function listen(): void {
         /* keep */
       }
       paintHarnessBanner();
-      if (state.modal === "settings" && state.section === "harness") paintModal();
+      if (state.modal === "settings" && state.section === "harnesses") paintModal();
     });
     es.addEventListener("control", (e: MessageEvent<string>) => {
       const { botId, on } = JSON.parse(e.data);

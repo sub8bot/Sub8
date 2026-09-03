@@ -3483,3 +3483,29 @@ select.pill { appearance: none; padding-right: 24px; }
 .avatar-type.on { border-color: var(--accent, #6d4aff); box-shadow: inset 0 0 0 1px var(--accent, #6d4aff); }
 .avatar-photo-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .avatar-photo-thumb { width: 40px; height: 40px; border-radius: 12px; object-fit: cover; }
+
+
+/* Settings → Harnesses: one collapsible card per engine. */
+.harness-card { padding: 0; overflow: hidden; }
+.harness-card + .harness-card { margin-top: 8px; }
+.harness-card-head { display: flex; align-items: center; gap: 10px; width: 100%; padding: 12px 14px; background: none; border: 0; text-align: left; font: inherit; color: inherit; cursor: pointer; }
+.harness-card-head:hover { background: var(--hover); }
+.harness-card-title { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.harness-card-title .lbl { white-space: nowrap; }
+.harness-default { font-style: normal; font-size: 11px; line-height: 1; padding: 3px 7px; border-radius: 999px; background: color-mix(in srgb, var(--accent, #6d4aff) 14%, var(--card)); color: var(--accent, #6d4aff); }
+.harness-card-detail { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.harness-card-head .chev { flex: 0 0 auto; width: 8px; height: 8px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(-45deg); opacity: .45; transition: transform .15s; margin-right: 4px; }
+.harness-card-head .chev.open { transform: rotate(45deg); }
+.harness-card-body { padding: 2px 14px 12px; border-top: 1px solid var(--line, rgba(0,0,0,.08)); }
+.harness-card-body .harness-log[hidden] { display: none; }
+.ident-row .sub { word-break: break-word; }
+
+/* Harness card head: a toggle plus a ⋯ menu (the head itself is no longer a button). */
+.harness-card-head { display: flex; align-items: stretch; padding: 0; cursor: default; }
+.harness-card-head:hover { background: none; }
+.harness-card-toggle { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 12px 14px; background: none; border: 0; text-align: left; font: inherit; color: inherit; cursor: pointer; }
+.harness-card-toggle:hover, .harness-card-menu:hover { background: var(--hover); }
+.harness-card-menu { flex: 0 0 38px; border: 0; background: none; font: inherit; font-size: 18px; line-height: 1; color: inherit; opacity: .6; cursor: pointer; }
+.ctx-item.ctx-info { cursor: default; opacity: .75; }
+.ctx-item.ctx-info:hover { background: none; }
+.ctx-item.ctx-info .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

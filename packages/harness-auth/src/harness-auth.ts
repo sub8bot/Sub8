@@ -42,17 +42,17 @@ export function friendlyHarnessFailure(provider: string, text: unknown = ""): st
   const label = harnessLabel(provider);
   const raw = String(text || "");
   if (/oauth session expired|could not be refreshed|session expired|token expired|log in again/i.test(raw)) {
-    return `${label} signed out — the login expired. Open Settings → Harness → ${label} and sign in, then send this again.`;
+    return `${label} signed out — the login expired. Open Settings → Harnesses → ${label} and sign in, then send this again.`;
   }
   if (/invalid.?api.?key|api key.*(missing|invalid|not set)/i.test(raw) || provider === "spacexai") {
     if (provider === "spacexai" || /api key/i.test(raw)) {
-      return `${label} needs an API key. Open Settings → Harness → ${label}, paste a key, then send this again.`;
+      return `${label} needs an API key. Open Settings → Harnesses → ${label}, paste a key, then send this again.`;
     }
   }
   if (/ollama|lm studio|ECONNREFUSED|not running/i.test(raw) && (provider === "ollama" || provider === "lmstudio")) {
     return `${label} is not running. Start it, then send this again.`;
   }
-  return `${label} is signed out. Open Settings → Harness → ${label} and sign in, then send this again.`;
+  return `${label} is signed out. Open Settings → Harnesses → ${label} and sign in, then send this again.`;
 }
 
 export function rewriteHarnessOutput(provider: string, text: unknown): string {
@@ -134,6 +134,6 @@ export function applyAuthAlert(row: HarnessRow | null | undefined): HarnessRow |
     detail: row.extra?.email
       ? `Session expired. Sign in again (last account: ${row.extra.email}).`
       : `${label} is signed out. Sign in again.`,
-    hint: row.hint || `Open Settings → Harness → ${label} and sign in.`,
+    hint: row.hint || `Open Settings → Harnesses → ${label} and sign in.`,
   };
 }

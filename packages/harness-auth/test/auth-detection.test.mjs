@@ -123,7 +123,7 @@ test("applyAuthAlert returns a new row and leaves the caller's row alone", () =>
   assert.equal(alerted.signedIn, false);
   assert.equal(alerted.ready, false);
   assert.equal(alerted.expired, true);
-  assert.match(alerted.hint, /Settings → Harness → Codex/);
+  assert.match(alerted.hint, /Settings → Harnesses → Codex/);
   clearAuthFailure("codex");
 
   // A row with nothing to key on rides straight through, rather than throwing
@@ -214,10 +214,10 @@ Login: token expired`);
 });
 
 test("an unknown harness gets generic copy, never another provider's name", () => {
-  assert.equal(harnessLabel("openrouter"), "This harness");
+  assert.equal(harnessLabel("some-future-engine"), "This harness");
   assert.equal(harnessLabel(""), "This harness");
   assert.equal(harnessLabel("claude"), "Claude");
-  const generic = friendlyHarnessFailure("openrouter", "HTTP 401 Unauthorized");
+  const generic = friendlyHarnessFailure("some-future-engine", "HTTP 401 Unauthorized");
   assert.match(generic, /^This harness is signed out/);
   for (const name of ["Claude", "Codex", "Grok Build", "Hermes", "Ollama"]) {
     assert.equal(generic.includes(name), false, `must not name ${name}`);

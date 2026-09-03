@@ -862,8 +862,8 @@ export async function liveBrainClaudeAuth(computerId: string): Promise<unknown> 
   return cloudLiveBrainClaudeAuth({ token: await claudeAuthToken(), computerId });
 }
 
-export async function liveBrainPlugins(computerId: string, provider = "claude"): Promise<unknown> {
-  return cloudLiveBrainPlugins({ token: await claudeAuthToken(), computerId, provider });
+export async function liveBrainPlugins(computerId: string, provider = "claude", refresh = false): Promise<unknown> {
+  return cloudLiveBrainPlugins({ token: await claudeAuthToken(), computerId, provider, refresh });
 }
 
 export async function liveBrainClaudeAuthStart(computerId: string): Promise<unknown> {

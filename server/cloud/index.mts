@@ -132,8 +132,8 @@ export async function liveBrainClaudeAuth({ token, computerId }: ClaudeAuthOptio
 }
 
 /** GET /api/brain/plugins — the plugins a desk's harness exposes and their live status. */
-export async function liveBrainPlugins({ token, computerId, provider }: ClaudeAuthOptions & { provider?: string | undefined } = {}) {
-  const q = `computerId=${encodeURIComponent(computerId || "")}&provider=${encodeURIComponent(provider || "claude")}`;
+export async function liveBrainPlugins({ token, computerId, provider, refresh }: ClaudeAuthOptions & { provider?: string | undefined; refresh?: boolean | undefined } = {}) {
+  const q = `computerId=${encodeURIComponent(computerId || "")}&provider=${encodeURIComponent(provider || "claude")}${refresh ? "&refresh=1" : ""}`;
   return http.cloudApi(`/api/brain/plugins?${q}`, {
     baseUrl: needBase(),
     token,

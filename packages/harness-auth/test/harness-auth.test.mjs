@@ -45,7 +45,7 @@ test("an auth failure is spotted and rewritten into one actionable line", () => 
     "Failed to authenticate: OAuth session expired and could not be refreshed",
   );
   assert.match(claudeMsg, /Claude signed out/);
-  assert.match(claudeMsg, /Settings → Harness → Claude/);
+  assert.match(claudeMsg, /Settings → Harnesses → Claude/);
   assert.doesNotMatch(claudeMsg, /Failed to authenticate/);
   assert.doesNotMatch(claudeMsg, /OAuth session expired/);
 

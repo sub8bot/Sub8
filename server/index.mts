@@ -1112,7 +1112,7 @@ app.get("/api/cloud/brain/plugins", async (req, res) => {
   try {
     if (!(await requireCloudSession(req, res))) return;
     const provider = typeof req.query.provider === "string" && req.query.provider ? req.query.provider : "claude";
-    res.json(await account.liveBrainPlugins(String(req.query.computerId || ""), provider));
+    res.json(await account.liveBrainPlugins(String(req.query.computerId || ""), provider, String(req.query.refresh || "") === "1"));
   } catch (err) {
     sendAccountError(res, err);
   }
