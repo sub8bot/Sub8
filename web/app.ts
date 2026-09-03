@@ -1937,9 +1937,13 @@ function mountLiveFrame(bot: Bot | null | undefined): void {
   liveFrameKey = key;
   delete wrap.dataset.empty;
   const keep = lastGoodScreen.get(bot.id) || "";
+  // Preserve the user's text focus across a (re)mount: the noVNC iframe grabs
+  // keyboard focus when it connects, which was yanking the cursor out of the
+  // chat/composer every time the stream reattached.
+  const keepFocus = isFieldEl(document.activeElement) ? (document.activeElement as HTMLElement) : null;
   wrap.innerHTML = `<img class="screen-still${keep ? "" : " hidden"}" alt="" ${
     keep ? `src="${keep}"` : ""
-  } /><iframe data-key="${key}" src="${streamUrl(bot)}" allow="clipboard-read; clipboard-write"></iframe>`;
+  } /><iframe data-key="${key}" src="${streamUrl(bot)}" tabindex="-1" allow="clipboard-read; clipboard-write"></iframe>`;
   const iframe = wrap.querySelector("iframe");
   const still = wrap.querySelector<HTMLImageElement>(".screen-still");
   bindStill(still, bot.id);
@@ -1954,6 +1958,7 @@ function mountLiveFrame(bot: Bot | null | undefined): void {
     const live = state.bots.find((b) => b.id === bot.id) || bot;
     paintScreenStatus(live);
     markIframeLoaded(wrap);
+    restoreFieldFocus(keepFocus);
   });
   iframe?.addEventListener("error", () => {
     if (state.selected !== bot.id) return;
@@ -11188,6 +11193,34 @@ function listen(): void {
 }
 
 let startingVm = false;
+/**
+ * The desk stream is a cross-origin noVNC iframe. When its RFB client connects
+ * or reconnects — which happens on its own every few seconds — it grabs the
+ * keyboard, pulling the cursor out of the chat/composer mid-type. The parent
+ * can't intercept that from inside the iframe, but focus entering a
+ * cross-origin frame fires the window `blur` event, so restore the field then.
+ * Guards: only if the page still has focus (not an app switch) and the user
+ * did not just click into the desk (a recent pointerdown).
+ */
+let lastFocusedField: HTMLElement | null = null;
+let lastPointerDownAt = 0;
+function installStreamFocusGuard(): void {
+  document.addEventListener("focusin", (e) => {
+    if (isFieldEl(e.target as HTMLElement)) lastFocusedField = e.target as HTMLElement;
+  }, true);
+  document.addEventListener("pointerdown", () => { lastPointerDownAt = Date.now(); }, true);
+  window.addEventListener("blur", () => {
+    const field = lastFocusedField;
+    setTimeout(() => {
+      if (!document.hasFocus()) return;                       // switched apps — leave it
+      const ae = document.activeElement;
+      if (!ae || ae.tagName !== "IFRAME") return;             // focus didn't go to a frame
+      if (Date.now() - lastPointerDownAt < 400) return;       // user clicked the desk on purpose
+      if (isFieldEl(field) && field.isConnected) restoreFieldFocus(field);
+    }, 0);
+  }, true);
+}
+
 function watchStream(): void {
   if (isCloudPlace()) {
     watchCloudStream().catch(() => {});
@@ -11290,6 +11323,7 @@ function watchStream(): void {
   }
   await refresh();
   listen();
+  installStreamFocusGuard();
   render();
   loadComputers().catch(() => {});
   setInterval(() => {
