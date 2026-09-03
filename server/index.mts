@@ -2505,7 +2505,12 @@ app.patch("/api/bots/:id", async (req, res) => {
     const pool = await identities.loadNormalizedIdentities();
     const picked = pool.find((row) => row.id === body.identityId);
     if (picked) {
-      bot.harness = { ...(bot.harness || {}), provider: picked.provider, model: body.harness?.model || bot.harness?.model || picked.model };
+      // Switching providers must not carry the previous provider's model over
+      // (e.g. a Cursor "cursor-grok-4.6-low" left on a bot now on Claude). Keep
+      // the current model only when the provider is unchanged; otherwise take
+      // the new identity's model, or let the harness resolve its own default.
+      const carriedModel = bot.harness?.provider === picked.provider ? bot.harness?.model : undefined;
+      bot.harness = { ...(bot.harness || {}), provider: picked.provider, model: body.harness?.model || carriedModel || picked.model || "" };
     }
   }
   if (body.avatar && typeof body.avatar === "object") {

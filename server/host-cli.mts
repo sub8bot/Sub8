@@ -183,8 +183,13 @@ export function resolveClaudeCliModel(model: unknown): string {
   if (/^claude-sonnet-5($|-|\[)/i.test(m) || m === "sonnet-5") return CLAUDE_SAFE_SONNET;
   if (/^claude-sonnet-4-6/i.test(m) || m === "sonnet-4-6" || m === "sonnet-4.6") return CLAUDE_SAFE_SONNET;
   if (/^claude-sonnet-4-5/i.test(m) || m === "sonnet-4-5" || m === "sonnet-4.5") return CLAUDE_SAFE_SONNET;
-  if (/^grok/i.test(m)) return CLAUDE_SAFE_SONNET;
-  return m;
+  // Any Claude model id passes through so new releases (opus-5, haiku-4-5, …)
+  // keep working with no code change. A model that is NOT Claude's — a Grok,
+  // Cursor, or other harness's model string left on a bot whose identity was
+  // switched to Claude — must never reach the Claude CLI as --model; fall back
+  // to the safe default instead of passing a guaranteed-invalid model through.
+  if (/^claude-/i.test(m) || /^(opus|haiku)/i.test(m)) return m;
+  return CLAUDE_SAFE_SONNET;
 }
 
 /** Claude Code flags. Always pin --model so 2.1.197 cannot default to Sonnet 5. */
