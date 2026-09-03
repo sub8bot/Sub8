@@ -381,7 +381,15 @@ export const TOOLS: ToolSpec[] = [
     type: "function",
     function: {
       name: "disable_routine",
-      description: "Turn off a routine by id.",
+      description: "Turn off a routine by id (keeps it, can be re-enabled). Use for 'pause'/'stop'.",
+      parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_routine",
+      description: "Permanently remove a routine by id. Use when the user says delete/remove/get rid of a routine (not just pause).",
       parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
     },
   },

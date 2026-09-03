@@ -424,7 +424,16 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "disable_routine",
-    description: "Turn off a standing routine by id.",
+    description: "Turn off a standing routine by id (keeps it; re-enable later). Use for pause/stop.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" } },
+      required: ["id"],
+    },
+  },
+  {
+    name: "delete_routine",
+    description: "Permanently remove a routine by id. Use when the user says delete/remove/get rid of a routine (not just pause).",
     inputSchema: {
       type: "object",
       properties: { id: { type: "string" } },
@@ -1090,6 +1099,20 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
       ts: Date.now(),
     });
     return { content: [{ type: "text", text: `disabled ${r.name}` }] };
+  }
+  if (name === "delete_routine") {
+    const box: { row: { id: string; name: string } | null } = { row: null };
+    await store.patchBot(botId, (b) => {
+      const hit = (b.routines || []).find((x) => x.id === args.id);
+      if (!hit) return;
+      box.row = { id: String(hit.id), name: String(hit.name || "routine") };
+      b.routines = (b.routines || []).filter((x) => x.id !== args.id);
+    });
+    const r = box.row;
+    if (!r) return { content: [{ type: "text", text: "routine not found" }], isError: true };
+    await emit("routine", { deleted: r.id });
+    await emit("message", { id: `tl${Date.now()}rt`, role: "activity", kind: "tool", name: "delete_routine", action: "delete_routine", summary: `Deleted ${r.name}`, ts: Date.now() });
+    return { content: [{ type: "text", text: `deleted ${r.name}` }] };
   }
   if (name === "upsert_routine") {
     const bot = await store.getBot(botId) as McpBot | null;

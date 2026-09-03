@@ -1459,6 +1459,7 @@ function toolSummary(name: string, args: ToolArgs = {}, result: string = ""): st
   if (name === "upsert_routine") return args.name ? `Set up “${args.name}”` : "Updated a routine";
   if (name === "list_routines") return "Checked routines";
   if (name === "disable_routine") return "Paused a routine";
+  if (name === "delete_routine") return "Deleted a routine";
   if (result && /^error:/i.test(result)) return result.slice(0, 80);
   return name.replaceAll("_", " ");
 }
@@ -2109,6 +2110,18 @@ async function execTool(
       r.enabled = false;
       r.updatedAt = Date.now();
       return { text: `disabled ${r.name}` };
+    }
+    if (name === "delete_routine") {
+      let removed: { id: string; name: string } | null = null;
+      const before = (bot.routines || []).length;
+      bot.routines = (bot.routines || []).filter((x) => {
+        if (x.id === args.id) { removed = { id: String(x.id), name: String(x.name || "routine") }; return false; }
+        return true;
+      });
+      if (!removed || bot.routines.length === before) return { text: "routine not found" };
+      await store.upsertBot(bot);
+      emit("routine", { deleted: (removed as { id: string }).id });
+      return { text: `deleted ${(removed as { name: string }).name}` };
     }
     if (name === "upsert_routine") {
       const minutes = Number(args.interval_minutes);
