@@ -74,6 +74,11 @@ export function newWrappingKey(): Promise<CryptoKey> {
   return subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt", "wrapKey", "unwrapKey"]);
 }
 
+/** Import a raw base64 vault (data) key — encrypt/decrypt usage, for seal/open. */
+export function importVaultKey(raw: B64): Promise<CryptoKey> {
+  return subtle.importKey("raw", bs(b64decode(raw)), { name: "AES-GCM" }, true, ["encrypt", "decrypt"]);
+}
+
 /** Export a wrapping/escrow key to base64 raw bytes for storage. */
 export async function exportKeyRaw(key: CryptoKey): Promise<B64> {
   return b64encode(new Uint8Array(await subtle.exportKey("raw", key)));

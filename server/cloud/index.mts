@@ -132,6 +132,24 @@ export async function liveBrainClaudeAuth({ token, computerId }: ClaudeAuthOptio
 }
 
 /** GET /api/brain/plugins — the plugins a desk's harness exposes and their live status. */
+export async function gateStatus({ token }: { token?: string | undefined } = {}) {
+  if (!token) return null;
+  try { return await http.cloudApi("/api/brain/vault/gate", { baseUrl: needBase(), token }); }
+  catch (e) { if (String((e as Error)?.message || "").includes("404")) return null; throw e; }
+}
+export async function gateSetup({ token, passcode, vaultKey }: { token?: string | undefined; passcode?: string; vaultKey?: string } = {}) {
+  if (!token) throw new Error("Sign in to Cloud first.");
+  return http.cloudApi("/api/brain/vault/gate?op=setup", { baseUrl: needBase(), token, method: "POST", body: { passcode, vaultKey } });
+}
+export async function gateUnlock({ token, passcode }: { token?: string | undefined; passcode?: string } = {}) {
+  if (!token) throw new Error("Sign in to Cloud first.");
+  return http.cloudApi("/api/brain/vault/gate", { baseUrl: needBase(), token, method: "POST", body: { passcode } });
+}
+export async function gateReset({ token }: { token?: string | undefined } = {}) {
+  if (!token) return null;
+  return http.cloudApi("/api/brain/vault/gate?op=reset", { baseUrl: needBase(), token, method: "POST", body: {} });
+}
+
 export async function getCloudVault({ token }: { token?: string | undefined } = {}) {
   if (!token) return null;
   try {

@@ -17,28 +17,25 @@ import fsSync from "node:fs";
 import path from "node:path";
 import { dataDir } from "./paths.mjs";
 import {
-  createVault,
-  unlockVault,
-  rewrapVault,
-  sealSecret,
-  openSecret,
   seal,
   openText,
+  newVaultKey,
   newWrappingKey,
   importWrappingKey,
+  importVaultKey,
   exportKeyRaw,
-  type VaultHeader,
-  type VaultKeyset,
   type Sealed,
 } from "@sub8/vault-crypto";
+
+/** The unlocked key, in memory only — the passcode gate holds its wrapped form. */
+type Keyset = { vaultKey: Awaited<ReturnType<typeof importVaultKey>> };
 import type { VaultFile } from "./vault.mjs";
 import { _decryptedVaultFile, _replaceVaultFile } from "./vault.mjs";
 
 /** The synced blob. Everything here is ciphertext except the public id lists and timestamp. */
 export interface CloudVaultEnvelope {
   v: 1;
-  header: VaultHeader;
-  /** The whole VaultFile JSON, sealed under the passphrase-derived vault key. */
+  /** The whole VaultFile JSON, sealed under the vault key (which the passcode gate holds, wrapped). */
   data: Sealed;
   /** account id -> that account's password, sealed under the cloud ESCROW key. Present only for always-on logins. */
   escrow: Record<string, Sealed>;
@@ -58,7 +55,7 @@ export interface CloudVaultStatus {
 const ENVELOPE_PATH = path.join(dataDir, "vault-cloud.json");
 const AAD = "sub8-vault-file";
 
-let keyset: VaultKeyset | null = null;
+let keyset: Keyset | null = null;
 /** The cloud escrow key, imported into memory while we hold it (to seal always-on items). */
 let escrowKey: Awaited<ReturnType<typeof importWrappingKey>> | null = null;
 let writeLock: Promise<void> = Promise.resolve();
@@ -73,8 +70,8 @@ async function readEnvelope(): Promise<CloudVaultEnvelope | null> {
   if (!fsSync.existsSync(ENVELOPE_PATH)) return null;
   try {
     const raw = JSON.parse(await fs.readFile(ENVELOPE_PATH, "utf8"));
-    if (raw && raw.header && raw.data) {
-      return { v: 1, header: raw.header, data: raw.data, escrow: raw.escrow || {}, alwaysOn: Array.isArray(raw.alwaysOn) ? raw.alwaysOn : [], updatedAt: Number(raw.updatedAt) || 0 };
+    if (raw && raw.data) {
+      return { v: 1, data: raw.data, escrow: raw.escrow || {}, alwaysOn: Array.isArray(raw.alwaysOn) ? raw.alwaysOn : [], updatedAt: Number(raw.updatedAt) || 0 };
     }
   } catch {
     /* fall through */
@@ -103,9 +100,9 @@ export async function status(): Promise<CloudVaultStatus> {
 }
 
 /** Seal the current local vault into a fresh envelope, re-sealing always-on items under the escrow key. */
-async function buildEnvelope(header: VaultHeader, ks: VaultKeyset, alwaysOn: string[]): Promise<CloudVaultEnvelope> {
+async function buildEnvelope(ks: Keyset, alwaysOn: string[]): Promise<CloudVaultEnvelope> {
   const file = await _decryptedVaultFile();
-  const data = await sealSecret(JSON.stringify(file), ks, AAD);
+  const data = await seal(JSON.stringify(file), ks.vaultKey, AAD);
   const escrow: Record<string, Sealed> = {};
   if (alwaysOn.length && escrowKey) {
     const byId = new Map(file.accounts.map((a) => [a.id, a]));
@@ -114,7 +111,7 @@ async function buildEnvelope(header: VaultHeader, ks: VaultKeyset, alwaysOn: str
       if (acc?.password) escrow[id] = await seal(acc.password, escrowKey, `escrow:${id}`);
     }
   }
-  return { v: 1, header, data, escrow, alwaysOn: alwaysOn.filter((id) => escrow[id] || !escrowKey), updatedAt: Date.now() };
+  return { v: 1, data, escrow, alwaysOn: alwaysOn.filter((id) => escrow[id] || !escrowKey), updatedAt: Date.now() };
 }
 
 /**
@@ -122,28 +119,25 @@ async function buildEnvelope(header: VaultHeader, ks: VaultKeyset, alwaysOn: str
  * write the envelope. Returns the envelope to push to the Worker. Leaves the
  * keyset unlocked in memory.
  */
-export function enable(passphrase: string): Promise<CloudVaultEnvelope> {
+/** A fresh vault key as raw base64 — the caller hands it to the gate at setup. */
+export function freshVaultKey(): Promise<string> {
+  return newVaultKey().then(exportKeyRaw);
+}
+
+/** Turn on the cloud vault around a vault key the gate has just sealed under the passcode. Seals the current vault. */
+export function enableWithKey(vaultKeyB64: string): Promise<CloudVaultEnvelope> {
   return withLock(async () => {
-    if (!passphrase || passphrase.length < 8) throw new Error("Choose a passphrase of at least 8 characters.");
-    const created = await createVault(passphrase);
-    keyset = created.keyset;
-    const env = await buildEnvelope(created.header, created.keyset, []);
+    keyset = { vaultKey: await importVaultKey(vaultKeyB64) };
+    const env = await buildEnvelope(keyset, []);
     await writeEnvelope(env);
     return env;
   });
 }
 
-/** Unlock the cloud vault with the passphrase; caches the keyset in memory. */
-export function unlock(passphrase: string): Promise<void> {
+/** Cache the keyset from a vault key the gate returned on a correct passcode. */
+export function unlockWithKey(vaultKeyB64: string): Promise<void> {
   return withLock(async () => {
-    const env = await readEnvelope();
-    if (!env) throw new Error("The cloud vault is not set up on this computer.");
-    keyset = await unlockVault(passphrase, env.header);
-    // Prove the passphrase actually opens the data, not just the key wrap.
-    await openSecret(env.data, keyset, AAD).catch(() => {
-      keyset = null;
-      throw new Error("Wrong passphrase.");
-    });
+    keyset = { vaultKey: await importVaultKey(vaultKeyB64) };
   });
 }
 
@@ -157,7 +151,7 @@ export function resync(): Promise<CloudVaultEnvelope | null> {
   return withLock(async () => {
     const env = await readEnvelope();
     if (!env || !keyset) return null;
-    const next = await buildEnvelope(env.header, keyset, env.alwaysOn);
+    const next = await buildEnvelope(keyset, env.alwaysOn);
     await writeEnvelope(next);
     return next;
   });
@@ -170,22 +164,9 @@ export function applyPulled(env: CloudVaultEnvelope): Promise<void> {
     if (local && local.updatedAt >= env.updatedAt) return; // ours is newer/equal
     await writeEnvelope(env);
     if (keyset) {
-      const file = JSON.parse(await openSecret(env.data, keyset, AAD)) as VaultFile;
+      const file = JSON.parse(await openText(env.data, keyset.vaultKey, AAD)) as VaultFile;
       await _replaceVaultFile(file);
     }
-  });
-}
-
-/** Change the passphrase (must be unlocked). Returns the new envelope to sync. */
-export function changePassphrase(newPassphrase: string): Promise<CloudVaultEnvelope> {
-  return withLock(async () => {
-    const env = await readEnvelope();
-    if (!env || !keyset) throw new Error("Unlock the cloud vault first.");
-    if (!newPassphrase || newPassphrase.length < 8) throw new Error("Choose a passphrase of at least 8 characters.");
-    const header = await rewrapVault(env.header, keyset, newPassphrase);
-    const next = await buildEnvelope(header, keyset, env.alwaysOn);
-    await writeEnvelope(next);
-    return next;
   });
 }
 
@@ -222,7 +203,7 @@ export function setAlwaysOn(accountId: string, on: boolean): Promise<CloudVaultE
     const set = new Set(env.alwaysOn);
     if (on) set.add(accountId);
     else set.delete(accountId);
-    const next = await buildEnvelope(env.header, keyset, [...set]);
+    const next = await buildEnvelope(keyset, [...set]);
     await writeEnvelope(next);
     return next;
   });
@@ -233,7 +214,7 @@ export async function revealForRelay(accountId: string): Promise<string> {
   if (!keyset) return "";
   const env = await readEnvelope();
   if (!env) return "";
-  const file = JSON.parse(await openSecret(env.data, keyset, AAD)) as VaultFile;
+  const file = JSON.parse(await openText(env.data, keyset.vaultKey, AAD)) as VaultFile;
   return file.accounts.find((a) => a.id === accountId)?.password || "";
 }
 

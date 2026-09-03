@@ -28,6 +28,7 @@ export {
   newWrappingKey,
   exportKeyRaw,
   importWrappingKey,
+  importVaultKey,
   wrapKey,
   unwrapKey,
   seal,

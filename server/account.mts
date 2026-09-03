@@ -20,6 +20,10 @@ import {
   liveBrainClaudeAuth as cloudLiveBrainClaudeAuth,
   liveBrainPlugins as cloudLiveBrainPlugins,
   getCloudVault as cloudGetVault,
+  gateStatus as cloudGateStatus,
+  gateSetup as cloudGateSetup,
+  gateUnlock as cloudGateUnlock,
+  gateReset as cloudGateReset,
   putCloudVault as cloudPutVault,
   deleteCloudVault as cloudDeleteVault,
   getCloudEscrowKey as cloudGetEscrowKey,
@@ -869,6 +873,19 @@ export async function liveBrainClaudeAuth(computerId: string): Promise<unknown> 
 
 /** The synced envelope, as account.mts moves it (opaque here). */
 export type CloudVaultEnvelopeLike = { header: unknown; data: unknown; updatedAt?: number };
+export async function vaultGateStatus(): Promise<{ exists: boolean; locked: boolean; remaining: number } | null> {
+  return (await cloudGateStatus({ token: await claudeAuthToken() })) as { exists: boolean; locked: boolean; remaining: number } | null;
+}
+export async function vaultGateSetup(passcode: string, vaultKey: string): Promise<void> {
+  await cloudGateSetup({ token: await claudeAuthToken(), passcode, vaultKey });
+}
+export async function vaultGateUnlock(passcode: string): Promise<{ ok: boolean; vaultKey?: string; locked?: boolean; remaining?: number; error?: string }> {
+  return (await cloudGateUnlock({ token: await claudeAuthToken(), passcode })) as { ok: boolean; vaultKey?: string; locked?: boolean; remaining?: number; error?: string };
+}
+export async function vaultGateReset(): Promise<void> {
+  await cloudGateReset({ token: await claudeAuthToken() });
+}
+
 export async function getCloudVault(): Promise<CloudVaultEnvelopeLike | null> {
   return (await cloudGetVault({ token: await claudeAuthToken() })) as CloudVaultEnvelopeLike | null;
 }

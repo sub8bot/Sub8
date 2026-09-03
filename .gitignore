@@ -109,5 +109,6 @@ plan/
 /server/update-state.mjs
 /server/update.mjs
 /server/vault.mjs
+/server/vault-sync.mjs
 /server/vm.mjs
 agent-test-suite/

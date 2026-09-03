@@ -728,9 +728,10 @@ interface AppState {
   teachFrames: string[];
   attachments: AttachedFile[];
   vault: VaultSnapshot;
-  vaultCloud: { enabled: boolean; unlocked: boolean; alwaysOn: string[]; updatedAt: number | null } | null;
+  vaultCloud: { enabled: boolean; unlocked: boolean; alwaysOn: string[]; updatedAt: number | null; gate?: { exists: boolean; locked: boolean; remaining: number } | null } | null;
   vaultCloudPrompt: "enable" | "unlock" | null;
   vaultCloudError: string | null;
+  vaultCloudConfirmDisable: boolean;
   vaultCloudBusy: boolean;
   vaultGroup: string | undefined;
   vaultEditId: string | null | undefined;
@@ -893,6 +894,7 @@ const state: AppState = {
   vaultCloud: null,
   vaultCloudPrompt: null,
   vaultCloudError: null,
+  vaultCloudConfirmDisable: false,
   vaultCloudBusy: false,
   vaultGroup: "all",
   vaultEditId: null,
@@ -6429,40 +6431,74 @@ function vaultDetailHtml(): string {
 }
 
 /** Force the (keep-form) vault modal to rebuild — the only way its nav/detail repaint. */
-/** Show a passphrase error without a rebuild, so the typed fields survive. */
+/** Show a passcode error without a rebuild, so the typed digits survive. */
 function showVaultPassError(msg: string): void {
   const e = document.querySelector<HTMLElement>(".vault-pass-err");
   if (e) { e.textContent = msg; e.hidden = false; }
 }
 
-/** Live requirement checks + Enter-to-submit for the passphrase dialog. */
+/** Wire the passcode rows: dots follow the hidden input; auto-advance to Confirm; auto-submit on Unlock. */
 function bindVaultPassModal(): void {
-  const p1 = $<HTMLInputElement>("#vault-cloud-pass");
-  if (!p1) return;
+  const fields = [...document.querySelectorAll<HTMLElement>(".pc-field")];
+  if (!fields.length) return;
   const isEnable = state.vaultCloudPrompt === "enable";
-  const p2 = $<HTMLInputElement>("#vault-cloud-pass2");
   const go = $<HTMLButtonElement>("#vault-cloud-go");
-  const check = () => {
-    const a = p1.value;
-    const b = p2?.value || "";
-    const lenOk = a.length >= 8;
-    const matchOk = a === b && b.length > 0;
-    document.querySelector('[data-req="len"]')?.classList.toggle("on", lenOk);
-    document.querySelector('[data-req="match"]')?.classList.toggle("on", matchOk);
-    if (go) go.disabled = isEnable ? !(lenOk && matchOk) : a.length === 0;
+  // Update the error line in place (no rebuild) so typed digits survive.
+  const errSlot = $<HTMLElement>(".vault-pass-err");
+  const setLiveErr = (m: string) => { state.vaultCloudError = m || null; if (errSlot) { errSlot.textContent = m; errSlot.hidden = !m; } };
+  const inputA = $<HTMLInputElement>('.pc-input[data-pc="a"]');
+  const inputB = $<HTMLInputElement>('.pc-input[data-pc="b"]');
+  const paint = (field: HTMLElement) => {
+    const input = field.querySelector<HTMLInputElement>(".pc-input");
+    if (!input) return; // busy render: dots pre-filled, nothing to wire
+    const n = input.value.replace(/\D/g, "").length;
+    field.querySelectorAll<HTMLElement>(".pc-dot").forEach((d, i) => d.classList.toggle("on", i < n));
+    field.classList.toggle("focused", document.activeElement === input);
   };
-  const onKey = (ev: KeyboardEvent) => { if (ev.key === "Enter" && go && !go.disabled) { ev.preventDefault(); go.click(); } };
-  p1.addEventListener("input", check);
-  p1.addEventListener("keydown", onKey);
-  if (p2) { p2.addEventListener("input", check); p2.addEventListener("keydown", onKey); }
-  check();
-  p1.focus();
+  const revalidate = () => {
+    const a = readPasscode("a");
+    const b = readPasscode("b");
+    const aOk = a.length === VAULT_PASSCODE_LEN;
+    const bOk = !isEnable || (b.length === VAULT_PASSCODE_LEN && a === b);
+    if (go) go.disabled = !(aOk && bOk);
+    return aOk && bOk;
+  };
+  for (const field of fields) {
+    const input = field.querySelector<HTMLInputElement>(".pc-input");
+    if (!input) continue; // busy render: no interactive input
+    field.addEventListener("mousedown", (ev) => { ev.preventDefault(); input.focus(); });
+    input.addEventListener("focus", () => paint(field));
+    input.addEventListener("blur", () => paint(field));
+    input.addEventListener("input", () => {
+      input.value = input.value.replace(/\D/g, "").slice(0, VAULT_PASSCODE_LEN);
+      paint(field);
+      revalidate();
+      // The user is editing: drop any stale server error and show a live mismatch hint.
+      const a = readPasscode("a");
+      const b = readPasscode("b");
+      const mismatch = isEnable && a.length === VAULT_PASSCODE_LEN && b.length === VAULT_PASSCODE_LEN && a !== b;
+      setLiveErr(mismatch ? "Passcodes don't match." : "");
+      if (input.value.length === VAULT_PASSCODE_LEN) {
+        if (isEnable && input === inputA && inputB) inputB.focus();
+        else if (!isEnable && go && !go.disabled) go.click();
+      }
+    });
+    input.addEventListener("keydown", (ev: KeyboardEvent) => {
+      if (ev.key === "Enter" && go && !go.disabled) { ev.preventDefault(); go.click(); }
+    });
+  }
+  fields.forEach(paint);
+  revalidate();
+  inputA?.focus();
 }
 
 function repaintVault(): void {
   const h = $("#modal-host");
   if (h) delete h.dataset.key;
   paintModal();
+  // paintModal alone doesn't re-attach listeners; the passcode overlay needs them.
+  bindVaultSearch();
+  bindVaultPassModal();
 }
 
 async function loadVaultCloud(): Promise<void> {
@@ -6490,31 +6526,64 @@ async function vaultCloudCall(path: string, body?: Record<string, unknown>): Pro
 }
 
 /** The cloud-sync section at the foot of the vault nav. */
-/** The Set-passphrase / Unlock dialog, centered over the vault. Requirements are live; errors show inline. */
+/** Fixed passcode length. Short by design — the server gate rate-limits + locks, X-style. */
+const VAULT_PASSCODE_LEN = 6;
+
+/** X-style passcode row: one hidden input captures the digits; circle dots fill as you type. */
+function passcodeBoxesHtml(prefix: string, fillAll = false): string {
+  const dots = Array.from({ length: VAULT_PASSCODE_LEN }, (_, i) => `<span class="pc-dot${fillAll ? " on" : ""}" data-i="${i}"></span>`).join("");
+  // While processing we keep the field non-interactive and the dots filled — no blank flash.
+  const input = fillAll ? "" : `<input class="pc-input" data-pc="${prefix}" inputmode="numeric" pattern="[0-9]*" maxlength="${VAULT_PASSCODE_LEN}" autocomplete="one-time-code" aria-label="Passcode" />`;
+  return `<div class="pc-field${fillAll ? " busy" : ""}" data-pc-field="${prefix}">
+    ${input}
+    <div class="pc-dots">${dots}</div>
+  </div>`;
+}
+
+/** Read the digits from one passcode row's hidden input. */
+function readPasscode(prefix: string): string {
+  return ($<HTMLInputElement>(`.pc-input[data-pc="${prefix}"]`)?.value || "").replace(/\D/g, "").slice(0, VAULT_PASSCODE_LEN);
+}
+
+/** The Set-passcode / Unlock dialog, centered over the vault. */
 function vaultPassModalHtml(): string {
   if (!state.vaultCloudPrompt) return "";
   const isEnable = state.vaultCloudPrompt === "enable";
   const busy = state.vaultCloudBusy;
   const err = state.vaultCloudError;
+  const locked = Boolean(state.vaultCloud?.gate?.locked);
   return `<div class="vault-pass-overlay" data-act="vault-cloud-cancel-bg">
     <div class="vault-pass-card" data-stop="1">
-      <div class="vault-pass-title">${isEnable ? "Set a vault passphrase" : "Unlock cloud vault"}</div>
-      <p class="sub">${isEnable ? "This encrypts your logins so they sync to the cloud and your phone. Only you can unlock it — we never see it." : "Enter your vault passphrase to sync and edit."}</p>
-      <input class="field" id="vault-cloud-pass" type="password" autocomplete="off" placeholder="Passphrase" />
-      ${isEnable ? `<input class="field" id="vault-cloud-pass2" type="password" autocomplete="off" placeholder="Confirm passphrase" style="margin-top:8px" />` : ""}
+      <div class="vault-pass-title">${isEnable ? "Create a vault passcode" : locked ? "Vault locked" : "Enter passcode"}</div>
+      <p class="sub">${
+        isEnable
+          ? `A ${VAULT_PASSCODE_LEN}-digit passcode encrypts your logins so they sync to your phone and cloud desks. Only you can unlock it.`
+          : locked
+            ? "Too many wrong tries. Reset the passcode to continue — this clears the synced copy."
+            : "Your passcode unlocks your synced logins."
+      }</p>
+      ${
+        locked
+          ? ""
+          : `<div class="pc-label">${isEnable ? "Passcode" : ""}</div>
+      ${passcodeBoxesHtml("a", busy)}
+      ${isEnable ? `<div class="pc-label">Confirm</div>${passcodeBoxesHtml("b", busy)}` : ""}`
+      }
       ${
         isEnable
-          ? `<ul class="vault-pass-reqs">
-        <li data-req="len">At least 8 characters</li>
-        <li data-req="match">Both entries match</li>
-      </ul>
-      <div class="vault-pass-warn">No recovery: if you forget this passphrase, your synced logins are gone for good.</div>`
+          ? `<div class="vault-pass-warn">No recovery: forget this passcode and the synced logins are gone for good.</div>`
           : ""
       }
       <div class="vault-pass-err" ${err ? "" : "hidden"}>${escapeHtml(err || "")}</div>
-      <div class="row" style="gap:8px;margin-top:12px;justify-content:flex-end">
-        <button type="button" class="pill" data-act="vault-cloud-cancel">Cancel</button>
-        <button type="button" class="pill primary" id="vault-cloud-go" data-act="${isEnable ? "vault-cloud-enable" : "vault-cloud-unlock"}" ${busy ? "disabled" : ""}>${busy ? "Working…" : isEnable ? "Turn on sync" : "Unlock"}</button>
+      <div class="row" style="gap:8px;margin-top:16px;justify-content:flex-end;align-items:center">
+        <div class="row" style="gap:8px">
+          <button type="button" class="pill" data-act="vault-cloud-cancel">Cancel</button>
+          ${
+            locked
+              ? `<button type="button" class="pill primary" data-act="vault-cloud-forgot">Reset passcode</button>`
+              : `<button type="button" class="pill primary" id="vault-cloud-go" data-act="${isEnable ? "vault-cloud-enable" : "vault-cloud-unlock"}" ${busy ? "disabled" : ""}>${busy ? "Working…" : isEnable ? "Turn on sync" : "Unlock"}</button>`
+          }
+        </div>
       </div>
     </div>
   </div>`;
@@ -6532,17 +6601,25 @@ function vaultCloudHtml(): string {
   if (!c.unlocked) {
     return `<div class="vault-cloud">
       <div class="lbl">Cloud vault · locked</div>
-      <div class="sub">Unlock with your passphrase to sync and edit.</div>
+      <div class="sub">Enter your passcode to sync and edit.</div>
       <button type="button" class="pill primary" data-act="vault-cloud-unlock-open" style="margin-top:8px">Unlock</button>
     </div>`;
   }
   return `<div class="vault-cloud">
     <div class="lbl">Cloud vault · on <span class="hbadge ok">synced</span></div>
     <div class="sub">${c.alwaysOn.length ? `${c.alwaysOn.length} login${c.alwaysOn.length === 1 ? "" : "s"} set for unattended cloud autofill.` : "Cloud desks ask you to unlock before they fill."}</div>
-    <div class="row" style="gap:6px;margin-top:8px">
-      <button type="button" class="pill" data-act="vault-cloud-lock">Lock</button>
-      <button type="button" class="pill" data-act="vault-cloud-disable">Turn off</button>
-    </div>
+    ${state.vaultCloudConfirmDisable
+      ? `<div class="vault-confirm">
+          <div class="sub">Turn off cloud sync? The encrypted copy is removed from the cloud and your other devices lose access. Your logins stay on this Mac.</div>
+          <div class="row" style="gap:6px;margin-top:8px">
+            <button type="button" class="pill" data-act="vault-cloud-disable-cancel">Cancel</button>
+            <button type="button" class="pill danger" data-act="vault-cloud-disable-confirm">Turn off sync</button>
+          </div>
+        </div>`
+      : `<div class="row" style="gap:6px;margin-top:8px">
+          <button type="button" class="pill" data-act="vault-cloud-lock">Lock</button>
+          <button type="button" class="pill" data-act="vault-cloud-disable">Turn off</button>
+        </div>`}
   </div>`;
 }
 
@@ -7286,21 +7363,29 @@ const ACTIONS: Record<string, ActHandler> = {
   "vault-cloud-cancel": () => { state.vaultCloudPrompt = null; state.vaultCloudError = null; repaintVault(); },
   "vault-cloud-cancel-bg": (e, { el }) => { if (e.target === el) { state.vaultCloudPrompt = null; state.vaultCloudError = null; repaintVault(); } },
   "vault-cloud-enable": () => {
-    const pass = $<HTMLInputElement>("#vault-cloud-pass")?.value || "";
-    const confirm = $<HTMLInputElement>("#vault-cloud-pass2")?.value || "";
-    if (pass.length < 8) { showVaultPassError("Use at least 8 characters."); return; }
-    if (pass !== confirm) { showVaultPassError("The two entries don't match."); return; }
-    void vaultCloudCall("enable", { passphrase: pass });
+    const a = readPasscode("a");
+    const b = readPasscode("b");
+    if (a.length !== VAULT_PASSCODE_LEN) { showVaultPassError(`Enter all ${VAULT_PASSCODE_LEN} digits.`); return; }
+    if (a !== b) { showVaultPassError("The two passcodes don't match."); return; }
+    void vaultCloudCall("enable", { passcode: a });
+  },
+  "vault-cloud-forgot": () => {
+    void (async () => {
+      await vaultCloudCall("reset");
+      state.vaultCloudPrompt = "enable";
+      state.vaultCloudError = null;
+      repaintVault();
+    })();
   },
   "vault-cloud-unlock": () => {
-    const pass = $<HTMLInputElement>("#vault-cloud-pass")?.value || "";
-    void vaultCloudCall("unlock", { passphrase: pass });
+    const a = readPasscode("a");
+    if (a.length !== VAULT_PASSCODE_LEN) { showVaultPassError(`Enter all ${VAULT_PASSCODE_LEN} digits.`); return; }
+    void vaultCloudCall("unlock", { passcode: a });
   },
   "vault-cloud-lock": () => { void vaultCloudCall("lock"); },
-  "vault-cloud-disable": () => {
-    if (!window.confirm("Turn off cloud sync? The encrypted copy is removed from the cloud and your other devices lose access. Your logins stay on this Mac.")) return;
-    void vaultCloudCall("disable");
-  },
+  "vault-cloud-disable": () => { state.vaultCloudConfirmDisable = true; repaintVault(); },
+  "vault-cloud-disable-cancel": () => { state.vaultCloudConfirmDisable = false; repaintVault(); },
+  "vault-cloud-disable-confirm": () => { state.vaultCloudConfirmDisable = false; void vaultCloudCall("disable"); },
   "vault-always-on": (e, { el }) => {
     const id = String(el.dataset.id || "");
     const on = !(state.vaultCloud?.alwaysOn || []).includes(id);
@@ -7308,7 +7393,7 @@ const ACTIONS: Record<string, ActHandler> = {
       try {
         state.vaultCloud = (await api(`/api/vault/cloud/always-on/${encodeURIComponent(id)}`, { method: "PUT", body: { on } })) as typeof state.vaultCloud;
       } catch (err) {
-        window.alert((err as CaughtError | undefined)?.message || "Could not change that.");
+        state.vaultCloudError = (err as CaughtError | undefined)?.message || "Could not change that.";
       }
       repaintVault();
     })();
@@ -9907,11 +9992,23 @@ async function submitChoice(messageId: string | undefined, choiceId: string | un
 }
 
 
+/** A brief, non-blocking error/info toast — never window.alert (native dialogs freeze the embedded browser). */
+function flashToast(msg: string): void {
+  let host = document.getElementById("toasts");
+  if (!host) { host = document.createElement("div"); host.id = "toasts"; document.body.appendChild(host); }
+  const el = document.createElement("div");
+  el.className = "toast";
+  el.innerHTML = `<span>${escapeHtml(msg)}</span><button type="button" class="toast-x" aria-label="Dismiss">\u00d7</button>`;
+  el.addEventListener("click", () => el.remove());
+  host.appendChild(el);
+  setTimeout(() => el.remove(), 6000);
+}
+
 async function openVault(): Promise<void> {
   try {
     state.vault = await api("/api/vault") as VaultSnapshot;
   } catch (err) {
-    window.alert((err as CaughtError | undefined)?.message || "Could not open the vault.");
+    flashToast((err as CaughtError | undefined)?.message || "Could not open the vault.");
     return;
   }
   state.modal = "vault";
@@ -10058,7 +10155,7 @@ async function exportVaultBackup(): Promise<void> {
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 4000);
   } catch (err) {
-    window.alert((err as CaughtError | undefined)?.message || "Could not export the vault.");
+    flashToast((err as CaughtError | undefined)?.message || "Could not export the vault.");
   }
 }
 
@@ -10082,7 +10179,7 @@ async function importVaultBackup(file: File): Promise<void> {
       body: { ...payload, mode: "replace" },
     }) as VaultSnapshot;
   } catch (err) {
-    window.alert((err as CaughtError | undefined)?.message || "Could not import the vault.");
+    flashToast((err as CaughtError | undefined)?.message || "Could not import the vault.");
     return;
   }
   state.vaultGroup = "all";

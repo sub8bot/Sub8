@@ -6,6 +6,7 @@
   --card: #f4f4f5;
   --hover: #f3f4f6;
   --accent: #7c5cff;
+  --pc-ring: rgba(0,0,0,.55);
   --danger: #e11d48;
   --ok: #2563eb;
   --on: #111;
@@ -49,6 +50,7 @@ html[data-theme="dark"] {
   --chip: #1c1c1f;
   --seg: #18181b;
   --ring: #3f3f46;
+  --pc-ring: rgba(255,255,255,.55);
   --rail-bg: #111113;
 }
 @media (prefers-color-scheme: dark) {
@@ -73,6 +75,7 @@ html[data-theme="dark"] {
     --chip: #1c1c1f;
     --seg: #18181b;
     --ring: #3f3f46;
+    --pc-ring: rgba(255,255,255,.55);
     --rail-bg: #111113;
   }
 }
@@ -3542,9 +3545,9 @@ select.pill { appearance: none; padding-right: 24px; }
 
 /* Vault: the centered passphrase dialog over the vault modal. */
 .vault-pass-overlay { position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; background: color-mix(in srgb, #000 38%, transparent); border-radius: inherit; }
-.vault-pass-card { width: min(400px, 88%); background: var(--card, #fff); border-radius: 16px; padding: 22px; box-shadow: 0 20px 60px rgba(0,0,0,.28); }
-.vault-pass-title { font-size: 17px; font-weight: 700; }
-.vault-pass-card .sub { font-size: 13px; color: var(--muted, #8a8f98); margin: 6px 0 14px; line-height: 1.45; }
+.vault-pass-card { width: min(460px, 92%); background: var(--card, #fff); border-radius: 20px; padding: 34px 36px; box-shadow: 0 24px 70px rgba(0,0,0,.30); }
+.vault-pass-title { font-size: 19px; font-weight: 700; }
+.vault-pass-card .sub { font-size: 13.5px; color: var(--muted, #8a8f98); margin: 8px 0 20px; line-height: 1.5; }
 .vault-pass-card .field { width: 100%; }
 .vault-pass-reqs { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
 .vault-pass-reqs li { font-size: 12.5px; color: var(--muted, #8a8f98); padding-left: 22px; position: relative; }
@@ -3553,3 +3556,21 @@ select.pill { appearance: none; padding-right: 24px; }
 .vault-pass-reqs li.on::before { content: "✓"; color: #16a34a; }
 .vault-pass-warn { margin-top: 12px; font-size: 12px; line-height: 1.4; color: #b45309; background: color-mix(in srgb, #d97706 12%, var(--card)); padding: 8px 10px; border-radius: 10px; }
 .vault-pass-err { margin-top: 12px; font-size: 12.5px; color: #be123c; background: color-mix(in srgb, #e11d48 10%, var(--card)); padding: 8px 10px; border-radius: 10px; }
+
+/* Vault passcode: X-style circle dots that fill as you type, driven by one hidden input. */
+.pc-label { font-size: 12.5px; color: var(--muted, #8a8f98); margin: 20px 0 10px; text-align: center; letter-spacing: .01em; }
+.pc-field { position: relative; display: flex; justify-content: center; padding: 8px 0 4px; cursor: text; }
+.pc-input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; border: 0; background: none; color: transparent; caret-color: transparent; font-size: 16px; text-align: center; }
+.pc-dots { display: flex; gap: 18px; pointer-events: none; }
+.pc-dot { width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--pc-ring, rgba(0,0,0,.5)); transition: background .1s, border-color .1s, transform .08s; }
+.pc-dot.on { background: var(--text, #111); border-color: var(--text, #111); }
+.pc-field.busy { opacity: .55; }
+.pc-field.focused .pc-dot:not(.on):first-of-type,
+.pc-field.focused .pc-dot.on + .pc-dot:not(.on) { border-color: var(--accent, #6d4aff); }
+.linklike { background: none; border: 0; color: var(--muted, #8a8f98); font: inherit; font-size: 13px; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; padding: 0; }
+.linklike:hover { color: inherit; }
+
+/* Vault: inline destructive confirm (no native dialogs — they freeze the embedded browser). */
+.vault-confirm { margin-top: 8px; padding: 10px; border: 1px solid color-mix(in srgb, #e5484d 40%, transparent); border-radius: 10px; background: color-mix(in srgb, #e5484d 8%, transparent); }
+.pill.danger { background: #e5484d; color: #fff; border-color: #e5484d; }
+.pill.danger:hover { background: #d13b40; }

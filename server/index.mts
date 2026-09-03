@@ -1472,7 +1472,9 @@ function syncVaultToCloud(): void {
 
 app.get("/api/vault/cloud", async (_req, res) => {
   try {
-    res.json(await vaultSync.status());
+    const local = await vaultSync.status();
+    const gate = await account.vaultGateStatus().catch(() => null);
+    res.json({ ...local, enabled: Boolean(gate?.exists) || local.enabled, gate });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
@@ -1483,11 +1485,15 @@ app.get("/api/vault/cloud", async (_req, res) => {
 // the account escrow key so always-on can be offered.
 app.post("/api/vault/cloud/enable", async (req, res) => {
   try {
-    const passphrase = String(req.body?.passphrase || "");
+    const passcode = String(req.body?.passcode || "");
+    const vk = await vaultSync.freshVaultKey();
+    await account.vaultGateSetup(passcode, vk); // Worker wraps the key under passcode+pepper
     await adoptCloudEscrow().catch(() => {});
-    const env = await vaultSync.enable(passphrase);
+    const env = await vaultSync.enableWithKey(vk);
     await account.putCloudVault(env).catch(() => {});
-    res.json(await vaultSync.status());
+    const local = await vaultSync.status();
+    const gate = await account.vaultGateStatus().catch(() => null);
+    res.json({ ...local, enabled: Boolean(gate?.exists) || local.enabled, gate });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
   }
@@ -1495,12 +1501,17 @@ app.post("/api/vault/cloud/enable", async (req, res) => {
 
 app.post("/api/vault/cloud/unlock", async (req, res) => {
   try {
+    const r = await account.vaultGateUnlock(String(req.body?.passcode || ""));
+    if (!r.ok || !r.vaultKey) {
+      return res.status(403).json({ error: r.error || "Wrong passcode.", locked: Boolean(r.locked), remaining: r.remaining ?? 0 });
+    }
+    await vaultSync.unlockWithKey(r.vaultKey);
     await adoptCloudEscrow().catch(() => {});
-    // Pull a newer copy from the Worker before unlocking, so other devices' edits land.
     const remote = await account.getCloudVault().catch(() => null);
     if (remote) await vaultSync.applyPulled(remote as unknown as vaultSync.CloudVaultEnvelope).catch(() => {});
-    await vaultSync.unlock(String(req.body?.passphrase || ""));
-    res.json(await vaultSync.status());
+    const local = await vaultSync.status();
+    const gate = await account.vaultGateStatus().catch(() => null);
+    res.json({ ...local, enabled: Boolean(gate?.exists) || local.enabled, gate });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
   }
@@ -1511,10 +1522,10 @@ app.post("/api/vault/cloud/lock", async (_req, res) => {
   res.json(await vaultSync.status());
 });
 
-app.post("/api/vault/cloud/passphrase", async (req, res) => {
+app.post("/api/vault/cloud/reset", async (req, res) => {
   try {
-    const env = await vaultSync.changePassphrase(String(req.body?.passphrase || ""));
-    await account.putCloudVault(env).catch(() => {});
+    await account.vaultGateReset().catch(() => {});
+    await vaultSync.disable();
     res.json(await vaultSync.status());
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
@@ -1524,6 +1535,7 @@ app.post("/api/vault/cloud/passphrase", async (req, res) => {
 app.post("/api/vault/cloud/disable", async (_req, res) => {
   try {
     await vaultSync.disable();
+    await account.vaultGateReset().catch(() => {});
     await account.deleteCloudVault().catch(() => {});
     res.json(await vaultSync.status());
   } catch (err) {
