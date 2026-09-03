@@ -1091,14 +1091,17 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
       "--permission-mode",
       "bypassPermissions",
       "--dangerously-skip-permissions",
-      "--strict-mcp-config",
+      // Not strict: the harness login's own connectors (Gmail, Calendar, …)
+      // must reach the desk, and re-declaring them in --mcp-config does not
+      // carry their OAuth (measured: zero tools). sub8's server rides along
+      // via --mcp-config next to them.
       "--mcp-config",
       mcpFile,
-      // --strict-mcp-config only fences MCP servers; Claude Code's built-in
-      // peer-messaging stays on. A worker told "your reply reaches the lead"
-      // would find another Claude session on this Mac and SendMessage its
-      // answer there — the answer vanished from the team channel and landed
-      // in the developer's terminal as a held peer message. No peers here.
+      // Claude Code's built-in peer-messaging is a separate matter from MCP.
+      // A worker told "your reply reaches the lead" would find another Claude
+      // session on this Mac and SendMessage its answer there — the answer
+      // vanished from the team channel and landed in the developer's terminal
+      // as a held peer message. No peers here.
       "--disallowedTools",
       ...DESK_DISALLOWED_TOOLS,
       "--append-system-prompt",

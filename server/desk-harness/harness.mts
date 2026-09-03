@@ -768,7 +768,8 @@ export function claudeArgs({ prompt, model, sessionId, mcpFile, system }: Claude
     "--permission-mode",
     "bypassPermissions",
     "--dangerously-skip-permissions",
-    "--strict-mcp-config",
+    // Not strict: the desk's claude login brings its own connectors
+    // (Calendar, Gmail, …) and the desk must be able to use them.
     "--disallowedTools",
     ...DESK_DISALLOWED_TOOLS,
     "--mcp-config",
