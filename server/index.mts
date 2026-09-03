@@ -3082,6 +3082,10 @@ async function deliverLeadAnswer(bot: IndexBot | null | undefined, last: { conte
   const recent = (await teams.loadMessages(bot.teamId)).slice(-30);
   const handedOffThisTurn = recent.some((m) => m.speakerId === bot.id && Boolean(m.toId) && Number(m.ts || 0) >= since);
   if (handedOffThisTurn) return;
+  // Same rule as workers: a send_message this turn IS the answer — the closing
+  // plain text ("Sent.") must not land as a second bubble.
+  const spokeThisTurn = recent.some((m) => m.speakerId === bot.id && !m.toId && Number(m.ts || 0) >= since && String(m.content || "").trim());
+  if (spokeThisTurn) return;
   const posted = await teams.appendMessage(bot.teamId, {
     role: "assistant",
     speakerId: bot.id,
@@ -3174,7 +3178,11 @@ async function deliverTeammateReply(toId: string | null | undefined, from: Dispa
     // lead turn — the user already sees it, and a turn here only ever produced
     // "Got it! What next?". Several answers (combine), a tracked job, or a
     // teammate that explicitly messaged the lead (a tool call = intent) do wake it.
-    if (only && !only.explicit && !team?.job) return;
+    // The lead always hears a completed handoff set — one coalesced turn. The
+    // old skip for "a single answered handoff with no tracked job" kept the
+    // channel quiet for "ask bot1 to say hello", but it also dropped the
+    // lead's own follow-up work ("when Echo is done, read the file and tell
+    // me…"). Silence is the lead's call now: nothing_to_add.
     runReport(
       teammate.chiefReportLlm(only ? only.name : "Your teammates", only ? only.text : "", {
         userAsk,
