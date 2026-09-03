@@ -965,10 +965,14 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     // Save a UNIQUE copy (vm.screenshot overwrites <bot>.png every look) into
     // the already-served /screens dir, and post it as a real chat message.
     const name2 = `${bot.id}-show-${Date.now()}.png`;
-    const dest = path.join(store.dataDir, "screens", name2);
+    const screensDir = path.join(store.dataDir, "screens");
+    const dest = path.join(screensDir, name2);
     try {
-      await fs.promises.mkdir(path.dirname(dest), { recursive: true });
+      await fs.promises.mkdir(screensDir, { recursive: true });
       await fs.promises.writeFile(dest, shot.buf);
+      // Keep this bot's show shots bounded (they never get overwritten).
+      const mine = (await fs.promises.readdir(screensDir)).filter((f) => f.startsWith(`${bot.id}-show-`)).sort();
+      for (const f of mine.slice(0, Math.max(0, mine.length - 12))) await fs.promises.unlink(path.join(screensDir, f)).catch(() => {});
     } catch {
       /* fall back to text-only below */
     }
