@@ -154,6 +154,8 @@ declare module "express" {
    * what the route that declared `:id` already knows it is.
    */
   export interface RouteParams {
+    /** GET /api/harness/:provider/plugins — a harness id such as "claude". */
+    provider?: string;
     action: string;
     botId: string;
     id: string;

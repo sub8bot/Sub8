@@ -1,0 +1,28 @@
+{
+  "name": "@sub8/harness-plugins",
+  "version": "0.1.0",
+  "private": true,
+  "description": "What plugins/connectors each harness exposes and whether they are connected: one provider per harness (Claude first), a pure parser per CLI, and where to send the user to connect one.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "tsc && node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3"
+  }
+}

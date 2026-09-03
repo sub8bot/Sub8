@@ -3465,3 +3465,6 @@ select.pill { appearance: none; padding-right: 24px; }
 .chat-shot-link { display: block; margin-top: 8px; max-width: 420px; }
 .chat-shot { width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--line, #8883); display: block; }
 .chat-shot-link:hover .chat-shot { filter: brightness(1.03); }
+
+/* Plugins list in a harness panel: keep a long MCP URL on one line. */
+.plugin-url { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

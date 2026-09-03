@@ -22,6 +22,7 @@
     { "path": "./packages/choice" },
     { "path": "./packages/shell-exec" },
     { "path": "./packages/harness-auth" },
+    { "path": "./packages/harness-plugins" },
     { "path": "./packages/identities" },
     { "path": "./packages/control" },
     { "path": "./packages/store" },

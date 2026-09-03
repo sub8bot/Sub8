@@ -734,6 +734,7 @@ interface AppState {
   vaultQuery: string;
   localHarness: LocalHarness;
   harnessStatus: HarnessStatusFull | null;
+  harnessPlugins: Record<string, HarnessPluginsState>;
   identities: IdentityRow[];
   identityCatalog: { id: string; label: string }[];
   harnessTab: string | undefined;
@@ -889,6 +890,7 @@ const state: AppState = {
     grok: { ok: true, models: ["grok-4.6", "grok-4.5", "grok-4.3", "grok-build-0.1"] },
   },
   harnessStatus: null,
+  harnessPlugins: {},
   identities: [],
   identityCatalog: [],
   harnessTab: "grok-build",
@@ -5928,6 +5930,94 @@ function paintHarnessBanner(): void {
   host.innerHTML = harnessSetupBannerHtml({ ...info, id: info.id || provider });
 }
 
+/** One plugin/connector a harness reported, as /api/harness/:id/plugins returns it. */
+type HarnessPluginRow = {
+  id: string;
+  name: string;
+  harness: string;
+  url?: string;
+  transport?: string;
+  status: "connected" | "needs_auth" | "error" | "unknown";
+  detail?: string;
+  connectUrl?: string;
+};
+
+type HarnessPluginsState = {
+  loading?: boolean | undefined;
+  supported?: boolean | undefined;
+  plugins: HarnessPluginRow[];
+  error?: string | undefined;
+  checkedAt?: number | undefined;
+};
+
+function pluginTone(status: string): string {
+  return status === "connected" ? "ok" : status === "needs_auth" ? "warn" : status === "error" ? "bad" : "";
+}
+
+function pluginStatusLabel(status: string): string {
+  return status === "connected" ? "Connected" : status === "needs_auth" ? "Needs sign-in" : status === "error" ? "Error" : "Unknown";
+}
+
+/**
+ * Read a harness's plugins once (or again on Refresh). The panel render kicks
+ * this off for the visible tab, so opening the tab is enough to see them; the
+ * loading flag is set synchronously so a repaint mid-fetch cannot double-fire.
+ */
+async function loadHarnessPlugins(id: string, force = false): Promise<void> {
+  const cur = state.harnessPlugins[id];
+  if (!force && cur && (cur.loading || cur.checkedAt)) return;
+  state.harnessPlugins[id] = { ...(cur || { plugins: [] }), loading: true, error: undefined };
+  try {
+    const r = (await api(`/api/harness/${encodeURIComponent(id)}/plugins`)) as {
+      ok?: boolean;
+      supported?: boolean;
+      plugins?: HarnessPluginRow[];
+      error?: string;
+    };
+    state.harnessPlugins[id] = {
+      loading: false,
+      supported: r?.supported !== false,
+      plugins: Array.isArray(r?.plugins) ? r.plugins : [],
+      error: r?.ok === false ? String(r?.error || "Could not read plugins") : undefined,
+      checkedAt: Date.now(),
+    };
+  } catch (e) {
+    state.harnessPlugins[id] = { loading: false, supported: true, plugins: [], error: String((e as Error)?.message || e), checkedAt: Date.now() };
+  }
+  if (state.modal === "settings" && state.section === "harness") paintModal();
+}
+
+/** The Plugins block of a harness panel; empty for a harness with no plugin surface. */
+function pluginsHtml(tab: string): string {
+  const st = state.harnessPlugins[tab];
+  if (!st) {
+    void loadHarnessPlugins(tab);
+    return `<div class="row"><div class="lbl">Plugins</div><span class="muted">Checking…</span></div>`;
+  }
+  if (st.supported === false) return "";
+  const head = `<div class="row"><div><div class="lbl">Plugins</div><div class="sub">Connectors this harness can use, read live from its CLI.</div></div>
+        <button type="button" class="pill" data-act="refresh-plugins" data-id="${escapeHtml(tab)}" ${st.loading ? "disabled" : ""}>${st.loading ? "Checking…" : "Refresh"}</button></div>`;
+  if (st.error) return head + `<div class="row"><span class="muted">${escapeHtml(st.error)}</span></div>`;
+  if (!st.plugins.length) return head + (st.loading ? "" : `<div class="row"><span class="muted">No plugins reported.</span></div>`);
+  const rows = st.plugins
+    .map((p) => {
+      const connect =
+        p.status !== "connected" && p.connectUrl
+          ? `<button type="button" class="pill" data-act="plugin-connect" data-url="${escapeHtml(p.connectUrl)}" title="Open the page where this plugin is connected">Connect</button>`
+          : "";
+      return `<div class="row">
+          <div>
+            <div class="lbl">${escapeHtml(p.name)}</div>
+            <div class="sub muted mono plugin-url" title="${escapeHtml(p.url || "")}">${escapeHtml(p.url || "")}${p.transport ? ` · ${escapeHtml(p.transport)}` : ""}</div>
+          </div>
+          <span class="hbadge ${pluginTone(p.status)}" title="${escapeHtml(p.detail || "")}">${escapeHtml(pluginStatusLabel(p.status))}</span>
+          ${connect}
+        </div>`;
+    })
+    .join("");
+  return head + rows;
+}
+
 function harnessHtml(h: HarnessSettingsState): string {
   const def = h.provider || "grok-build";
   const tab = state.harnessTab || def;
@@ -5985,6 +6075,7 @@ function harnessHtml(h: HarnessSettingsState): string {
             : ""
         }
         <div class="row"><div class="lbl">Model</div>${modelField}</div>
+        ${pluginsHtml(tab)}
         ${
           tab === "hermes"
             ? `<div class="row"><div class="lbl">LM Studio</div><div class="sub">${
@@ -7724,6 +7815,15 @@ const ACTIONS: Record<string, ActHandler> = {
       applyTheme();
     });
     return;
+  },
+  "plugin-connect": (e, { el }) => {
+    const url = String(el.dataset.url || "");
+    if (url) openExternal(url);
+  },
+  "refresh-plugins": (e, { el }) => {
+    const id = String(el.dataset.id || state.harnessTab || "");
+    if (id) void loadHarnessPlugins(id, true);
+    paintModal();
   },
   "harness-tab": (e, { el }) => {
     state.harnessTab = el.dataset.id;
