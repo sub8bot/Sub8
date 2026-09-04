@@ -889,6 +889,14 @@ async function tryDeskBrain({ bot, settings, userText, emit, signal }: {
 // `{} as RunTurnOptions`: the default is a guard that would throw on the very
 // next line, and every caller passes the whole record. The assertion is erased,
 // so the emitted default is the same bare `{}` it has always been.
+/** The brief a worker actually reads: the lead's line, then the user's words verbatim — a
+ * paraphrase drops details the user cared about (parcel edges, "3 plots", "lots of detail"). */
+function withUserRequest(job: string, userText: string | undefined): string {
+  const asked = String(userText || "").trim();
+  if (!asked || /^Picked:/i.test(asked) || job.includes(asked.slice(0, 80))) return job;
+  return `${job}\n\nThe user's exact request (keep every detail — do not summarize it away):\n"${asked.slice(0, 4000)}"`;
+}
+
 export async function runTurn({ bot, settings, userText, emit, hidden = false, images = [], signal, pullNudges, persistUser = true }: RunTurnOptions = {} as RunTurnOptions): Promise<AgentBot> {
   if (!Array.isArray(bot.routines)) bot.routines = [];
   await memory.ensureLayout(bot).catch(() => {});
@@ -2018,7 +2026,7 @@ async function execTool(
       if (mate.teamRole !== "chief") {
         const assigned = await teams.onWorkerAssigned(team.id, mate.id, {
           label: mate.name,
-          content: job,
+          content: withUserRequest(job, [...(bot.messages || [])].reverse().find((m) => m.role === "user" && !m.kind)?.content),
           status: "pending",
         });
         if (assigned?.team?.job) emit("job", { teamId: team.id, job: assigned.team.job });
