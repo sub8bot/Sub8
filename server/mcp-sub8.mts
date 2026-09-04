@@ -209,6 +209,29 @@ routines.setAutomationWriter(vm);
 const botId = process.env.SUB8BOT_BOT_ID || "";
 const token = process.env.SUB8_INTERNAL_TOKEN || "";
 const emitUrl = process.env.SUB8_INTERNAL_URL || "";
+// On a CLOUD desk the harness hands us the Worker callback (see
+// desk-harness/harness.mts writeHarnessHome): the vault lives in the Worker
+// there, not in this desk's local store, so vault tools go through it.
+const cloudCallbackUrl = process.env.SUB8_CLOUD_CALLBACK_URL || "";
+const cloudComputerId = process.env.SUB8_CLOUD_COMPUTER_ID || "";
+const cloudBotId = process.env.SUB8_CLOUD_BOT_ID || "";
+const deskToken = process.env.SUB8_DESK_TOKEN || "";
+
+/** Run one Worker-side cloud tool (vault_list / vault_fill) for this desk's Bot. */
+async function cloudVaultTool(name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
+  try {
+    const res = await fetch(cloudCallbackUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${deskToken}` },
+      body: JSON.stringify({ computerId: cloudComputerId, botId: cloudBotId, name, args }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
+    if (!res.ok) return { text: body.error || `${name} failed (${res.status})`, isError: true };
+    return { text: String(body.text || "ok"), isError: false };
+  } catch (err) {
+    return { text: `${name} failed: ${(err as Error).message}`, isError: true };
+  }
+}
 
 /** Spec / grok-bot names → Sub8 MCP tool names. Same map as @sub8/orchestration TOOL_ALIASES. */
 export const MCP_ALIASES: Record<string, string> = {
@@ -1090,10 +1113,29 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     return { content: [{ type: "text", text: r.text }], isError: r.ok === false };
   }
   if (name === "vault_list") {
+    if (cloudCallbackUrl) {
+      const r = await cloudVaultTool("vault_list", {});
+      return { content: [{ type: "text", text: r.text }], isError: r.isError };
+    }
     const rows = await vault.grantedAccounts(botId);
     return { content: [{ type: "text", text: rows.length ? JSON.stringify(rows, null, 2) : "No saved logins granted." }] };
   }
   if (name === "vault_fill") {
+    if (cloudCallbackUrl) {
+      // The Worker pastes the secret into this desk itself (or files a present-to-approve
+      // request and tells the Bot to wait); the secret never passes through this process.
+      const r = await cloudVaultTool("vault_fill", { account_id: args.account_id, field: args.field || "password" });
+      await emit("message", {
+        id: `tl${Date.now()}vf`,
+        role: "activity",
+        kind: "tool",
+        name: "vault_fill",
+        action: "vault_fill",
+        summary: args.field === "username" ? "Pasted username" : "Pasted password",
+        ts: Date.now(),
+      });
+      return { content: [{ type: "text", text: r.text }], isError: r.isError };
+    }
     const bot = await botOrThrow();
     const filled = await vault.fillIntoDesktop(bot, args.account_id, args.field || "password");
     await emit("message", {
