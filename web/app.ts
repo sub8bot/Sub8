@@ -4485,7 +4485,15 @@ document.addEventListener("change", (e) => {
   });
 });
 
+/** Every editor paint re-syncs avatar views: the look chips are (re)created by
+ * the paint itself (e.g. expanding "Edit look"), and a view whose element was
+ * replaced draws nothing until the painter sees the new one. */
 function paintBotEditor(bot: Bot): void {
+  paintBotEditorInner(bot);
+  refreshAvatars();
+}
+
+function paintBotEditorInner(bot: Bot): void {
   const host = $("#bot-editor");
   if (!host) return;
   const active = document.activeElement;
