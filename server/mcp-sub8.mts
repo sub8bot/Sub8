@@ -78,6 +78,8 @@ export interface McpResult {
  * only what is forwarded straight into a typed callee is spelled tighter.
  */
 export type ToolArgs = {
+  /** vault_fill: keys = one keystroke per character (segmented boxes). */
+  mode?: string | undefined;
   caption?: unknown;
   action?: string | undefined;
   x?: unknown;
