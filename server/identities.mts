@@ -107,7 +107,7 @@ export async function ensureCloudIdentities(input: CloudIdentityInput = {}): Pro
       place: "cloud",
       label: name ? `Grok Cloud · ${name}` : "Grok Cloud",
       subject: name,
-      model: /^grok/i.test(String(brain.model || "")) ? String(brain.model) : "grok-4.6",
+      model: String((brain as { grokModel?: string }).grokModel || (/^grok/i.test(String(brain.model || "")) ? brain.model : "") || "grok-4.6"),
       runtimeRef: "brain",
       kind: "cli-oauth",
       createdAt: now,
@@ -158,7 +158,9 @@ export async function ensureCloudIdentities(input: CloudIdentityInput = {}): Pro
       place: "cloud",
       label: subject ? `Claude · ${subject}` : "Claude (Cloud)",
       subject,
-      model: "claude-sonnet-5",
+      // The login's chosen model (Worker brain.claudeModel), never a constant — the
+      // card repaints from this row, so a constant here snapped the picker back.
+      model: String((brain as { claudeModel?: string }).claudeModel || (/^claude/i.test(String(brain.model || "")) ? brain.model : "") || "claude-sonnet-5"),
       runtimeRef: "account",
       kind: "cli-oauth",
       createdAt: prev?.createdAt || now,

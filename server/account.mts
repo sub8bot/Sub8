@@ -219,6 +219,8 @@ export interface CreatedComputer extends LiveComputer {
 
 /** `GET /api/brain`. `connected` alone is what the failure path substitutes. */
 export interface CloudBrain {
+  claudeModel?: string | undefined;
+  grokModel?: string | undefined;
   connected?: boolean | undefined;
   provider?: string | undefined;
   model?: string | undefined;
@@ -715,7 +717,8 @@ function harnessForCloudIdentity(
   if (id === "cloud-claude") {
     return {
       provider: "claude",
-      model: "claude-sonnet-5",
+      // The login's chosen model (Settings → Harnesses → Cloud), not a constant.
+      model: String(brain?.claudeModel || (/^claude/i.test(String(brain?.model || "")) ? brain?.model : "") || "claude-sonnet-5"),
       signedIn: Boolean(brain?.claudeCredentials),
       apiKeySet: Boolean(brain?.apiKeySet),
     };
@@ -729,7 +732,7 @@ function harnessForCloudIdentity(
       apiKeySet: Boolean(brain?.apiKeySet),
     };
   }
-  const grokModel = String(brain?.model || "grok-4.6");
+  const grokModel = String(brain?.grokModel || brain?.model || "grok-4.6");
   return {
     provider: "grok-build",
     model: /^grok/i.test(grokModel) ? grokModel : "grok-4.6",
