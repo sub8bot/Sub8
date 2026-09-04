@@ -7727,7 +7727,14 @@ const ACTIONS: Record<string, ActHandler> = {
         closeVaultApproveCard(mid, "Approved");
       } catch (err) {
         btn.disabled = false; btn.textContent = "Approve";
-        flashToast((err as CaughtError | undefined)?.message || "Could not approve.");
+        const msg = (err as CaughtError | undefined)?.message || "Could not approve.";
+        if (/unlock/i.test(msg)) {
+          // Approving needs this Mac's vault key: ask for the passcode right here,
+          // then the card's Approve works.
+          void openVault().then(() => { state.vaultCloudPrompt = "unlock"; state.vaultCloudError = null; repaintVault(); });
+          return;
+        }
+        flashToast(msg);
       }
     })();
     return;
@@ -12580,6 +12587,7 @@ function watchStream(): void {
   }
   setInterval(watchStream, 8_000);
   setInterval(() => void pollVaultPending(), 6_000);
+  void loadVaultCloud(); // the in-chat approve card needs to know locked vs unlocked
   setInterval(() => {
     api("/api/health")
       .then((h) => {
