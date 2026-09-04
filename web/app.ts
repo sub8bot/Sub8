@@ -6384,7 +6384,14 @@ function vaultSharePanelHtml(): string {
     ...cloudDesks.map((cid) => pack("cloud", cid, `Everyone on ${cloudDeskName(cid)}`)),
     ...sections.map((s) => pack("section", s.id, s.name)),
   ];
+  // Grants to cloud bots only reach the cloud (what a desk reads) on a sync,
+  // and a sync needs the key — say so instead of letting the toggle look done.
+  const lockedNote =
+    cloudBots.length && state.vaultCloud?.enabled && !state.vaultCloud?.unlocked
+      ? `<div class="vault-share-note">Cloud vault is locked — grants to cloud bots sync when you unlock. <button type="button" class="linklike" data-act="vault-cloud-unlock-open">Unlock</button></div>`
+      : "";
   return `<div class="vault-share-panel" id="vault-share-panel" ${state.vaultShareOpen ? "" : "hidden"}>
+    ${lockedNote}
     ${bots.length ? `<div class="vault-share-h">This Mac</div>` : ""}
     <div class="vault-chips">${bots.length ? bots.map((b) => chip(b)).join("") : `<span class="muted">No bots on this Mac yet.</span>`}</div>
     ${cloudBots.length ? `<div class="vault-share-h">Cloud</div><div class="vault-chips">${cloudBots.map(cloudChip).join("")}</div>` : ""}

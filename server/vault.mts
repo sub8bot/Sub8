@@ -786,3 +786,13 @@ export function startVaultBridge(loadBots: () => Promise<readonly VaultDeskBot[]
 export function _resetKeyCache(): void {
   cachedKey = null;
 }
+
+/** When the local vault file last changed (ms), or 0. Lets the cloud sync tell
+ * "edited here while locked" from "the cloud is simply newer". */
+export async function _vaultFileMtime(): Promise<number> {
+  try {
+    return (await fs.stat(VAULT_PATH)).mtimeMs;
+  } catch {
+    return 0;
+  }
+}

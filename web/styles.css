@@ -3585,3 +3585,5 @@ select.pill { appearance: none; padding-right: 24px; }
 /* Present-to-approve card: a cloud Bot is waiting on the user to approve a login fill. */
 .toast.vault-approve { max-width: 360px; }
 .toast.vault-approve b { display: block; margin-bottom: 2px; }
+.vault-share-note { font-size: 12px; color: #b45309; background: color-mix(in srgb, #f59e0b 12%, transparent); border-radius: 8px; padding: 6px 10px; margin-bottom: 8px; }
+.vault-share-note .linklike { margin-left: 4px; font-size: 12px; }

@@ -30,7 +30,7 @@ import {
 /** The unlocked key, in memory only — the passcode gate holds its wrapped form. */
 type Keyset = { vaultKey: Awaited<ReturnType<typeof importVaultKey>> };
 import type { VaultFile } from "./vault.mjs";
-import { _decryptedVaultFile, _replaceVaultFile } from "./vault.mjs";
+import { _decryptedVaultFile, _replaceVaultFile, _vaultFileMtime } from "./vault.mjs";
 
 /** The synced blob. Everything here is ciphertext except the public id lists and timestamp. */
 export interface CloudVaultEnvelope {
@@ -177,6 +177,10 @@ export function applyPulled(env: CloudVaultEnvelope): Promise<void> {
   return withLock(async () => {
     const local = await readEnvelope();
     if (local && local.updatedAt >= env.updatedAt) return; // ours is newer/equal
+    // Edits made on this Mac AFTER the remote was written (e.g. while locked) win:
+    // replacing the file would silently drop them. The unlock path re-seals and
+    // pushes right after this, so the cloud catches up instead.
+    if ((await _vaultFileMtime()) > env.updatedAt) return;
     await writeEnvelope(env);
     if (keyset) {
       const file = JSON.parse(await openText(env.data, keyset.vaultKey, AAD)) as VaultFile;
