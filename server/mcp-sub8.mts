@@ -407,12 +407,13 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "vault_fill",
-    description: "Paste a saved username or password into the focused desktop field. Never prints the secret.",
+    description: "Paste a saved username or password into the focused desktop field. Never prints the secret. For a code split across single-digit boxes (PIN / 2FA): click the FIRST box and pass mode=keys (one keystroke per box).",
     inputSchema: {
       type: "object",
       properties: {
         account_id: { type: "string" },
         field: { type: "string", enum: ["username", "password"] },
+        mode: { type: "string", enum: ["paste", "keys"] },
       },
       required: ["account_id", "field"],
     },
@@ -1124,7 +1125,7 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     if (cloudCallbackUrl) {
       // The Worker pastes the secret into this desk itself (or files a present-to-approve
       // request and tells the Bot to wait); the secret never passes through this process.
-      const r = await cloudVaultTool("vault_fill", { account_id: args.account_id, field: args.field || "password" });
+      const r = await cloudVaultTool("vault_fill", { account_id: args.account_id, field: args.field || "password", ...(args.mode ? { mode: args.mode } : {}) });
       // Present-to-approve: the Worker filed the request and posted the Approve card.
       // End this turn now (like ask_user) — the approve/deny route resumes the Bot —
       // so the model neither polls in a shell nor races the thread write.
