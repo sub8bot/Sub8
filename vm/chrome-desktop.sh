@@ -61,7 +61,13 @@ export CHROME_DEBUG="http://127.0.0.1:${DEBUG_PORT}"
 flags=(
   --no-sandbox
   --disable-dev-shm-usage
-  --disable-gpu
+  # No GPU in the desk container. --disable-gpu also killed software WebGL, so
+  # 3D pages (freebots.lol/world, maps) failed with "Could not create a WebGL
+  # context". SwiftShader renders GL on the CPU: slower, but it works.
+  --use-gl=angle
+  --use-angle=swiftshader
+  --enable-unsafe-swiftshader
+  --ignore-gpu-blocklist
   --renderer-process-limit=2
   --user-data-dir="$PROFILE"
   --remote-debugging-port="$DEBUG_PORT"
