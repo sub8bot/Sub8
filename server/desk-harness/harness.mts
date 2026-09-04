@@ -1090,9 +1090,16 @@ export async function runTurn(body: TurnBody, emit: EmitTurnEvent, opts: RunTurn
     const status = await claudeAuthStatus().catch(() => ({ loggedIn: false }));
     if (!status.loggedIn) await claudeImportCredentials(t.claudeAuth);
   }
+  // Every cloud turn is a fresh CLI session (no --resume), so the recap IS the
+  // Bot's memory of this conversation. Without it "try again" means nothing.
+  const recapRows = (t.history || [])
+    .filter((m) => (m.role === "user" || m.role === "assistant") && String(m.content || "").trim())
+    .slice(-24)
+    .map((m) => `${m.role === "user" ? "User" : "You"}: ${String(m.content).replace(/\s+/g, " ").trim().slice(0, 400)}`);
+  const recap = recapRows.length ? `Earlier in this conversation (oldest first; the last line is the most recent):\n${recapRows.join("\n")}\n\nNow the user says:\n` : "";
   const prompt = claude
-    ? `${t.text}\n\nUse the sub8 tools. Do not only send a plan.`
-    : `${t.system ? `${t.system}\n\n` : ""}${t.text}\n\nUse the sub8 tools. Do not only send a plan.`;
+    ? `${recap}${t.text}\n\nUse the sub8 tools. Do not only send a plan.`
+    : `${t.system ? `${t.system}\n\n` : ""}${recap}${t.text}\n\nUse the sub8 tools. Do not only send a plan.`;
 
   const env: NodeJS.ProcessEnv = { ...hostEnv(), GROK_HOME: home };
   let args: string[];

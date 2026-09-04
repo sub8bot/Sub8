@@ -400,7 +400,8 @@ async function pollHealth(port, want, ms = 20000) {
   const args = claudeArgs({ prompt: "hi", model: "haiku", sessionId: "s1", mcpFile: "/tmp/mcp.json", system: "RULES" });
   assert.equal(args[args.indexOf("--output-format") + 1], "stream-json");
   assert.equal(args[args.indexOf("--mcp-config") + 1], "/tmp/mcp.json");
-  assert.ok(args.includes("--strict-mcp-config"), "must not inherit ambient MCP config");
+  // Not strict on purpose: the desk's Claude login brings its own connectors (Calendar, Gmail, …).
+  assert.ok(!args.includes("--strict-mcp-config"), "desks must keep the login's connectors (no --strict-mcp-config)");
   assert.equal(args[args.indexOf("--session-id") + 1], "s1");
   assert.equal(args[args.indexOf("--append-system-prompt") + 1], "RULES");
   assert.equal(args[args.indexOf("--model") + 1], "haiku");

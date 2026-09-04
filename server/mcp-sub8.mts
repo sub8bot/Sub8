@@ -218,18 +218,18 @@ const cloudBotId = process.env.SUB8_CLOUD_BOT_ID || "";
 const deskToken = process.env.SUB8_DESK_TOKEN || "";
 
 /** Run one Worker-side cloud tool (vault_list / vault_fill) for this desk's Bot. */
-async function cloudVaultTool(name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
+async function cloudVaultTool(name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean; endTurn: boolean }> {
   try {
     const res = await fetch(cloudCallbackUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${deskToken}` },
       body: JSON.stringify({ computerId: cloudComputerId, botId: cloudBotId, name, args }),
     });
-    const body = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
-    if (!res.ok) return { text: body.error || `${name} failed (${res.status})`, isError: true };
-    return { text: String(body.text || "ok"), isError: false };
+    const body = (await res.json().catch(() => ({}))) as { text?: string; error?: string; endTurn?: boolean };
+    if (!res.ok) return { text: body.error || `${name} failed (${res.status})`, isError: true, endTurn: false };
+    return { text: String(body.text || "ok"), isError: false, endTurn: Boolean(body.endTurn) };
   } catch (err) {
-    return { text: `${name} failed: ${(err as Error).message}`, isError: true };
+    return { text: `${name} failed: ${(err as Error).message}`, isError: true, endTurn: false };
   }
 }
 
@@ -1125,6 +1125,10 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
       // The Worker pastes the secret into this desk itself (or files a present-to-approve
       // request and tells the Bot to wait); the secret never passes through this process.
       const r = await cloudVaultTool("vault_fill", { account_id: args.account_id, field: args.field || "password" });
+      // Present-to-approve: the Worker filed the request and posted the Approve card.
+      // End this turn now (like ask_user) — the approve/deny route resumes the Bot —
+      // so the model neither polls in a shell nor races the thread write.
+      if (r.endTurn) await endTurnKeepBot();
       await emit("message", {
         id: `tl${Date.now()}vf`,
         role: "activity",

@@ -172,7 +172,10 @@ export function claudeBin(): string {
  * own scheduling/notification tools — "remind me in 2 minutes" created a
  * claude.ai cloud routine instead of a Sub8 reminder (upsert_routine once_at).
  */
-export const DESK_DISALLOWED_TOOLS = ["SendMessage", "ListAgents", "RemoteTrigger", "CronCreate", "CronDelete", "CronList", "ScheduleWakeup", "Monitor", "PushNotification"];
+// The CLI's own shell/file tools run in the harness dir on the HOST, not on the
+// desk (the prompt says so, and a bot still reached for Bash to "wait" for an
+// approval). The desk's shell/memory/computer are the mcp__sub8__* tools.
+export const DESK_DISALLOWED_TOOLS = ["SendMessage", "ListAgents", "RemoteTrigger", "CronCreate", "CronDelete", "CronList", "ScheduleWakeup", "Monitor", "PushNotification", "Bash", "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Glob", "Grep"];
 
 export const CLAUDE_SAFE_SONNET = "claude-sonnet-5";
 export const CLAUDE_FALLBACK = "claude-sonnet-4-5";
