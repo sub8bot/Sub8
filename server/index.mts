@@ -933,6 +933,10 @@ app.patch("/api/cloud/draft/bots/:id", async (req, res) => {
         job: req.body?.job || req.body?.description || req.body?.instructions,
         identityId: typeof req.body?.identityId === "string" ? req.body.identityId : undefined,
         photo,
+        avatar:
+          req.body?.avatar && typeof req.body.avatar === "object"
+            ? { body: String(req.body.avatar.body || ""), expression: String(req.body.avatar.expression || ""), animation: String(req.body.avatar.animation || "") }
+            : undefined,
       });
       // Same key, same object: `snap.bot` spread back over itself.
       res.json({ bot: snap.bot, ...(snap as Omit<typeof snap, "bot">) });

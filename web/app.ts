@@ -1194,9 +1194,11 @@ function editorBot(): Bot | null {
 }
 
 function persistEditorBot(bot: Bot | null | undefined, body: Record<string, unknown>): void {
-  if (!bot || isLiveCloud()) return;
+  if (!bot) return;
   if (isCloudPlace()) {
-    api(`/api/cloud/draft/bots/${bot.id}`, { method: "PATCH", body })
+    // Live cloud bots save too (name, look, photo): the Worker keeps them on the team member.
+    const computerId = String((bot as { computerId?: string }).computerId || bot.vm?.computerId || "");
+    api(`/api/cloud/draft/bots/${bot.id}`, { method: "PATCH", body: { ...body, computerId } })
       .then((snap) => {
         if (snap) state.cloudDraft = snap;
         refreshAvatars();
@@ -2643,7 +2645,10 @@ function refreshAvatars(): void {
     // element out of the WebGL views (syncAvatars then disposes any stale one;
     // clearing the element drops its canvas, and a fresh one is created if the
     // photo is later removed).
-    const photo = avatarPhoto(bot);
+    // A "type" slot previews one drawn look (the chip's own body/face/motion) in the
+    // bot's colour — never the photo, even when the bot has one.
+    const typePreview = el.dataset.avatarSlot === "type";
+    const photo = typePreview ? "" : avatarPhoto(bot);
     const photoKey = photo ? `${photo.length}:${photo.slice(-24)}` : "";
     if (photo) {
       if (el.dataset.avatarPhoto !== photoKey) {
@@ -2659,8 +2664,9 @@ function refreshAvatars(): void {
     }
     const preview = el.dataset.preview === "1";
     const wake = state.railWake;
-    const mood =
-      id === "about"
+    const mood = typePreview
+      ? defaultAvatar({ expression: String(el.dataset.avatarFace || ""), animation: String(el.dataset.avatarAnim || ""), body: String(el.dataset.avatarBody || "") })
+      : id === "about"
         ? defaultAvatar({ expression: "happy", animation: "bounce", body: "rounder" })
         : id === "create"
           ? defaultAvatar({ expression: state.createFace, animation: "idle" })
@@ -2678,7 +2684,7 @@ function refreshAvatars(): void {
         size: Number(el.dataset.avatarSize || 36),
         color: id === "about" ? "#ff2d95" : bot?.color || AVATAR_COLORS[0]!,
         framing,
-        body: id === "about" ? "rounder" : defaultAvatar(bot?.avatar).body,
+        body: typePreview ? String(el.dataset.avatarBody || "rounder") : id === "about" ? "rounder" : defaultAvatar(bot?.avatar).body,
         mood,
       },
     ];
@@ -4295,7 +4301,7 @@ function paintLivePane(bot: Bot | null): void {
   if (computer) computer.hidden = !state.showComputer || state.botEdit;
   if (editor) {
     editor.hidden = !state.botEdit;
-    if (state.botEdit && bot) paintBotEditor(bot);
+    if (state.botEdit && bot) { paintBotEditor(bot); refreshAvatars(); }
   }
   const label = $("#screen-label");
   if (label && bot) {
@@ -4400,6 +4406,7 @@ function avatarPickerHtml(bot: Bot, avatar: { body: string; expression: string; 
     .map(
       (t) =>
         `<button type="button" class="avatar-type ${current?.id === t.id ? "on" : ""}" data-act="avatar-type" data-id="${t.id}">
+          <span class="avatar sm" data-avatar="${bot.id}" data-avatar-slot="type" data-avatar-size="44" data-avatar-framing="body" data-avatar-body="${escapeHtml(t.body)}" data-avatar-face="${escapeHtml(t.expression)}" data-avatar-anim="${escapeHtml(t.animation)}" data-preview="1"></span>
           <span class="lbl">${escapeHtml(t.label)}</span>
         </button>`,
     )
@@ -4454,7 +4461,7 @@ async function onAvatarPhotoChange(e: Event): Promise<void> {
   input.value = "";
   if (!file) return;
   const bot = editorBot();
-  if (!bot || isLiveCloud()) return;
+  if (!bot) return;
   try {
     const photo = await resizeImageToDataUrl(file, 256);
     bot.avatar = { ...(defaultAvatar(bot.avatar) as object), photo } as NonNullable<Bot["avatar"]>;

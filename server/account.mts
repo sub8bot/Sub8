@@ -423,6 +423,8 @@ export interface MateOptions extends DeskOptions {
   identityId?: string | undefined;
   /** A user photo (data URL); "" clears it. */
   photo?: string | undefined;
+  /** The drawn look. */
+  avatar?: { body?: string; expression?: string; animation?: string } | undefined;
 }
 
 export interface ChatOptions extends DeskOptions {
@@ -750,7 +752,7 @@ export function botFromCloudMember(c: LiveComputer, member: CloudTeamMember, bra
     instructions: member.job || "",
     teamId: `team-${desk.id}`,
     teamRole: member.role || "worker",
-    avatar: { ...base.avatar, color: member.color || base.color, ...(member.photo ? { photo: member.photo } : {}) },
+    avatar: { ...base.avatar, ...((member.avatar as object | undefined) || {}), color: member.color || base.color, ...(member.photo ? { photo: member.photo } : {}) },
     identityId,
     harness: harnessForCloudIdentity(identityId, brain),
     vm: {
@@ -1098,7 +1100,7 @@ export async function liveSaveThread({
   });
 }
 
-export async function livePatchMate({ computerId, botId, name, job, identityId, photo }: MateOptions = {}) {
+export async function livePatchMate({ computerId, botId, name, job, identityId, photo, avatar }: MateOptions = {}) {
   const row = await requireLiveSession();
   const id = liveDeskId(computerId, botId);
   if (!id || !botId) {
@@ -1106,7 +1108,7 @@ export async function livePatchMate({ computerId, botId, name, job, identityId, 
     err.status = 404;
     throw err;
   }
-  await cloudLivePatchMate({ token: row.session.token, computerId: id, botId, name, job, identityId, photo });
+  await cloudLivePatchMate({ token: row.session.token, computerId: id, botId, name, job, identityId, photo, avatar });
   const snap = await liveSnapshot();
   const bot = (snap.bots || []).find((b) => b.id === botId) || null;
   return { bot, ...snap };

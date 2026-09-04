@@ -361,6 +361,7 @@ export async function liveBrainTeam({ token, computerId }: ComputerIdOptions = {
 }
 
 export interface LiveMateOptions extends ComputerIdOptions {
+  avatar?: { body?: string; expression?: string; animation?: string } | undefined;
   botId?: string | undefined;
   name?: string | undefined;
   job?: string | undefined;
@@ -391,12 +392,12 @@ export async function liveDeskAction({
   });
 }
 
-export async function liveBrainPatchMate({ token, computerId, botId, name, job, identityId, photo }: LiveMateOptions = {}) {
+export async function liveBrainPatchMate({ token, computerId, botId, name, job, identityId, photo, avatar }: LiveMateOptions = {}) {
   return http.cloudApi("/api/brain/team", {
     baseUrl: needBase(),
     token,
     method: "PATCH",
-    body: { computerId, botId, name, job, identityId, ...(photo !== undefined ? { photo } : {}) },
+    body: { computerId, botId, name, job, identityId, ...(photo !== undefined ? { photo } : {}), ...(avatar !== undefined ? { avatar } : {}) },
   });
 }
 
