@@ -2338,7 +2338,8 @@ function renderTeamChannel(thread: HTMLElement, team: Team): void {
 function chatShotHtml(m: Message): string {
   const src = String(m.image || "").trim();
   if (!src) return "";
-  return `<a class="chat-shot-link" href="${escapeHtml(src)}" target="_blank" rel="noreferrer"><img class="chat-shot" src="${escapeHtml(src)}" alt="Screenshot from the bot" loading="lazy" /></a>`;
+  // A button, not a link: a data: URL handed to the OS has "no application set to open" it.
+  return `<button type="button" class="chat-shot-link" data-act="shot-open" title="View full size"><img class="chat-shot" src="${escapeHtml(src)}" alt="Screenshot from the bot" loading="lazy" /></a>`;
 }
 
 function paintChat(bot: Bot | null | undefined): void {
@@ -7718,6 +7719,12 @@ const ACTIONS: Record<string, ActHandler> = {
     paintVaultShare();
     return;
   },
+  "shot-open": (e, { el }) => {
+    const img = el.querySelector<HTMLImageElement>("img.chat-shot");
+    if (img?.src) openLightbox(img.src);
+    return;
+  },
+  "lightbox-close": () => { closeLightbox(); return; },
   "vault-fill-approve": (e, { el }) => {
     const mid = String(el.dataset.mid || ""), fid = String(el.dataset.fid || ""), accountId = String(el.dataset.account || "");
     const btn = el as HTMLButtonElement; btn.disabled = true; btn.textContent = "Sending…";
@@ -10254,6 +10261,23 @@ async function submitChoice(messageId: string | undefined, choiceId: string | un
   }
 }
 
+
+/** Full-size view of a chat screenshot, in-app. Click anywhere or press Esc to close. */
+function openLightbox(src: string): void {
+  closeLightbox();
+  const el = document.createElement("div");
+  el.id = "lightbox";
+  el.className = "lightbox";
+  el.setAttribute("role", "dialog");
+  el.innerHTML = `<button type="button" class="lightbox-x" data-act="lightbox-close" aria-label="Close">${iconClose()}</button><img src="${escapeHtml(src)}" alt="Screenshot" />`;
+  el.addEventListener("click", (ev) => { if ((ev.target as HTMLElement).tagName !== "IMG") closeLightbox(); });
+  document.body.appendChild(el);
+  const onKey = (ev: KeyboardEvent) => { if (ev.key === "Escape") { closeLightbox(); } };
+  document.addEventListener("keydown", onKey, { once: true });
+}
+function closeLightbox(): void {
+  document.getElementById("lightbox")?.remove();
+}
 
 /** A brief, non-blocking error/info toast — never window.alert (native dialogs freeze the embedded browser). */
 function flashToast(msg: string): void {

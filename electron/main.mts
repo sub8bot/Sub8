@@ -238,6 +238,9 @@ function create() {
     }, 600);
   });
   win.webContents.setWindowOpenHandler(({ url }) => {
+    // Only http(s) leaves the app. A data:/blob: URL handed to macOS gets
+    // "There is no application set to open the URL data:image/png;base64,…".
+    if (!/^https?:/i.test(url)) return { action: "deny" };
     shell.openExternal(url);
     return { action: "deny" };
   });

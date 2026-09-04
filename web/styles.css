@@ -3589,3 +3589,10 @@ select.pill { appearance: none; padding-right: 24px; }
 .vault-share-note .linklike { margin-left: 4px; font-size: 12px; }
 .vault-approve-card .vault-approve-body { font-size: 14px; margin: 4px 0 2px; }
 .vault-approve-card.closed { opacity: .8; }
+
+/* In-app screenshot viewer (chat shots must not open a data: URL through the OS). */
+.chat-shot-link { border: 0; padding: 0; background: none; cursor: zoom-in; display: block; }
+.lightbox { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,.82); display: grid; place-items: center; cursor: zoom-out; }
+.lightbox img { max-width: 94vw; max-height: 92vh; border-radius: 10px; box-shadow: 0 30px 80px rgba(0,0,0,.6); cursor: default; }
+.lightbox-x { position: absolute; top: 14px; right: 16px; width: 36px; height: 36px; border-radius: 50%; border: 0; background: rgba(255,255,255,.14); color: #fff; cursor: pointer; display: grid; place-items: center; }
+.lightbox-x:hover { background: rgba(255,255,255,.26); }
