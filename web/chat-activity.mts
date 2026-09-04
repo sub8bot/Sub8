@@ -32,9 +32,54 @@ function title(s: string): string {
   return t.charAt(0).toUpperCase() + t.slice(1);
 }
 
+/** The CLI harness reports MCP tools as `mcp__sub8__vault_fill` and its own as `ToolSearch`; strip that to the tool. */
+export function toolKey(name: string): string {
+  const raw = String(name || "").trim();
+  const m = /^mcp__[a-z0-9_-]+?__(.+)$/i.exec(raw);
+  return (m ? m[1]! : raw).toLowerCase();
+}
+
+/** Progressive labels for the sub8 tools (and the CLI's own), by tool key. */
+const TOOL_LABELS: Record<string, string> = {
+  vault_list: "Checking saved logins",
+  vault_fill: "Pasting the password",
+  show_user: "Sharing a screenshot",
+  ask_user: "Asking you a question",
+  request_box_help: "Asking you to take control",
+  memory: "Checking my notes",
+  list_tasks: "Checking my tasks",
+  update_task: "Updating a task",
+  set_job: "Setting the job",
+  list_routines: "Checking routines",
+  upsert_routine: "Saving a routine",
+  disable_routine: "Pausing a routine",
+  delete_routine: "Removing a routine",
+  list_teammates: "Checking the team",
+  create_teammate: "Bringing in a teammate",
+  message_teammate: "Messaging a teammate",
+  delete_teammate: "Closing a teammate",
+  rename_bot: "Renaming",
+  update_bot: "Updating my settings",
+  web_search: "Searching the web",
+  web_fetch: "Reading a page",
+  read: "Reading a file",
+  await_shell: "Waiting on a command",
+  task: "Starting a background task",
+  check_subagent: "Checking a background task",
+  create_channel: "Creating a channel",
+  update_channel: "Updating a channel",
+  nothing_to_add: "Nothing to add",
+  toolsearch: "Picking tools",
+  bash: "Running a command",
+  websearch: "Searching the web",
+  webfetch: "Reading a page",
+};
+
 function actionLabel(name: string, action: string): string {
-  const n = name.toLowerCase();
+  const n = toolKey(name);
   const a = action.toLowerCase();
+  if (n === "vault_fill" && a === "username") return "Pasting the username";
+  if (TOOL_LABELS[n] && n !== "computer" && n !== "browser" && n !== "shell") return TOOL_LABELS[n]!;
   if (a === "screenshot") return "Looked at the screen";
   if (a === "open") return "Opened Chrome";
   if (a === "snapshot") return "Read the page";
@@ -52,7 +97,7 @@ function actionLabel(name: string, action: string): string {
   if (a === "mouse_move") return "Moved the pointer";
   if (a === "wait") return "Waited";
   if (a === "shell" || n === "shell") return "Ran a command";
-  return title(a) || title(n);
+  return title(a) || title(n.replace(/_/g, " "));
 }
 
 export function isActivityRow(m: ChatActivityMsg | null | undefined): boolean {
