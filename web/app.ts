@@ -2647,7 +2647,8 @@ function refreshAvatars(): void {
     // photo is later removed).
     // A "type" slot previews one drawn look (the chip's own body/face/motion) in the
     // bot's colour — never the photo, even when the bot has one.
-    const typePreview = el.dataset.avatarSlot === "type";
+    // Views are keyed id:slot, so every chip needs its own slot name ("type-<look>").
+    const typePreview = String(el.dataset.avatarSlot || "").startsWith("type");
     const photo = typePreview ? "" : avatarPhoto(bot);
     const photoKey = photo ? `${photo.length}:${photo.slice(-24)}` : "";
     if (photo) {
@@ -4406,7 +4407,7 @@ function avatarPickerHtml(bot: Bot, avatar: { body: string; expression: string; 
     .map(
       (t) =>
         `<button type="button" class="avatar-type ${current?.id === t.id ? "on" : ""}" data-act="avatar-type" data-id="${t.id}">
-          <span class="avatar sm" data-avatar="${bot.id}" data-avatar-slot="type" data-avatar-size="44" data-avatar-framing="body" data-avatar-body="${escapeHtml(t.body)}" data-avatar-face="${escapeHtml(t.expression)}" data-avatar-anim="${escapeHtml(t.animation)}" data-preview="1"></span>
+          <span class="avatar sm" data-avatar="${bot.id}" data-avatar-slot="type-${escapeHtml(t.id)}" data-avatar-size="44" data-avatar-framing="body" data-avatar-body="${escapeHtml(t.body)}" data-avatar-face="${escapeHtml(t.expression)}" data-avatar-anim="${escapeHtml(t.animation)}" data-preview="1"></span>
           <span class="lbl">${escapeHtml(t.label)}</span>
         </button>`,
     )
