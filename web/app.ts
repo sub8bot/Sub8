@@ -2280,7 +2280,10 @@ function renderTeamChannel(thread: HTMLElement, team: Team): void {
   const cloudRows: Message[] | null =
     isCloudPlace() && chief
       ? (chief.messages || [])
-          .filter((m) => !m.hidden && m.role !== "tool")
+          // Tool-call rows (kind "tool": "mcp__sub8__vault_list: {}") are activity,
+          // not conversation — the local channel folds them; here they'd render as
+          // lead bubbles. Hide them; the Bot's own tab still shows its activity.
+          .filter((m) => !m.hidden && m.role !== "tool" && m.kind !== "tool")
           .map((m) => {
             const fromUser = m.role === "user";
             const sid = m.speakerId || (fromUser ? "" : chief.id);
