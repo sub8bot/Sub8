@@ -212,30 +212,9 @@ interface RawTrigger {
 }
 
 /** One bot, local or Cloud. The rail, the chat and the editor all read this. */
-interface UsageTotals {
-  turns: number;
-  auto: number;
-  llmCalls: number;
-  promptTokens: number;
-  completionTokens: number;
-}
-
-interface UsageSettings {
-  dailyTurnBudget: number | null;
-  minRoutineMinutes: number;
-  maxBotHops: number;
-  quietHours: { start: string; end: string } | null;
-}
-
 interface Bot {
   id: string;
   name: string;
-  /** Today's tally from the usage ledger (server-computed). */
-  usageToday?: UsageTotals;
-  /** Per-bot override: { turnsPerDay: n | null }. Absent = app default. */
-  budget?: { turnsPerDay?: number | null } | null;
-  /** The budget actually in force for this bot; null = unlimited. */
-  effectiveBudget?: number | null;
   /** Take control, persisted host-side so it survives a restart. */
   humanControl?: boolean;
   color?: string;
@@ -394,7 +373,6 @@ interface HarnessSettingsState {
 /** /api/settings. The index signature is the set-pref handler, which writes
  *  whatever key the clicked control names. */
 interface Settings {
-  usage?: UsageSettings;
   harness?: HarnessSettingsState;
   sidebarSections?: SidebarSection[];
   themePreference?: string;
@@ -4462,52 +4440,6 @@ document.addEventListener("change", (e) => {
   });
 });
 
-function fmtTokens(n: number): string {
-  return n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
-}
-
-/** "12 turns · 3 automated · 48 model calls · 131K tokens" for today's tally. */
-function usageLine(u: UsageTotals | undefined | null): string {
-  if (!u || !u.turns) return "No turns yet today";
-  const tokens = (u.promptTokens || 0) + (u.completionTokens || 0);
-  return `${u.turns} turn${u.turns === 1 ? "" : "s"} · ${u.auto} automated · ${u.llmCalls} model calls · ${fmtTokens(tokens)} tokens`;
-}
-
-function budgetLabel(effective: number | null | undefined): string {
-  return effective === null ? "unlimited" : effective === undefined ? "default" : `${effective}/day`;
-}
-
-/** The Usage card in a Bot's settings: today's tally and the per-Bot budget override. */
-function usageCardHtml(bot: Bot): string {
-  const dflt = state.settings?.usage?.dailyTurnBudget;
-  const override = bot.budget?.turnsPerDay;
-  const value = override === null ? "0" : Number.isFinite(Number(override)) && override !== undefined ? String(override) : "";
-  const effective = bot.effectiveBudget;
-  const used = bot.usageToday?.turns || 0;
-  const pct = effective ? Math.min(100, Math.round((used / effective) * 100)) : 0;
-  return `<div class="card usage-card">
-      <div class="row">
-        <div><div class="lbl">Usage today</div><div class="sub">${escapeHtml(usageLine(bot.usageToday))}</div></div>
-        <span class="hbadge ${effective && used >= effective ? "bad" : pct >= 80 ? "warn" : "ok"}">${escapeHtml(effective ? `${used} / ${effective}` : `${used} · ${budgetLabel(effective)}`)}</span>
-      </div>
-      ${effective ? `<div class="cmem sm" title="${pct}% of today's budget"><div class="cmem-track"><i class="cmem-fill ${pct >= 100 ? "hot" : pct >= 80 ? "warm" : "ok"}" style="width:${pct}%"></i></div></div>` : ""}
-      <div class="row" style="margin-top:8px">
-        <div><div class="lbl">Daily budget</div><div class="sub">Turns per day. Blank = app default (${dflt === null ? "unlimited" : escapeHtml(String(dflt ?? 150))}), 0 = unlimited. At the limit, routines and teammate wakes pause until midnight; your own messages always run.</div></div>
-        <input class="field" id="bbudget" type="number" min="0" step="1" inputmode="numeric" style="width:110px;flex:0 0 auto" value="${escapeHtml(value)}" placeholder="${dflt === null ? "∞" : escapeHtml(String(dflt ?? 150))}" />
-      </div>
-    </div>`;
-}
-
-/** What the editor's budget field means for the PATCH body. */
-function budgetFromField(raw: string | undefined, prev: Bot["budget"]): Bot["budget"] {
-  if (raw === undefined) return prev ?? null;
-  const t = raw.trim();
-  if (t === "") return null;
-  const n = Number(t);
-  if (!Number.isFinite(n) || n < 0) return prev ?? null;
-  return n === 0 ? { turnsPerDay: null } : { turnsPerDay: Math.floor(n) };
-}
-
 function paintBotEditor(bot: Bot): void {
   const host = $("#bot-editor");
   if (!host) return;
@@ -4538,7 +4470,6 @@ function paintBotEditor(bot: Bot): void {
       </div>
       <button class="toggle ${bot.notificationsEnabled ? "on" : ""}" data-act="bot-notify"><i></i></button>
     </div>
-    ${isCloudPlace() ? "" : usageCardHtml(bot)}
     ${state.avatarEdit ? avatarPickerHtml(bot, avatar) : ""}
     <label class="muted">Instructions</label>
     <textarea class="field" id="bi" placeholder="Standing rules this Bot always follows">${escapeHtml(bot.instructions || "")}</textarea>
@@ -5949,12 +5880,7 @@ function computerCardHtml(c: Computer): string {
   return `<div class="card computer-card">
     <div class="row">
       <div><div class="lbl"><i class="hdot ${st}"></i> ${escapeHtml(c.name || "Computer")}</div>
-        <div class="sub">${c.attachedBotName ? escapeHtml(c.attachedBotName) : "Unattached"} · ${escapeHtml(computerStateLabel(c.status, c))}${port}${(() => {
-          const b = botById(c.attachedBotId);
-          if (!b?.usageToday?.turns) return "";
-          const eff = b.effectiveBudget;
-          return ` · today ${b.usageToday.turns}${eff ? `/${eff}` : ""} turns`;
-        })()}</div></div>
+        <div class="sub">${c.attachedBotName ? escapeHtml(c.attachedBotName) : "Unattached"} · ${escapeHtml(computerStateLabel(c.status, c))}${port}</div></div>
       ${harnessPill(c.harness)}<span class="hbadge ${st}">${escapeHtml(computerStateLabel(c.status, c))}</span>
     </div>
     ${memBarHtml(c.container, true)}
@@ -7311,23 +7237,6 @@ function settingsHtml(): string {
               ])}
             </div>
           </div>
-          <div class="block"><h3>Usage</h3>
-            <div class="card">
-              <div class="row"><div><div class="lbl">Daily budget per Bot</div><div class="sub">Turns per local day. Blank = unlimited. A Bot can override this in its own settings. At the limit, routines and teammate wakes pause until midnight; your messages always run.</div></div>
-                <input class="field" id="us-budget" type="number" min="1" step="1" inputmode="numeric" style="width:110px;flex:0 0 auto" value="${s.usage?.dailyTurnBudget == null ? "" : escapeHtml(String(s.usage.dailyTurnBudget))}" placeholder="∞" /></div>
-              <div class="row"><div><div class="lbl">Routine floor</div><div class="sub">The shortest interval a routine can be created with, in minutes.</div></div>
-                <input class="field" id="us-floor" type="number" min="1" step="1" inputmode="numeric" style="width:110px;flex:0 0 auto" value="${escapeHtml(String(s.usage?.minRoutineMinutes ?? 5))}" /></div>
-              <div class="row"><div><div class="lbl">Bot-to-bot hop cap</div><div class="sub">Teammate wakes a Bot may take without a message from you in between. 0 = no cap.</div></div>
-                <input class="field" id="us-hops" type="number" min="0" step="1" inputmode="numeric" style="width:110px;flex:0 0 auto" value="${escapeHtml(String(s.usage?.maxBotHops ?? 8))}" /></div>
-              <div class="row"><div><div class="lbl">Quiet hours</div><div class="sub">Routines do not fire in this window (local time). Leave both empty to disable.</div></div>
-                <div class="row" style="gap:6px;flex:0 0 auto">
-                  <input class="field" id="us-quiet-start" type="time" style="width:120px" value="${escapeHtml(s.usage?.quietHours?.start || "")}" />
-                  <span class="muted">to</span>
-                  <input class="field" id="us-quiet-end" type="time" style="width:120px" value="${escapeHtml(s.usage?.quietHours?.end || "")}" />
-                </div></div>
-              <div class="row" style="justify-content:flex-end"><button class="pill primary" data-act="save-usage">Save usage settings</button></div>
-            </div>
-          </div>
           <div class="block"><h3>This Mac</h3>
             <div class="card">
               <div class="row"><div class="lbl">Timezone</div><span class="muted">${escapeHtml(state.timezone || "auto")}</span></div>
@@ -8271,24 +8180,6 @@ const ACTIONS: Record<string, ActHandler> = {
   },
   "reset-vm": (e) => {
     if (confirm("Reset this Bot’s computer? Files and logins on that desktop will be gone.")) resetVm();
-    return;
-  },
-  "save-usage": (e) => {
-    const num = (id: string) => {
-      const v = ($<HTMLInputElement>(id)?.value || "").trim();
-      return v === "" ? null : Number(v);
-    };
-    const start = ($<HTMLInputElement>("#us-quiet-start")?.value || "").trim();
-    const end = ($<HTMLInputElement>("#us-quiet-end")?.value || "").trim();
-    const body = {
-      usage: {
-        dailyTurnBudget: num("#us-budget"),
-        minRoutineMinutes: num("#us-floor") ?? 5,
-        maxBotHops: num("#us-hops") ?? 8,
-        quietHours: start && end ? { start, end } : null,
-      },
-    };
-    api("/api/settings", { method: "PUT", body }).then(refreshSettings).then(() => paintModal());
     return;
   },
   "check-update": (e) => {
@@ -11219,7 +11110,6 @@ async function saveBot(): Promise<void> {
       notificationsEnabled: bot.notificationsEnabled,
       color: bot.color,
       avatar: defaultAvatar(bot.avatar),
-      budget: budgetFromField($<ValueEl>("#bbudget")?.value, bot.budget),
     },
   }) as Bot;
   state.botEdit = false;
