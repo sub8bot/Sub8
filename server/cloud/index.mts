@@ -344,6 +344,10 @@ export async function liveBrainTurn({ token, computerId, id }: ComputerIdOptions
   return http.cloudApi(`/api/brain/turn?${q}`, { baseUrl: needBase(), token });
 }
 
+export async function liveBrainSetModel({ token, identityId, model }: { token?: string | undefined; identityId?: string | undefined; model?: string | undefined } = {}) {
+  return http.cloudApi("/api/brain/model", { baseUrl: needBase(), token, method: "POST", body: { identityId, model } });
+}
+
 export async function liveBrainAbort({ token, computerId, turnId, all }: ComputerIdOptions & { turnId?: string | undefined; all?: unknown } = {}) {
   return http.cloudApi("/api/brain/abort", {
     baseUrl: needBase(),

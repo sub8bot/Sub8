@@ -4476,6 +4476,17 @@ async function onAvatarPhotoChange(e: Event): Promise<void> {
 document.addEventListener("change", (e) => { void onAvatarPhotoChange(e); });
 document.addEventListener("change", (e) => {
   const el = e.target as HTMLSelectElement | null;
+  if (!el || el.dataset.role !== "cloud-model") return;
+  const identityId = String(el.dataset.identity || "");
+  const model = el.value;
+  el.disabled = true;
+  void api("/api/cloud/brain/model", { method: "POST", body: { identityId, model } })
+    .then(() => loadIdentities())
+    .catch((err) => flashToast((err as CaughtError | undefined)?.message || "Could not change the model."))
+    .finally(() => { el.disabled = false; if (state.modal === "settings" && state.section === "harnesses") paintModal(); });
+});
+document.addEventListener("change", (e) => {
+  const el = e.target as HTMLSelectElement | null;
   if (!el || el.dataset.role !== "harness-desk") return;
   state.harnessDesk = el.value || null;
   state.claudeAuth = state.claudeAuth?.awaitingCode ? state.claudeAuth : null;
@@ -4976,10 +4987,21 @@ function cloudHarnessCardHtml(row: IdentityRow): string {
         <div><div class="lbl">Account</div><div class="sub">${row.subject ? escapeHtml(row.subject) : "This account"} · cloud${usedBy ? ` · used by ${usedBy}` : " · no bots yet"}</div></div>
       </div>
       ${deskRow}
-      <div class="row"><div class="lbl">Model</div><span class="muted">${escapeHtml(row.model || "—")}</span></div>
+      <div class="row"><div><div class="lbl">Model</div><div class="sub">Applies to the next turn of every bot on this login.</div></div>${cloudModelSelectHtml(row)}</div>
       ${plugins}
     </div>
   </div>`;
+}
+
+/** The model picker for a cloud identity: the provider's known ids plus whatever it runs now. */
+function cloudModelSelectHtml(row: { id: string; provider?: string; model?: string }): string {
+  const provider = String(row.provider || "");
+  const current = String(row.model || "");
+  const list = [...new Set([current, ...listModelsForProvider(provider, {})].filter(Boolean))];
+  if (!list.length) return `<span class="muted">${escapeHtml(current || "—")}</span>`;
+  return `<select class="field" data-role="cloud-model" data-identity="${escapeHtml(row.id)}" style="max-width:240px">${list
+    .map((m) => `<option value="${escapeHtml(m)}" ${m === current ? "selected" : ""}>${escapeHtml(m)}</option>`)
+    .join("")}</select>`;
 }
 
 /** Settings → Harnesses: This Mac | Cloud, the same card for every engine, and one Add login CTA. */

@@ -1004,6 +1004,15 @@ app.post("/api/cloud/draft/bots/:id/messages", async (req, res) => {
   }
 });
 
+app.post("/api/cloud/brain/model", async (req, res) => {
+  try {
+    if (!(await requireCloudSession(req, res))) return;
+    res.json(await account.setCloudModel(String(req.body?.identityId || ""), String(req.body?.model || "")));
+  } catch (err) {
+    sendAccountError(res, err);
+  }
+});
+
 app.get("/api/cloud/brain", async (_req, res) => {
   try {
     if (!(await requireCloudSession(_req, res))) return;

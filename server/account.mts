@@ -48,6 +48,7 @@ import {
   liveBrainDeleteMate as cloudLiveDeleteMate,
   liveBrainTurn as cloudLiveBrainTurn,
   liveBrainAbort as cloudLiveBrainAbort,
+  liveBrainSetModel as cloudLiveBrainSetModel,
   liveBillingSummary as cloudLiveBillingSummary,
   liveBillingPortal as cloudLiveBillingPortal,
   liveBillingCheckout as cloudLiveBillingCheckout,
@@ -894,6 +895,12 @@ export async function vaultGateSetup(passcode: string, vaultKey: string): Promis
 export async function vaultGateUnlock(passcode: string): Promise<{ ok: boolean; vaultKey?: string; locked?: boolean; remaining?: number; error?: string }> {
   return (await cloudGateUnlock({ token: await claudeAuthToken(), passcode })) as { ok: boolean; vaultKey?: string; locked?: boolean; remaining?: number; error?: string };
 }
+/** Pick the model one cloud identity runs (Settings → Harnesses → Cloud → Model). */
+export async function setCloudModel(identityId: string, model: string): Promise<unknown> {
+  const row = await requireLiveSession();
+  return cloudLiveBrainSetModel({ token: row.session.token, identityId, model });
+}
+
 export async function vaultGateReset(): Promise<void> {
   await cloudGateReset({ token: await claudeAuthToken() });
 }

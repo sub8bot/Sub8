@@ -1,5 +1,7 @@
 export const HERMES_FALLBACK_MODELS = ["qwen3.8-27b", "qwen3.6-27b-mlx"];
 export const GROK_FALLBACK_MODELS = ["grok-4.6", "grok-4.5", "grok-4.3", "grok-build-0.1"];
+/** Claude ids the CLI accepts. Fable 5.1 / Opus 5 / Sonnet 5 / Haiku 4.5; whether a login may use each is up to the account. */
+export const CLAUDE_FALLBACK_MODELS = ["claude-sonnet-5", "claude-opus-5", "claude-fable-5-1", "claude-haiku-4-5-20251001"];
 export const CODEX_FALLBACK_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.2"];
 export const CURSOR_FALLBACK_MODELS = ["cursor-grok-4.6-low", "cursor-grok-4.6-low-fast", "auto", "composer-2.5"];
 
@@ -50,6 +52,9 @@ export function listModelsForProvider(provider: string, catalogs: ModelCatalogs 
         [catalogs.cursorCurrent, ...(catalogs.cursor || []), ...CURSOR_FALLBACK_MODELS].filter(present),
       ),
     ];
+  }
+  if (provider === "claude") {
+    return [...new Set([...((catalogs.claude as string[] | undefined) || []), ...CLAUDE_FALLBACK_MODELS].filter(present))];
   }
   if (provider === "ollama") return Array.isArray(catalogs.ollama) ? catalogs.ollama : [];
   if (provider === "lmstudio") return Array.isArray(catalogs.lmstudio) ? catalogs.lmstudio : [];
