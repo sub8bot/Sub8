@@ -2272,8 +2272,28 @@ function namedBubble(m: Message, assistant: boolean): string {
 }
 
 function renderTeamChannel(thread: HTMLElement, team: Team): void {
-  const msgs = ((team.messages || []) as Message[]).filter((m) => !m.hidden);
   const chief = teamBots(team).find((b) => b.teamRole === "chief");
+  // A CLOUD team has no channel transcript of its own: the Worker writes the
+  // user's turns, the lead's replies and the workers' reports into the lead's
+  // thread (which is what the phone shows). Render that thread as the channel,
+  // so the desktop and iOS agree; live tail updates land in bot.messages already.
+  const cloudRows: Message[] | null =
+    isCloudPlace() && chief
+      ? (chief.messages || [])
+          .filter((m) => !m.hidden && m.role !== "tool")
+          .map((m) => {
+            const fromUser = m.role === "user";
+            const sid = m.speakerId || (fromUser ? "" : chief.id);
+            const mate = sid ? teamBots(team).find((b) => b.id === sid) : null;
+            return {
+              ...m,
+              speakerId: sid,
+              speakerName: m.speakerName || (fromUser ? "" : mate?.name || chief.name),
+              speakerRole: m.speakerRole || (fromUser ? "user" : sid && sid !== chief.id ? "worker" : "chief"),
+            };
+          })
+      : null;
+  const msgs = cloudRows ?? ((team.messages || []) as Message[]).filter((m) => !m.hidden);
   const lead = chief?.name || "the lead";
   // One lead you talk to here; they open and direct workers, and the whole
   // team's activity lands in this one log — the bot app model.
