@@ -6306,25 +6306,50 @@ function vaultFace(acc: Partial<VaultAccount> | null | undefined, size = "md"): 
   return `<span class="vault-face ${size}" style="background:${bg}">${escapeHtml(letter)}</span>`;
 }
 
+/** Every bot a login can be shared with — this Mac's AND the cloud's, whatever place is showing. */
+function shareBotsLocal(): Bot[] {
+  return (state.bots || []).filter((b) => !b.hidden);
+}
+function shareBotsCloud(): Bot[] {
+  return (state.cloudDraft?.bots || []).filter((b) => !b.hidden);
+}
+function botComputerId(b: Bot): string {
+  return String((b as { computerId?: string }).computerId || b.vm?.computerId || "");
+}
+/** A cloud desk's display name: its chief is named after the desk (renames included). */
+function cloudDeskName(computerId: string): string {
+  const chief = shareBotsCloud().find((b) => botComputerId(b) === computerId && (b.teamRole === "chief" || !b.teamRole));
+  const comp = (state.cloudDraft?.computers || []).find((c) => c.id === computerId);
+  return chief?.name || comp?.name || computerId;
+}
+
 function botsSharingAccount(accountId: string | null | undefined): string[] {
   if (!accountId || accountId === "new") return [];
-  return (state.bots || [])
+  return [...shareBotsLocal(), ...shareBotsCloud()]
     .filter((b) => (state.vault.grants?.[b.id] || []).includes(accountId))
     .map((b) => b.id);
 }
 
 function vaultShareSummary(): string {
   const ids = new Set(state.vaultShare || []);
-  const names = (state.bots || []).filter((b) => !b.hidden && ids.has(b.id)).map((b) => b.name);
+  const names = [...shareBotsLocal(), ...shareBotsCloud()].filter((b) => ids.has(b.id)).map((b) => b.name);
   if (!names.length) return "Not shared";
   if (names.length <= 2) return names.join(", ");
   return `${names.length} bots`;
 }
 
 function sharePackBots(kind: string | undefined, id: string | undefined): string[] {
+  if (kind === "cloud") {
+    // Everyone on one cloud desk: the chief and its workers.
+    return shareBotsCloud().filter((b) => botComputerId(b) === (id || "")).map((b) => b.id);
+  }
   if (kind === "team") {
     const team = (state.teams || []).find((t) => t.id === id) || teamFromBots(id);
-    return teamBots(team).map((b) => b.id);
+    const ids = teamBots(team).map((b) => b.id);
+    if (ids.length) return ids;
+    // A local team while the Cloud place is showing: teamBots() looks at the
+    // visible bots, so resolve from this Mac's list directly.
+    return shareBotsLocal().filter((b) => b.teamId === id).map((b) => b.id);
   }
   const { pinned, pinnedTeams, groups } = railLayout();
   if (id === "pinned") {
@@ -6338,21 +6363,31 @@ function sharePackBots(kind: string | undefined, id: string | undefined): string
 function vaultSharePanelHtml(): string {
   const chosen = new Set(state.vaultShare || []);
   const packs = new Set(state.vaultSharePacks || []);
-  const bots = (state.bots || []).filter((b) => !b.hidden);
-  const teams = (railLayout().teamGroups || []).filter((t) => t.bots.length);
+  const bots = shareBotsLocal();
+  const cloudBots = shareBotsCloud();
+  // Local teams from this Mac's own list (not the rail, which follows the place).
+  const localTeams = (state.teams || []).filter((t) => shareBotsLocal().some((b) => b.teamId === t.id));
+  const cloudDesks = [...new Set(cloudBots.map(botComputerId).filter(Boolean))];
   const sections = sidebarSections().filter((s) => sharePackBots("section", s.id).length);
-  const chip = (b: Bot) =>
-    `<button type="button" class="vault-chip ${chosen.has(b.id) ? "on" : ""}" data-act="vault-share-bot" data-id="${b.id}">${escapeHtml(b.name)}</button>`;
+  const cloudNameCounts = new Map<string, number>();
+  for (const b of cloudBots) cloudNameCounts.set(b.name, (cloudNameCounts.get(b.name) || 0) + 1);
+  const chip = (b: Bot, extra = "") =>
+    `<button type="button" class="vault-chip ${chosen.has(b.id) ? "on" : ""}" data-act="vault-share-bot" data-id="${b.id}">${escapeHtml(b.name)}${extra ? `<span class="muted"> · ${escapeHtml(extra)}</span>` : ""}</button>`;
+  // A worker named like another desk's worker gets its desk as a suffix.
+  const cloudChip = (b: Bot) => chip(b, (cloudNameCounts.get(b.name) || 0) > 1 && b.teamRole !== "chief" ? cloudDeskName(botComputerId(b)) : "");
   const pack = (kind: string, id: string, name: string) => {
     const key = `${kind}:${id}`;
     return `<button type="button" class="vault-chip pack ${packs.has(key) ? "on" : ""}" data-act="vault-share-pack" data-kind="${kind}" data-id="${escapeHtml(id)}">${escapeHtml(name)}</button>`;
   };
   const groupChips = [
-    ...teams.map((t) => pack("team", t.id, t.name as string)),
+    ...localTeams.map((t) => pack("team", t.id, t.name as string)),
+    ...cloudDesks.map((cid) => pack("cloud", cid, `Everyone on ${cloudDeskName(cid)}`)),
     ...sections.map((s) => pack("section", s.id, s.name)),
   ];
   return `<div class="vault-share-panel" id="vault-share-panel" ${state.vaultShareOpen ? "" : "hidden"}>
-    <div class="vault-chips">${bots.length ? bots.map(chip).join("") : `<span class="muted">No bots yet.</span>`}</div>
+    ${bots.length ? `<div class="vault-share-h">This Mac</div>` : ""}
+    <div class="vault-chips">${bots.length ? bots.map((b) => chip(b)).join("") : `<span class="muted">No bots on this Mac yet.</span>`}</div>
+    ${cloudBots.length ? `<div class="vault-share-h">Cloud</div><div class="vault-chips">${cloudBots.map(cloudChip).join("")}</div>` : ""}
     ${
       groupChips.length
         ? `<div class="vault-share-h">Groups</div><div class="vault-chips">${groupChips.join("")}</div>`
