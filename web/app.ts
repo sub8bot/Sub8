@@ -124,6 +124,8 @@ interface Message extends CodeAgentSession {
   speakerId?: string;
   speakerName?: string;
   speakerRole?: string;
+  /** A present-to-approve login fill a cloud Bot is waiting on (kind "vault-approve"). */
+  vaultFill?: { id: string; accountId: string; label?: string; site?: string; username?: string };
   toId?: string;
   /** Set on a directed team message (message_teammate): who it was handed to. */
   toName?: string;
@@ -2056,7 +2058,7 @@ function keepCountFor(bot: Bot | null | undefined): number {
 function trimBotMessages(bot: Bot | null | undefined): void {
   if (!bot?.messages || bot.messages.length <= keepCountFor(bot)) return;
   const cap = keepCountFor(bot);
-  const pending = bot.messages.filter((m) => (m.kind === "choices" || m.kind === "secret-request") && m.pending !== false);
+  const pending = bot.messages.filter((m) => (m.kind === "choices" || m.kind === "secret-request" || m.kind === "vault-approve") && m.pending !== false);
   const body = bot.messages.filter((m) => !(m.kind === "choices" && m.pending !== false));
   const kept = body.slice(-cap);
   const extra = pending.filter((p) => !kept.some((k) => k.id === p.id));
@@ -2321,7 +2323,7 @@ function renderTeamChannel(thread: HTMLElement, team: Team): void {
     let sep = "";
     const k = chatDayKey(m.ts);
     if (k && k !== lastDay) { lastDay = k; sep = `<div class="chat-day">${escapeHtml(chatDayLabel(m.ts))}</div>`; }
-    if (m.kind === "choices" || m.kind === "secret-request") {
+    if (m.kind === "choices" || m.kind === "secret-request" || m.kind === "vault-approve") {
       const live = (leadBot?.messages || []).find((x: Message) => x.id === m.id) || m;
       return sep + `<div class="msg asst" data-mid="${escapeHtml(m.id || "")}">${renderChoiceCard(live)}</div>`;
     }
@@ -2402,7 +2404,7 @@ function paintChat(bot: Bot | null | undefined): void {
   for (let i = 0; i < rows.length; ) {
     const m = rows[i]!;
     dayBreak(m);
-    if (m.kind === "choices" || m.kind === "secret-request") {
+    if (m.kind === "choices" || m.kind === "secret-request" || m.kind === "vault-approve") {
       if (m.pending !== false) pendingChoices.push(m);
       else html.push(renderChoiceCard(m));
       i += 1;
@@ -3507,7 +3509,41 @@ function renderCodeAgentCard(m: Message): string {
   </div>`;
 }
 
+/** In-thread Approve / Deny for a cloud Bot's login fill. Approve needs this Mac's vault key. */
+function closeVaultApproveCard(mid: string, label: string): void {
+  for (const b of [...(state.bots || []), ...(state.cloudDraft?.bots || [])]) {
+    const m = (b.messages || []).find((x) => x.id === mid);
+    if (m) { m.pending = false; m.selected = { id: label.toLowerCase(), label }; }
+  }
+  vaultPendingSeen.add(mid); // no toast for a card we already handled
+  render();
+}
+
+function renderVaultApproveCard(m: Message): string {
+  const f = m.vaultFill || { id: "", accountId: "" };
+  const closed = m.pending === false;
+  const locked = Boolean(state.vaultCloud?.enabled && !state.vaultCloud?.unlocked);
+  const who = f.username ? ` as <strong>${escapeHtml(f.username)}</strong>` : "";
+  const where = escapeHtml(f.site || f.label || "a site");
+  const body = `<div class="vault-approve-body">Sign in to ${where}${who}?</div>
+    ${m.hint && !closed ? `<div class="choice-hint">${escapeHtml(m.hint)}</div>` : ""}`;
+  const acts = closed
+    ? `<div class="choice-picked">${escapeHtml(m.selected?.label || "Handled")}</div>`
+    : `<div class="row" style="gap:8px;margin-top:10px;justify-content:flex-end">
+        <button type="button" class="pill" data-act="vault-fill-deny" data-mid="${escapeHtml(m.id)}" data-fid="${escapeHtml(f.id)}">Deny</button>
+        ${
+          locked
+            ? `<button type="button" class="pill primary" data-act="vault-cloud-unlock-open" title="Approving needs your vault key">Unlock to approve</button>`
+            : `<button type="button" class="pill primary" data-act="vault-fill-approve" data-mid="${escapeHtml(m.id)}" data-fid="${escapeHtml(f.id)}" data-account="${escapeHtml(f.accountId)}">Approve</button>`
+        }
+      </div>`;
+  return `<div class="choice-card vault-approve-card ${closed ? "closed" : ""}" data-mid="${escapeHtml(m.id)}">
+    <div class="choice-q">Login approval</div>${body}${acts}
+  </div>`;
+}
+
 function renderChoiceCard(m: Message): string {
+  if (m.kind === "vault-approve") return renderVaultApproveCard(m);
   const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   const closed = m.pending === false;
   const rows = (m.choices || [])
@@ -6625,7 +6661,8 @@ async function pollVaultPending(): Promise<void> {
     for (const q of r.requests || []) {
       if (vaultPendingSeen.has(q.id)) continue;
       vaultPendingSeen.add(q.id);
-      showVaultApproveCard(q);
+      const inThread = [...(state.cloudDraft?.bots || [])].some((b) => (b.messages || []).some((x) => x.kind === "vault-approve" && x.vaultFill?.id === q.id));
+      if (!inThread) showVaultApproveCard(q); // older Worker rows without a card still get a toast
     }
   } catch {
     /* offline or signed out — try again next tick */
@@ -7679,6 +7716,28 @@ const ACTIONS: Record<string, ActHandler> = {
   "vault-share-toggle": (e) => {
     state.vaultShareOpen = !state.vaultShareOpen;
     paintVaultShare();
+    return;
+  },
+  "vault-fill-approve": (e, { el }) => {
+    const mid = String(el.dataset.mid || ""), fid = String(el.dataset.fid || ""), accountId = String(el.dataset.account || "");
+    const btn = el as HTMLButtonElement; btn.disabled = true; btn.textContent = "Sending…";
+    void (async () => {
+      try {
+        await api("/api/vault/cloud/approve", { method: "POST", body: { id: fid, accountId } });
+        closeVaultApproveCard(mid, "Approved");
+      } catch (err) {
+        btn.disabled = false; btn.textContent = "Approve";
+        flashToast((err as CaughtError | undefined)?.message || "Could not approve.");
+      }
+    })();
+    return;
+  },
+  "vault-fill-deny": (e, { el }) => {
+    const mid = String(el.dataset.mid || ""), fid = String(el.dataset.fid || "");
+    void (async () => {
+      try { await api("/api/vault/cloud/deny", { method: "POST", body: { id: fid } }); } catch (err) { flashToast((err as CaughtError | undefined)?.message || "Could not deny."); return; }
+      closeVaultApproveCard(mid, "Denied");
+    })();
     return;
   },
   "vault-share-bot": (e, { el }) => {
