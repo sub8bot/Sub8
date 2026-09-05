@@ -6828,6 +6828,9 @@ function vaultPassModalHtml(): string {
 }
 
 function vaultCloudHtml(): string {
+  // Cloud sync needs a cloud account: with the cloud product off (packaged
+  // builds default to SUB8_CLOUD=0) there is nothing to sync to — show nothing.
+  if (!cloudOn()) return "";
   const c = state.vaultCloud;
   if (!c || !c.enabled) {
     return `<div class="vault-cloud">
