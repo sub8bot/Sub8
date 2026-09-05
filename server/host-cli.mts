@@ -187,6 +187,8 @@ export function resolveClaudeCliModel(model: unknown): string {
   if (/^claude-sonnet-5($|-|\[)/i.test(m) || m === "sonnet-5") return CLAUDE_SAFE_SONNET;
   if (/^claude-sonnet-4-6/i.test(m) || m === "sonnet-4-6" || m === "sonnet-4.6") return CLAUDE_SAFE_SONNET;
   if (/^claude-sonnet-4-5/i.test(m) || m === "sonnet-4-5" || m === "sonnet-4.5") return CLAUDE_SAFE_SONNET;
+  // The CLI's own aliases are valid ids: `fable`, `opus`, `haiku` (sonnet is pinned above).
+  if (/^(fable|opus|haiku)$/i.test(m)) return m.toLowerCase();
   // Any Claude model id passes through so new releases (opus-5, haiku-4-5, …)
   // keep working with no code change. A model that is NOT Claude's — a Grok,
   // Cursor, or other harness's model string left on a bot whose identity was

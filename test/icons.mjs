@@ -8,7 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const app = readFileSync(path.join(root, "web", "app.js"), "utf8");
 
 const names = Object.keys(icons).sort();
-assert.equal(names.length, 22, `expected 22 glyphs, found ${names.length}`);
+assert.equal(names.length, 23, `expected 22 glyphs, found ${names.length}`);
 
 for (const name of names) {
   const fn = icons[name];

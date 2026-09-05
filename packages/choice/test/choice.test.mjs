@@ -215,8 +215,9 @@ test("`content` is dropped whenever the same call also names a question", () => 
   // When it is the only text it is used, which is why the fallback exists.
   const kept = cardFromSendMessageArgs({ id: "b1" }, { type: "widget", content: "Only text" });
   assert.equal(kept.content, "Only text");
-  // And with nothing at all the card still asks something.
-  assert.equal(cardFromSendMessageArgs({ id: "b1" }, { type: "widget" }).content, "What should we do?");
+  // And with nothing at all there is no card: an empty widget is not a question
+  // (the handler tells the model to ask something specific or just continue).
+  assert.equal(cardFromSendMessageArgs({ id: "b1" }, { type: "widget" }), null);
 });
 
 test("choices without a question are not a card at all — the buttons vanish", () => {
