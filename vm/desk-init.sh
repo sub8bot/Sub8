@@ -87,7 +87,24 @@ CHROME_PID=$!
 # docs/authenticated-desk-stream.md for the design it belongs to.
 RFB_LOCALHOST="-localhost"
 if [ "${RFB_EXPOSE:-0}" = "1" ]; then RFB_LOCALHOST=""; fi
-x11vnc -display :1 -forever -shared -nopw -xkb -repeat \
+
+# SECURITY (2026-09-05): never run a passwordless screen the network can reach.
+# noVNC (websockify below) is published on a public port, so a passwordless
+# x11vnc means unauthenticated control of the logged-in desktop. If the control
+# plane injected a per-desk password (VNC_PASSWORD, carried in the authenticated
+# stream URL), require it. Otherwise FAIL CLOSED: bind both RFB and websockify to
+# loopback so nothing on the network can reach an unauthenticated desktop.
+VNC_AUTH="-nopw"
+WS_HOST="0.0.0.0:"
+if [ -n "${VNC_PASSWORD:-}" ]; then
+  x11vnc -storepasswd "$VNC_PASSWORD" /tmp/.vncpass >/dev/null 2>&1
+  VNC_AUTH="-rfbauth /tmp/.vncpass"
+else
+  RFB_LOCALHOST="-localhost"
+  WS_HOST="127.0.0.1:"
+fi
+
+x11vnc -display :1 -forever -shared $VNC_AUTH -xkb -repeat \
   -rfbport 5900 $RFB_LOCALHOST -noxdamage -wait 10 -defer 10 \
   -o /tmp/x11vnc.log >/dev/null 2>&1 &
 VNC_PID=$!
@@ -103,7 +120,7 @@ WEB=/usr/share/novnc
 if [ -f "$WEB/vnc.html" ] && [ ! -e "$WEB/index.html" ]; then
   ln -sf vnc.html "$WEB/index.html"
 fi
-websockify --web="$WEB" 3000 127.0.0.1:5900 >/tmp/websockify.log 2>&1 &
+websockify --web="$WEB" "${WS_HOST}3000" 127.0.0.1:5900 >/tmp/websockify.log 2>&1 &
 WS_PID=$!
 
 python3 /usr/local/bin/desk-harness >/tmp/desk-harness.log 2>&1 &
