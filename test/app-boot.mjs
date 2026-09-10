@@ -130,4 +130,44 @@ assert.match(app, /function typedChoiceAnswer\(/);
   assert.deepEqual(emitted, [], `emitted declarations belong in node_modules/.cache, not the source tree: ${emitted.join(", ")}`);
 }
 
+// electron-builder only copies package.json `dependencies` into
+// app.asar/node_modules. A workspace package that server/ or electron/
+// import by name, but that is missing from that list, boots locally (npm
+// workspaces hoist it) and whitescreens the shipped app with
+// ERR_MODULE_NOT_FOUND — 0.3.37 died on @sub8/vault-crypto this way.
+{
+  const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
+  const deps = new Set(Object.keys(pkg.dependencies || {}).filter((k) => k.startsWith("@sub8/")));
+  const imported = new Set();
+  const walk = (dir) => {
+    for (const e of readdirSync(path.join(root, dir), { withFileTypes: true })) {
+      if (e.name === "node_modules") continue;
+      const rel = `${dir}/${e.name}`;
+      if (e.isDirectory()) {
+        walk(rel);
+        continue;
+      }
+      if (!/\.(mjs|js)$/.test(e.name)) continue;
+      const src = readFileSync(path.join(root, rel), "utf8");
+      for (const m of src.matchAll(/from\s+["'](@sub8\/[^"']+)["']/g)) {
+        imported.add(m[1].split("/").slice(0, 2).join("/"));
+      }
+    }
+  };
+  walk("server");
+  walk("electron");
+  const missing = [...imported].filter((n) => !deps.has(n)).sort();
+  assert.deepEqual(
+    missing,
+    [],
+    `electron-builder will not pack ${missing.join(", ")} into asar node_modules; the packaged app whitescreens`,
+  );
+}
+
+{
+  const main = readFileSync(path.join(root, "electron", "main.mts"), "utf8");
+  assert.match(main, /Sub8 failed to start/, "packaged window must not stay white if the server never binds");
+  assert.match(main, /waitForServer\(\)\.then\(\(up\)/, "do not loadURL in finally when the server is down");
+}
+
 console.log("ok app-boot");

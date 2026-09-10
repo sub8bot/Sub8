@@ -76,7 +76,13 @@ repo. `packages/` is the contract layer both sides agree on.
 3. Add one line to the root `tsconfig.json` references array:
    `{ "path": "./packages/<name>" }`. That is what puts it in
    `npm run typecheck`.
-4. `npm run check` from the repo root.
+4. If `server/` or `electron/` import `@sub8/<name>`, add
+   `"@sub8/<name>": "file:packages/<name>"` to the root `package.json`
+   `dependencies`. electron-builder only copies that list into
+   `app.asar/node_modules`; a missing entry whitescreens the shipped app
+   (`ERR_MODULE_NOT_FOUND`). npm workspaces still hoist it locally, so
+   `npm start` will not catch this.
+5. `npm run check` from the repo root.
 
 ## Root scripts
 

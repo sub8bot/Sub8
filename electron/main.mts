@@ -144,7 +144,10 @@ function startServer(): ChildProcess | null {
     stdio: ["ignore", log, log],
   });
   child.on("exit", (code) => {
-    if (code && code !== 0) console.error("Sub8 server exited", code);
+    if (code && code !== 0) {
+      console.error("Sub8 server exited", code);
+      Sentry.captureException(new Error(`Sub8 server exited ${code}`));
+    }
   });
   return child;
 }
@@ -221,13 +224,23 @@ function create() {
       if (!win.isDestroyed()) win.setAlwaysOnTop(false);
     }, 2000);
   }
-  waitForServer().finally(() => {
-    const load = () => {
-      if (!win.isDestroyed()) win.loadURL(URL);
-    };
+  waitForServer().then((up) => {
     // Don't wait on clearCache — it can hang under sandbox and leave a white window.
     win.webContents.session.clearCache().catch(() => {});
-    load();
+    if (win.isDestroyed()) return;
+    if (up) {
+      win.loadURL(URL);
+      return;
+    }
+    const log = path.join(app.getPath("userData"), "server.log");
+    const html = `<!doctype html><meta charset="utf-8"><title>Sub8</title>
+<body style="font:14px/1.45 system-ui,sans-serif;padding:28px;max-width:40em">
+<h2 style="margin:0 0 8px">Sub8 failed to start</h2>
+<p style="margin:0">The local server never answered on ${URL.replace(/[<>&]/g, "")}.</p>
+<p style="margin:12px 0 0;opacity:.7">The last error is in <code>${log.replace(/[<>&]/g, "")}</code>. Reload the window after fixing it.</p>
+</body>`;
+    win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
+    Sentry.captureException(new Error(`Sub8 server did not start at ${URL}`));
   });
   let fails = 0;
   win.webContents.on("did-fail-load", (_e, code) => {

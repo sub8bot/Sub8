@@ -20,7 +20,7 @@
 //   * Windows is not Authenticode-signed yet; an unsigned Windows build is allowed (warns).
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -372,6 +372,15 @@ for (const rel of asarApps) {
     if (cloudOff) ok(`${rel}: cloud OFF`);
     else if (cloudOn) { console.log(`    ${red("FAIL")} ${rel}: cloud is ON in packaged build`); hardFail = true; }
     else { console.log(`    ${red("FAIL")} ${rel}: could not confirm cloud flag (line: ${line.trim() || "not found"})`); hardFail = true; }
+    const rootPkg = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));
+    const sub8Deps = Object.keys(rootPkg.dependencies || {}).filter((k) => k.startsWith("@sub8/"));
+    const missingPkgs = sub8Deps.filter((name) => !existsSync(path.join(tmp, "node_modules", name, "package.json")));
+    if (missingPkgs.length) {
+      console.log(`    ${red("FAIL")} ${rel}: asar missing ${missingPkgs.join(", ")} — packaged app will whitescreen`);
+      hardFail = true;
+    } else {
+      ok(`${rel}: ${sub8Deps.length} @sub8 packages in node_modules`);
+    }
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }
