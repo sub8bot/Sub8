@@ -53,6 +53,55 @@ await test("without SUB8_CLOUD, login is on and desks are coming soon", () => {
   process.env.SUB8_CLOUD = prev;
 });
 
+await test("an invited session unlocks Cloud even when SUB8_CLOUD is off", () => {
+  const prev = process.env.SUB8_CLOUD;
+  process.env.SUB8_CLOUD = "0";
+  const g = account.publicAccount(
+    {
+      place: "local",
+      session: {
+        email: "beta@test.com",
+        handle: "",
+        userId: "usr_beta",
+        token: "tok",
+        expiresAt: Date.now() + 60_000,
+        photo: "",
+        cloudAccess: true,
+        admin: false,
+      },
+    },
+    { requireAccount: false },
+  );
+  assert.equal(g.comingSoon, false);
+  assert.equal(g.cloudProduct, true);
+  assert.equal(g.cloudAccess, true);
+  process.env.SUB8_CLOUD = prev;
+});
+
+await test("an admin session unlocks Cloud even when SUB8_CLOUD is off", () => {
+  const prev = process.env.SUB8_CLOUD;
+  process.env.SUB8_CLOUD = "0";
+  const g = account.publicAccount(
+    {
+      place: "local",
+      session: {
+        email: "elchileno@gmail.com",
+        handle: "Daniel_Farinax",
+        userId: "usr_admin",
+        token: "tok",
+        expiresAt: Date.now() + 60_000,
+        photo: "",
+        cloudAccess: true,
+        admin: true,
+      },
+    },
+    { requireAccount: false },
+  );
+  assert.equal(g.cloudProduct, true);
+  assert.equal(g.comingSoon, false);
+  process.env.SUB8_CLOUD = prev;
+});
+
 await test("empty new user needs a choice", () => {
   const g = account.decideGate({ place: null, session: null }, { requireAccount: false, hasLocalBots: false });
   assert.equal(g.ready, false);

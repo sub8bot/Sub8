@@ -481,6 +481,7 @@ interface AccountState {
   hideLocal?: boolean;
   xLogin?: boolean;
   cloudConfigured?: boolean;
+  cloudAccess?: boolean;
   sent?: boolean;
   authorizeUrl?: string;
   state?: string;
@@ -780,6 +781,7 @@ interface AppState {
   selectedCloud: string | null;
   cloudPromptLater: boolean;
   cloudSoonOpen: boolean;
+  inviteSent: boolean;
   computers: Computer[];
   computerId: string | null | undefined;
   computerStats: Record<string, ComputerStat>;
@@ -935,6 +937,7 @@ const state: AppState = {
   selectedCloud: (localStorage.getItem("selectedCloudBot") || "").replace(/^cloud:/, "cloud-") || null,
   cloudPromptLater: false,
   cloudSoonOpen: false,
+  inviteSent: false,
   computers: [],
   computerId: null,
   computerStats: {},
@@ -7228,11 +7231,13 @@ function accountHtml(): string {
       <div class="card">
         <div class="row"><div class="lbl">Signed in</div><span class="muted">${escapeHtml(who)}${a.mockAuth ? " · dummy" : ""}</span></div>
         <div class="row"><div class="lbl">Cloud</div><span class="muted">${
-          a.comingSoon ? "Coming soon" : a.view === "cloud" ? "Cloud (draft)" : "This Mac"
+          a.cloudAccess ? (a.view === "cloud" ? "Invited · Cloud" : "Invited · This Mac") : a.comingSoon ? "Waitlist" : a.view === "cloud" ? "Cloud" : "This Mac"
         }</span></div>
         <div class="row"><div class="sub">${
-          a.comingSoon
-            ? "You're on the list. Always-on Cloud desks are not shipping yet. This Mac keeps working."
+          a.cloudAccess
+            ? "Your account can open Cloud desks. A desk still needs a subscription unless you are an admin."
+            : a.comingSoon
+            ? "Cloud is invite-only. Request access and we'll email you when a desk is available to buy."
             : "Cloud desks in this build are a draft. Sign out to keep using This Mac only."
         }</div>
           <button type="button" class="pill" data-act="account-billing">Manage billing</button>
@@ -7855,6 +7860,12 @@ const ACTIONS: Record<string, ActHandler> = {
   },
   "account-cloud-later": accountCloudLaterAct,
   "account-cloud-never": accountCloudNeverAct,
+  "request-access": () => {
+    const typed = document.querySelector<HTMLInputElement>("[data-invite-email]")?.value;
+    if (typed != null) state.accountEmail = typed;
+    requestCloudInvite();
+    return;
+  },
   "settings": (e) => {
     state.modal = "settings";
     state.section = "general";
@@ -11572,12 +11583,52 @@ function paintCloudSoon(): void {
     return;
   }
   host.hidden = false;
+  const a = state.account;
+  const email = escapeHtml(state.accountEmail || a?.email || "");
+  const signedIn = Boolean(a?.signedIn);
   host.innerHTML = `<div class="cloud-soon">
     <p class="kicker">Cloud</p>
-    <h2>Cloud is coming soon</h2>
-    <p>Always-on desks that keep working when the lid is closed. Local stays on this computer. Sign in with X on <a href="https://sub8.bot" data-act="open-url" data-url="https://sub8.bot">sub8.bot</a> to get on the list.</p>
-    <button type="button" class="pill" data-act="place" data-id="local">Back to Local</button>
+    <h2>${state.inviteSent ? "You're on the list" : "Cloud is invite-only"}</h2>
+    <p>Always-on desks that keep working when the lid is closed. Local stays on this computer. Invited accounts can subscribe and create a desk.</p>
+    ${
+      state.inviteSent
+        ? `<p class="muted">We'll enable Cloud on your account when the invite is granted.</p>`
+        : signedIn
+          ? `<p class="muted">Signed in as ${escapeHtml(a?.handle ? "@" + a.handle : a?.email || "")}. Request access with this account.</p>
+             <button type="button" class="pill primary" data-act="request-access" ${state.accountBusy ? "disabled" : ""}>${state.accountBusy ? "Sending…" : "Request access"}</button>`
+          : `<p class="muted">Sign in with X, or leave your email.</p>
+             <div class="row" style="gap:8px;justify-content:center;flex-wrap:wrap;margin-top:12px">
+               ${a?.xLogin ? `<button type="button" class="pill primary" data-act="account-x" ${state.accountBusy ? "disabled" : ""}>${state.accountBusy ? "Waiting for X…" : "Sign in with X"}</button>` : ""}
+             </div>
+             <div class="row" style="gap:8px;justify-content:center;flex-wrap:wrap;margin-top:12px">
+               <input class="field" type="email" autocomplete="email" data-invite-email value="${email}" placeholder="you@example.com" style="min-width:220px" />
+               <button type="button" class="pill" data-act="request-access" ${state.accountBusy ? "disabled" : ""}>${state.accountBusy ? "Sending…" : "Request access"}</button>
+             </div>`
+    }
+    ${state.accountError ? `<p class="sub" style="color:var(--danger)">${escapeHtml(state.accountError)}</p>` : ""}
+    <button type="button" class="pill" data-act="place" data-id="local" style="margin-top:16px">Back to Local</button>
   </div>`;
+}
+
+async function requestCloudInvite(): Promise<void> {
+  state.accountBusy = true;
+  state.accountError = "";
+  paintCloudSoon();
+  try {
+    const next = await api("/api/account/request-access", {
+      method: "POST",
+      body: { email: state.accountEmail || "" },
+    }) as AccountState;
+    state.inviteSent = true;
+    await applyAccount(next);
+  } catch (err) {
+    state.accountError = (err as CaughtError).message || "Could not request access.";
+    paintCloudSoon();
+    paintAccountGate();
+  } finally {
+    state.accountBusy = false;
+    paintCloudSoon();
+  }
 }
 
 async function dismissCloudPrompt(): Promise<void> {

@@ -56,6 +56,8 @@ import {
   getVaultFillPending as cloudVaultFillPending,
   approveVaultFill as cloudVaultFillApprove,
   denyVaultFill as cloudVaultFillDeny,
+  liveMe as cloudLiveMe,
+  requestCloudAccess as cloudRequestAccess,
 } from "./cloud/index.mjs";
 import { runCloudTurn as cloudRunTurn, appendCloudUser as cloudAppendUser, liveBrainSaveThread as cloudSaveThread, chatMessages } from "./cloud/turn.mjs";
 
@@ -98,6 +100,8 @@ export interface AccountSession {
   expiresAt: unknown;
   /** X profile photo URL from the Worker session, or "". */
   photo: string;
+  cloudAccess: boolean;
+  admin: boolean;
 }
 
 /** One `data/account.json`, after `normalize`. */
@@ -127,6 +131,8 @@ export interface AccountSessionInput {
   token?: unknown;
   expiresAt?: unknown;
   photo?: unknown;
+  cloudAccess?: unknown;
+  admin?: unknown;
 }
 
 export interface AccountRowInput {
@@ -147,6 +153,8 @@ export interface SessionPayload {
   userId?: unknown;
   expiresAt?: unknown;
   photo?: unknown;
+  cloudAccess?: unknown;
+  admin?: unknown;
 }
 
 export interface LoadAccountOptions {
@@ -187,6 +195,7 @@ export interface PublicAccount extends AccountGate {
   comingSoon: boolean;
   cloudProduct: boolean;
   xLogin: boolean;
+  cloudAccess: boolean;
 }
 
 /**
@@ -517,6 +526,8 @@ function normalize(raw: AccountRowInput | null | undefined): AccountRow {
           token,
           expiresAt: rawSession.expiresAt || null,
           photo: String(rawSession.photo || "").trim(),
+          cloudAccess: Boolean(rawSession.cloudAccess || rawSession.admin),
+          admin: Boolean(rawSession.admin),
         }
       : null;
   const view = raw.view === "cloud" || raw.view === "local" ? raw.view : place === "cloud" ? "cloud" : "local";
@@ -1322,13 +1333,15 @@ export function disabledAccount(): PublicAccount {
     comingSoon: false,
     cloudProduct: false,
     xLogin: false,
+    cloudAccess: false,
   };
 }
 
 export function publicAccount(row: AccountRow | null | undefined, opts: GateOptions = {}): PublicAccount {
   if (!cloudFeaturesEnabled()) return disabledAccount();
   const gate = decideGate(row, opts);
-  const product = cloudProductEnabled();
+  const invited = Boolean(row?.session?.cloudAccess || row?.session?.admin);
+  const product = cloudProductEnabled() || invited;
   const comingSoon = !product;
   if (comingSoon) {
     gate.needsChoice = false;
@@ -1342,6 +1355,7 @@ export function publicAccount(row: AccountRow | null | undefined, opts: GateOpti
     enabled: true,
     comingSoon,
     cloudProduct: product,
+    cloudAccess: invited,
     handle: gate.signedIn ? row?.session?.handle || null : null,
     mockAuth: useMockAuth(),
     cloudConfigured: Boolean(cloudBaseUrl()) && cloudBaseUrl() !== "mock",
@@ -1395,7 +1409,7 @@ export async function dismissCloudPrompt(): Promise<AccountRow> {
 export async function setView(view: unknown): Promise<AccountRow> {
   const next = view === "cloud" ? "cloud" : "local";
   const prev = await loadAccount();
-  if (next === "cloud" && !cloudProductEnabled()) {
+  if (next === "cloud" && !cloudProductEnabled() && !prev.session?.cloudAccess && !prev.session?.admin) {
     const err = new Error("Cloud desks are coming soon.") as CloudError;
     err.code = "CLOUD_SOON";
     throw err;
@@ -1457,6 +1471,40 @@ export async function startMagic(emailRaw: unknown) {
   return { ok: true, mock: Boolean(started.mock), signedIn: false, email };
 }
 
+export async function refreshSessionAccess(row?: AccountRow | null): Promise<AccountRow> {
+  const prev = row || (await loadAccount());
+  if (!sessionLive(prev.session) || useMockAuth()) return prev;
+  try {
+    const me = await cloudLiveMe({ token: prev.session.token });
+    if (!me) return prev;
+    return saveAccount({
+      ...prev,
+      session: {
+        ...prev.session,
+        cloudAccess: Boolean(me.cloudAccess || me.admin),
+        admin: Boolean(me.admin),
+      },
+    });
+  } catch {
+    return prev;
+  }
+}
+
+export async function requestCloudAccess(emailRaw?: unknown): Promise<AccountRow> {
+  const prev = await loadAccount();
+  const email = normalizeEmail(emailRaw) || prev.session?.email || "";
+  if (useMockAuth()) {
+    if (!sessionLive(prev.session)) {
+      const err = new Error("Sign in first, or enter an email.") as CloudError;
+      err.code = "SIGN_IN";
+      throw err;
+    }
+    return saveAccount({ ...prev, session: { ...prev.session, cloudAccess: true } });
+  }
+  await cloudRequestAccess({ email, token: prev.session?.token });
+  return refreshSessionAccess(await loadAccount());
+}
+
 export async function completeSession(payload: SessionPayload | null | undefined): Promise<AccountRow> {
   const handle = String(payload?.handle || "").trim();
   const email = normalizeEmail(payload?.email) || (handle ? `${handle.toLowerCase()}@x.local` : "");
@@ -1467,7 +1515,7 @@ export async function completeSession(payload: SessionPayload | null | undefined
     err.code = "BAD_SESSION";
     throw err;
   }
-  return saveAccount({
+  const saved = await saveAccount({
     place: cloudProductEnabled() ? "cloud" : "local",
     view: cloudProductEnabled() ? "cloud" : "local",
     inferred: false,
@@ -1479,8 +1527,11 @@ export async function completeSession(payload: SessionPayload | null | undefined
       token,
       expiresAt: payload?.expiresAt || null,
       photo: String(payload?.photo || "").trim(),
+      cloudAccess: Boolean(payload?.cloudAccess || payload?.admin),
+      admin: Boolean(payload?.admin),
     },
   });
+  return refreshSessionAccess(saved);
 }
 
 const xPumps = new Map<string, Promise<void>>();

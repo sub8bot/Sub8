@@ -132,6 +132,22 @@ export async function liveBrainClaudeAuth({ token, computerId }: ClaudeAuthOptio
 }
 
 /** GET /api/brain/plugins — the plugins a desk's harness exposes and their live status. */
+export async function liveMe({ token }: TokenOptions = {}) {
+  if (!token) return null;
+  return http.cloudApi("/api/me", { baseUrl: needBase(), token });
+}
+
+export async function requestCloudAccess({ email, token }: TokenOptions & { email?: string } = {}) {
+  const backend = authBackend();
+  if (backend.kind === "dummy") return { status: "pending", email: String(email || "") };
+  return http.cloudApi("/api/cloud/request-access", {
+    baseUrl: needBase(),
+    token,
+    method: "POST",
+    body: { email: String(email || "").trim() },
+  });
+}
+
 export async function gateStatus({ token }: { token?: string | undefined } = {}) {
   if (!token) return null;
   try { return await http.cloudApi("/api/brain/vault/gate", { baseUrl: needBase(), token }); }

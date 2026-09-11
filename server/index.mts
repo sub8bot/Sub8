@@ -642,7 +642,8 @@ app.get("/api/ready", async (_req, res) => {
 async function accountPayload() {
   if (!account.cloudFeaturesEnabled()) return account.disabledAccount();
   const bots = await store.loadBots() as IndexBot[];
-  const row = await account.loadAccount({ hasLocalBots: bots.length > 0 });
+  let row = await account.loadAccount({ hasLocalBots: bots.length > 0 });
+  row = await account.refreshSessionAccess(row);
   return account.publicAccount(row, {
     requireAccount: account.requireAccount(),
     hasLocalBots: bots.length > 0,
@@ -803,6 +804,16 @@ app.post("/api/account/logout", async (_req, res) => {
   }
 });
 
+app.post("/api/account/request-access", async (req, res) => {
+  if (accountOff(res)) return;
+  try {
+    await account.requestCloudAccess(req.body?.email);
+    res.json(await accountPayload());
+  } catch (err) {
+    sendAccountError(res, err);
+  }
+});
+
 app.post("/api/account/cloud-prompt", async (req, res) => {
   if (accountOff(res)) return;
   try {
@@ -824,8 +835,11 @@ app.post("/api/account/view", async (req, res) => {
 });
 
 async function requireCloudSession(_req: Request, res: Response) {
-  if (cloudProductOff(res)) return null;
   const pub = await accountPayload();
+  if (!pub.cloudProduct) {
+    res.status(404).json({ error: "Cloud desks are coming soon.", code: "CLOUD_SOON" });
+    return null;
+  }
   if (!pub.signedIn) {
     res.status(401).json({ error: "Sign in to use Cloud.", code: "SIGN_IN" });
     return null;
