@@ -78,6 +78,8 @@ const ORDER = [
   "box-input.mjs",
   "desk.mjs",
   "desk-init-bind.mjs",
+  "stream-bind.mjs",
+  "cloud-stream-proxy.mjs",
   "display.mjs",
   "jobs.mjs",
   "teammate.mjs",

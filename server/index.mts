@@ -45,6 +45,7 @@ import {
 import * as memory from "./memory.mjs";
 import * as account from "./account.mjs";
 import * as cloudDraft from "./cloud/draft.mjs";
+import { attachCloudStreamProxy } from "./cloud/stream-proxy.mjs";
 import { resolveChoice, visibleChoiceReply, applyInternalEmit } from "@sub8/choice";
 import * as spendGuard from "./spend-guard.mjs";
 import * as mcpRemote from "@sub8/web-fetch/mcp-remote";
@@ -4928,6 +4929,13 @@ const httpServer = app.listen(PORT, "127.0.0.1", async () => {
     ensureDesktops().catch((err) => console.error("ensureDesktops", err));
   }, 12_000);
   vault.startVaultBridge(() => store.loadBots() as Promise<vault.VaultDeskBot[]>);
+});
+attachCloudStreamProxy(app as never, httpServer, {
+  getToken: async () => {
+    const row = await account.loadAccount();
+    return String(row.session?.token || "");
+  },
+  cloudBase: () => account.cloudBaseUrl(),
 });
 httpServer.requestTimeout = 900_000;
 httpServer.headersTimeout = 900_000;

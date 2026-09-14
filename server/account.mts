@@ -69,6 +69,7 @@ import { runCloudTurn as cloudRunTurn, appendCloudUser as cloudAppendUser, liveB
  * The assertion emits nothing.
  */
 import type { CloudError } from "./cloud/http.mjs";
+import { desktopCloudStreamUrl } from "../web/stream-bind.mjs";
 
 export {
   accountEnabled,
@@ -600,7 +601,7 @@ export function mapLiveComputer(c: LiveComputer): CloudDesk {
     ram: SKU_RAM[sku] || "4 GB",
     region: "nyc3",
     ipv4: c.ipv4 || "",
-    streamUrl: withNovncAutoconnect(c.streamUrl) || streamForDisplay(c.ipv4),
+    streamUrl: desktopCloudStreamUrl(c.id) || withNovncAutoconnect(c.streamUrl) || streamForDisplay(c.ipv4),
     error: c.error || "",
     draft: false,
     attachedBotId: null,
@@ -639,15 +640,19 @@ function streamForDisplay(ipv4: string | undefined, display: unknown = 1): strin
 }
 
 export function cloudStreamProbeUrl(desk: CloudDesk | null | undefined, display: unknown = 1): string {
-  if (!desk?.ipv4) return "";
+  const id = String(desk?.id || "").trim();
+  if (!id) return "";
   const n = displayNum(display);
-  const port = n <= 1 ? 3000 : 3000 + n;
-  return `http://${desk.ipv4}:${port}/vnc.html`;
+  const q = n > 1 ? `?display=${n}` : "";
+  const base = cloudBaseUrl().replace(/\/+$/, "");
+  const path = `/api/desk/${encodeURIComponent(id)}/vnc.html${q}`;
+  if (!base || base === "mock") return path;
+  return `${base}${path}`;
 }
 
 export async function probeCloudStream({ computerId, display = 1 }: ProbeStreamOptions = {}): Promise<StreamProbe> {
   let desk = lastLiveComputers.find((c) => c.id === computerId);
-  if (!desk?.ipv4) {
+  if (!desk?.id) {
     try {
       await liveSnapshot();
     } catch {
@@ -655,10 +660,20 @@ export async function probeCloudStream({ computerId, display = 1 }: ProbeStreamO
     }
     desk = lastLiveComputers.find((c) => c.id === computerId);
   }
-  if (!desk?.ipv4) return { ok: false, reason: "unknown" };
+  if (!desk?.id) return { ok: false, reason: "unknown" };
   const url = cloudStreamProbeUrl(desk, display);
+  if (!url) return { ok: false, reason: "unknown" };
   try {
-    const r = await fetch(url, { method: "GET", redirect: "manual", signal: AbortSignal.timeout(3500) });
+    const row = await loadAccount();
+    const token = String(row.session?.token || "");
+    const headers: Record<string, string> = { Accept: "text/html", "Cache-Control": "no-store" };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const r = await fetch(url.startsWith("http") ? url : `${cloudBaseUrl()}${url}`, {
+      method: "GET",
+      redirect: "manual",
+      headers,
+      signal: AbortSignal.timeout(5000),
+    });
     return { ok: r.status >= 200 && r.status < 500, status: r.status };
   } catch {
     return { ok: false, status: 0 };
@@ -690,7 +705,7 @@ export function botFromComputer(c: LiveComputer): CloudBot {
       computerId: desk.id,
       status: ready ? "running" : "starting",
       hint: desk.status,
-      streamUrl: streamForDisplay(desk.ipv4, 1) || withNovncAutoconnect(desk.streamUrl),
+      streamUrl: desktopCloudStreamUrl(desk.id, { display: 1 }) || withNovncAutoconnect(desk.streamUrl),
       display: ":1",
     },
     desk,
@@ -773,7 +788,7 @@ export function botFromCloudMember(c: LiveComputer, member: CloudTeamMember, bra
     vm: {
       ...base.vm,
       display: `:${display}`,
-      streamUrl: streamForDisplay(desk.ipv4, display) || desk.streamUrl,
+      streamUrl: desktopCloudStreamUrl(desk.id, { display }) || desk.streamUrl,
       status: ready ? "running" : "starting",
     },
   };

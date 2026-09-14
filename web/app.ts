@@ -1,7 +1,7 @@
 import { tagSentryVersion } from "./sentry.js";
 import { animList, bodyList, defaultAvatar, faceList, inferMood, isSleepingMood, randomCreateFace, randomWakeMood, syncAvatars } from "./avatar.js";
 import { AVATAR_COLORS } from "./palette.js";
-import { applyHealthPort, CONNECTING_AFTER_MS, cloudFrameKey, frameKey, healthIframeIsCurrent, novncAutoconnectUrl, shouldKickCloudFrame, shouldMountCloudFrame, shouldShowConnecting } from "./stream-bind.mjs";
+import { applyHealthPort, CONNECTING_AFTER_MS, cloudFrameKey, frameKey, healthIframeIsCurrent, novncAutoconnectUrl, shouldKickCloudFrame, shouldMountCloudFrame, shouldShowConnecting, stillCoversLive } from "./stream-bind.mjs";
 import { listModelsForProvider, modelFieldKind, pickListedModel } from "./harness-models.mjs";
 import { formatChatText } from "./markdown.js";
 import { HARNESS_INSTALL, apiPreset, brainSetupHtml, harnessSetupBannerHtml, needsBrainSetup } from "./brain-setup.mjs";
@@ -1439,7 +1439,10 @@ function attachLiveFrame(bot: Bot | null | undefined): void {
       frame = document.createElement("iframe");
       frame.className = "cloud-novnc";
       frame.dataset.stream = stream;
-      frame.src = stream;
+      const [head, hash] = stream.split("#");
+      const path = head || stream;
+      const join = path.includes("?") ? "&" : "?";
+      frame.src = `${path}${join}t=${Date.now()}${hash ? `#${hash}` : ""}`;
       frame.title = "Cloud desk";
       frame.tabIndex = -1;
       frame.setAttribute("allow", "clipboard-read; clipboard-write");
@@ -1881,6 +1884,12 @@ function bindStill(img: HTMLImageElement | null | undefined, botId: string): voi
 async function refreshStill(img: HTMLImageElement | null | undefined, botId: string | null | undefined): Promise<void> {
   if (!img || !botId) return;
   if (isCloudPlace()) return;
+  const wrap = $("#screen-wrap");
+  if (!stillCoversLive({ streamReady: wrap?.dataset.streamReady === "1" })) {
+    img.classList.add("hidden");
+    img.hidden = true;
+    return;
+  }
   if (missingStills.has(botId)) return;
   try {
     const res = await fetch(`/api/bots/${botId}/screen?t=${Date.now()}`);
@@ -11330,6 +11339,8 @@ async function resetVm(): Promise<void> {
 
 function reconnectStream(): void {
   if (isCloudPlace()) {
+    const wrap = $("#screen-wrap");
+    resetCloudMux(wrap);
     liveFrameKey = null;
     attachLiveFrame(currentBot());
     return;

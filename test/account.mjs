@@ -341,9 +341,10 @@ await test("withNovncAutoconnect adds autoconnect to a bare vnc.html URL", () =>
   assert.match(out, /#autoconnect=true/);
 });
 
-await test("cloudStreamProbeUrl uses the desk IPv4 and display port", () => {
-  assert.equal(account.cloudStreamProbeUrl({ ipv4: "203.0.113.9" }), "http://203.0.113.9:3000/vnc.html");
-  assert.equal(account.cloudStreamProbeUrl({ ipv4: "203.0.113.9" }, ":2"), "http://203.0.113.9:3002/vnc.html");
+await test("cloudStreamProbeUrl uses the Worker desk path, not public :3000", () => {
+  assert.match(account.cloudStreamProbeUrl({ id: "cmp_abc", ipv4: "203.0.113.9" }), /\/api\/desk\/cmp_abc\/vnc\.html/);
+  assert.doesNotMatch(account.cloudStreamProbeUrl({ id: "cmp_abc", ipv4: "203.0.113.9" }), /203\.0\.113\.9:3000/);
+  assert.match(account.cloudStreamProbeUrl({ id: "cmp_abc", ipv4: "203.0.113.9" }, ":2"), /display=2/);
   assert.equal(account.cloudStreamProbeUrl({}), "");
 });
 
@@ -390,6 +391,16 @@ await test("live cloud desk bot id is CSS-safe and has an octopus", () => {
   assert.equal(bot.avatar.expression, "think");
   assert.ok(!bot.id.includes(":"));
   assert.match(bot.vm.streamUrl, /autoconnect=true/);
+  assert.match(
+    bot.vm.streamUrl,
+    /\/api\/cloud\/stream\/cmp_abc\/vnc\.html/,
+    "desktop Cloud VNC is same-origin through the local Worker proxy",
+  );
+  assert.doesNotMatch(
+    bot.vm.streamUrl,
+    /1\.2\.3\.4:3000/,
+    "public :3000 is firewalled; the iframe must not point at the droplet IP",
+  );
 });
 
 await test("cloud desk control ids include chief and the selected teammate", () => {

@@ -24,9 +24,10 @@ export function cloudFrameKey(desk: StreamDesk | null | undefined): string {
 export function novncAutoconnectUrl(raw: string | null | undefined, { viewOnly = false }: { viewOnly?: boolean } = {}): string {
   const s = String(raw || "").trim();
   if (!s) return "";
+  const relative = !/^[a-z][a-z0-9+.-]*:/i.test(s);
   let u: URL;
   try {
-    u = new URL(s);
+    u = relative ? new URL(s, "http://local.invalid") : new URL(s);
   } catch {
     return s;
   }
@@ -40,7 +41,40 @@ export function novncAutoconnectUrl(raw: string | null | undefined, { viewOnly =
   const hash = ["autoconnect=true", "reconnect=true", "resize=scale"];
   if (viewOnly) hash.push("view_only=true");
   u.hash = hash.join("&");
-  return u.toString();
+  return relative ? `${u.pathname}${u.search}${u.hash}` : u.toString();
+}
+
+/** Cached screenshot may cover the iframe only while VNC is not yet live. */
+export function stillCoversLive({ streamReady = false }: { streamReady?: boolean } = {}): boolean {
+  return !streamReady;
+}
+
+/**
+ * Same-origin Cloud desk URL. The desktop app cannot load http://droplet:3000
+ * (firewalled) or https://sub8.bot/api/desk (cross-site cookies). The local
+ * server proxies both with the session Bearer token.
+ */
+export function desktopCloudStreamUrl(
+  computerId: string | null | undefined,
+  { display = 1 }: { display?: unknown } = {},
+): string {
+  const id = String(computerId || "").trim();
+  if (!id) return "";
+  const n = Number(String(display ?? "1").replace(/^:/, ""));
+  const slot = Number.isFinite(n) && n > 1 ? n : 1;
+  const encoded = encodeURIComponent(id);
+  const wsPath =
+    slot > 1
+      ? `api/cloud/stream/${encoded}/websockify?display=${slot}`
+      : `api/cloud/stream/${encoded}/websockify`;
+  const q = new URLSearchParams({
+    autoconnect: "true",
+    reconnect: "true",
+    reconnect_delay: "1500",
+    resize: "scale",
+    path: wsPath,
+  });
+  return `/api/cloud/stream/${encoded}/vnc.html?${q.toString()}#autoconnect=true&reconnect=true&resize=scale`;
 }
 
 /** Mount the cloud iframe once the desk is assigned and VNC answers, or after a short give-up. */
