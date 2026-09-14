@@ -74,7 +74,9 @@ if [ -f "$WEBROOT/vnc.html" ] && [ ! -e "$WEBROOT/index.html" ]; then
   ln -sf vnc.html "$WEBROOT/index.html"
 fi
 if ! port_up "$WEB"; then
-  websockify --web="$WEBROOT" "$WEB" "127.0.0.1:$VNC" >/tmp/websockify-"$N".log 2>&1 &
+  WS_BIND="$WEB"
+  if [ "${NOVNC_LOOPBACK:-0}" = "1" ]; then WS_BIND="127.0.0.1:$WEB"; fi
+  websockify --web="$WEBROOT" "$WS_BIND" "127.0.0.1:$VNC" >/tmp/websockify-"$N".log 2>&1 &
 fi
 
 # One Chrome on this display so page-agent CDP is up before the first turn.

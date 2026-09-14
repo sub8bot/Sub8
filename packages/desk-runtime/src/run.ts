@@ -79,6 +79,9 @@ export function deskRunArgs(spec: DeskRunSpec): string[] {
     args.push("-p", `127.0.0.1:${p}-${p + DISPLAY_SLOTS - 1}:3000-${3000 + DISPLAY_SLOTS - 1}`);
     args.push("-p", `127.0.0.1:${spec.publish.harnessPort}:${HARNESS_PORT}`);
   } else {
+    // Public -p 3000:3000. desk-init.sh binds websockify to loopback unless a
+    // VNC_PASSWORD is set, so a passwordless screen is not on the droplet IP.
+    args.push("-e", "NOVNC_LOOPBACK=1");
     args.push(...hostWebPorts());
     if (spec.publish.rfbExpose) {
       args.push(

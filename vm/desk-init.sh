@@ -89,18 +89,19 @@ RFB_LOCALHOST="-localhost"
 if [ "${RFB_EXPOSE:-0}" = "1" ]; then RFB_LOCALHOST=""; fi
 
 # SECURITY (2026-09-05): never run a passwordless screen the network can reach.
-# noVNC (websockify below) is published on a public port, so a passwordless
-# x11vnc means unauthenticated control of the logged-in desktop. If the control
-# plane injected a per-desk password (VNC_PASSWORD, carried in the authenticated
-# stream URL), require it. Otherwise FAIL CLOSED: bind both RFB and websockify to
-# loopback so nothing on the network can reach an unauthenticated desktop.
+# Dedicated droplets publish websockify with `docker -p 3000:3000` (0.0.0.0 on
+# the host). Those runs set NOVNC_LOOPBACK=1 so a passwordless screen stays on
+# container loopback. Local and packed desks already bind the *host* publish to
+# 127.0.0.1; Docker DNAT then hits the container's eth0, not 127.0.0.1, so
+# websockify must listen on 0.0.0.0 inside or the desktop never becomes
+# reachable. Missing VNC_PASSWORD must not clobber RFB_EXPOSE — packed hosts
+# need x11vnc off loopback for the Worker RFB relay.
 VNC_AUTH="-nopw"
 WS_HOST="0.0.0.0:"
 if [ -n "${VNC_PASSWORD:-}" ]; then
   x11vnc -storepasswd "$VNC_PASSWORD" /tmp/.vncpass >/dev/null 2>&1
   VNC_AUTH="-rfbauth /tmp/.vncpass"
-else
-  RFB_LOCALHOST="-localhost"
+elif [ "${NOVNC_LOOPBACK:-0}" = "1" ]; then
   WS_HOST="127.0.0.1:"
 fi
 

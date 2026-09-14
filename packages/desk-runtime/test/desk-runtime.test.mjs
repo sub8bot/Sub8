@@ -62,6 +62,10 @@ test("loopback run args mount /config, cap cgroups, and never bind 0.0.0.0", () 
   assert.ok(ports.some((p) => p === `127.0.0.1:13109-${13109 + DISPLAY_SLOTS - 1}:3000-${3000 + DISPLAY_SLOTS - 1}`));
   assert.ok(ports.some((p) => p === `127.0.0.1:${13109 + DISPLAY_SLOTS}:${HARNESS_PORT}`));
   assert.ok(!args.includes("--privileged"));
+  assert.ok(
+    !args.includes("NOVNC_LOOPBACK=1"),
+    "local docker-proxy DNAT is eth0; in-container loopback bind is unreachable",
+  );
 });
 
 test("slot publish: websockify on the host loopback, RFB on the host interface, nothing else", () => {
@@ -83,4 +87,28 @@ test("slot publish: websockify on the host loopback, RFB on the host interface, 
   assert.equal(ports.length, 16, "no harness publish: the harness is a per-desk host process");
   assert.ok(!ports.some((p) => /:3011$/.test(p)));
   assert.ok(!ports.some((p) => /^0\.0\.0\.0:\d+:300\d$/.test(p)), "never a public websockify on a shared host");
+  assert.ok(
+    !args.includes("NOVNC_LOOPBACK=1"),
+    "packed noVNC is already host-loopback; container websockify must bind eth0",
+  );
+});
+
+test("host publish: public :3000 fail-closes in-container via NOVNC_LOOPBACK", () => {
+  const args = deskRunArgs({
+    name: "sub8-desk",
+    volume: "sub8-config-cmp_abc",
+    image: "sub8-desk:trixie",
+    platform: "linux/amd64",
+    hostname: "computer",
+    limits: limitsFromRamMb(4096),
+    publish: { kind: "host", rfbExpose: false },
+    env: ["TITLE=Sub8", "TZ=UTC"],
+  });
+  const ports = args.filter((_, i) => args[i - 1] === "-p");
+  assert.ok(ports.includes("3000:3000"));
+  assert.ok(!ports.some((p) => p.includes("5900")), "no RFB unless asked");
+  assert.ok(
+    args.includes("NOVNC_LOOPBACK=1"),
+    "dedicated public -p 3000:3000 must not expose a passwordless screen",
+  );
 });

@@ -77,6 +77,7 @@ const ORDER = [
   "read-file.mjs",
   "box-input.mjs",
   "desk.mjs",
+  "desk-init-bind.mjs",
   "display.mjs",
   "jobs.mjs",
   "teammate.mjs",

@@ -19,6 +19,10 @@ assert.equal(args.at(-1), SLIM_IMAGE);
 assert.ok(args.some((a) => /13109-13116:3000-3007/.test(String(a))));
 assert.ok(args.some((a) => /13117:3011/.test(String(a))));
 assert.ok(args.includes("DESK_HARNESS=1"));
+assert.ok(
+  !args.includes("NOVNC_LOOPBACK=1"),
+  "local docker-proxy DNAT is eth0; in-container loopback bind is unreachable",
+);
 const remap = deskCreateArgs({
   name: "localbot-deadbeef",
   volume: "localbot-config-deadbeef",
