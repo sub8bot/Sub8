@@ -68,10 +68,16 @@ export function destInConfig(entry: string): string {
   return path.posix.join("/config", n);
 }
 
+/** Single-quote for sh. JSON.stringify's double quotes still expand $(...) and backticks. */
+function shq(s: string): string {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
 export function shellWriteFile(dest: string, content: string | Buffer): string {
   const dir = path.posix.dirname(dest);
   const b64 = Buffer.from(content).toString("base64");
-  return `mkdir -p ${JSON.stringify(dir)} && echo ${b64} | base64 -d > ${JSON.stringify(dest)}`;
+  // dest is a tar entry name read out of the desk volume.
+  return `mkdir -p ${shq(dir)} && echo ${b64} | base64 -d > ${shq(dest)}`;
 }
 
 export function listTarEntries(archiveAbs: string): string[] {
@@ -83,7 +89,8 @@ export function listTarEntries(archiveAbs: string): string[] {
 }
 
 export function extractTarFile(archiveAbs: string, entry: string): Buffer {
-  return execFileSync("tar", ["-xOf", archiveAbs, entry], { maxBuffer: 2 * 1024 * 1024 });
+  // "--" so an entry named like an option ("--foo.md") is not one.
+  return execFileSync("tar", ["-xOf", archiveAbs, "--", entry], { maxBuffer: 2 * 1024 * 1024 });
 }
 
 export async function copyArchiveToDesk(

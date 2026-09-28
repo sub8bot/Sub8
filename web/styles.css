@@ -27,56 +27,57 @@
   --sidebar: 72px;
   --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
   --ease: cubic-bezier(0.2, 0, 0, 1);
+  color-scheme: light;
 }
 * { box-sizing: border-box; }
 html[data-theme="dark"] {
-  --bg: #111113;
-  --text: #f4f4f5;
-  --muted: #a1a1aa;
-  --line: #2a2a2e;
-  --card: #1c1c1f;
-  --hover: #27272a;
-  --on: #f4f4f5;
-  --on-fg: #111;
-  --pill: #1c1c1f;
-  --bubble: #1c1c1f;
-  --bubble-user: #e7e7ea;
-  --bubble-user-fg: #18181b;
+  --bg: #e6e4df;
+  --text: #1c1c1e;
+  --muted: #5e5e68;
+  --line: #d4d2cd;
+  --card: #f7f6f3;
+  --hover: #dddcd7;
+  --on: #1c1c1e;
+  --on-fg: #fff;
+  --pill: #f7f6f3;
+  --bubble: #f3f1ed;
+  --bubble-user: #2a2a2e;
+  --bubble-user-fg: #ffffff;
   --bubble-user-link: #4f46e5;
-  --composer: #1c1c1f;
-  --composer-focus: #27272a;
-  --input: #27272a;
-  --menu: #1c1c1f;
-  --chip: #1c1c1f;
-  --seg: #18181b;
-  --ring: #3f3f46;
-  --pc-ring: rgba(255,255,255,.55);
-  --rail-bg: #111113;
+  --composer: #f3f1ed;
+  --composer-focus: #e8e6e1;
+  --input: #f3f1ed;
+  --menu: #f7f6f3;
+  --chip: #fff;
+  --seg: #e0ded9;
+  --ring: #cccac5;
+  --pc-ring: rgba(0,0,0,.45);
+  --rail-bg: #f3f1ec;
 }
 @media (prefers-color-scheme: dark) {
   html[data-theme="system"] {
-    --bg: #111113;
-    --text: #f4f4f5;
-    --muted: #a1a1aa;
-    --line: #2a2a2e;
-    --card: #1c1c1f;
-    --hover: #27272a;
-    --on: #f4f4f5;
-    --on-fg: #111;
-    --pill: #1c1c1f;
-    --bubble: #1c1c1f;
-    --bubble-user: #e7e7ea;
-    --bubble-user-fg: #18181b;
+    --bg: #e6e4df;
+    --text: #1c1c1e;
+    --muted: #5e5e68;
+    --line: #d4d2cd;
+    --card: #f7f6f3;
+    --hover: #dddcd7;
+    --on: #1c1c1e;
+    --on-fg: #fff;
+    --pill: #f7f6f3;
+    --bubble: #f3f1ed;
+    --bubble-user: #2a2a2e;
+    --bubble-user-fg: #ffffff;
     --bubble-user-link: #4f46e5;
-    --composer: #1c1c1f;
-    --composer-focus: #27272a;
-    --input: #27272a;
-    --menu: #1c1c1f;
-    --chip: #1c1c1f;
-    --seg: #18181b;
-    --ring: #3f3f46;
-    --pc-ring: rgba(255,255,255,.55);
-    --rail-bg: #111113;
+    --composer: #f3f1ed;
+    --composer-focus: #e8e6e1;
+    --input: #f3f1ed;
+    --menu: #f7f6f3;
+    --chip: #fff;
+    --seg: #e0ded9;
+    --ring: #cccac5;
+    --pc-ring: rgba(0,0,0,.45);
+    --rail-bg: #f3f1ec;
   }
 }
 html, body { height: 100%; margin: 0; background: var(--bg); }
@@ -438,7 +439,7 @@ body {
 .avatar.sm { width: 32px; height: 32px; }
 [data-avatar-framing="body"] {
   border-radius: 0;
-  background: transparent;
+  background: radial-gradient(circle at 50% 64%, #d9d5cd 0 42%, transparent 70%);
   outline: none;
   overflow: visible;
 }
@@ -475,12 +476,12 @@ body {
   width: 100%;
   max-width: 100%;
   margin: 8px 0 0;
-  padding: 6px 6px 2px;
+  padding: 6px 2px 2px;
   border-top: 1px solid var(--line);
   font-size: 9px;
   font-weight: 700;
-  letter-spacing: .02em;
-  color: #6b7280;
+  letter-spacing: 0;
+  color: var(--muted);
   text-align: center;
   line-height: 1.2;
   white-space: nowrap;
@@ -1200,7 +1201,9 @@ h2.md-h { font-size: 16px; }
 .toast-x { position: absolute; top: 6px; right: 8px; background: none; border: 0; color: inherit; opacity: .6; font-size: 1rem; cursor: pointer; }
 .toast-x:hover { opacity: 1; }
 @keyframes toast-in { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
-@media (prefers-color-scheme: light) { .toast { background: #fff; color: #111; } }
+/* Toasts follow the app palette, not the OS scheme: the app has no dark
+   surfaces, so an OS in dark mode used to get a black toast on a light window. */
+.toast { background: var(--menu); color: var(--text); border-color: var(--ring); box-shadow: 0 10px 30px rgba(17,17,17,.14); }
 .mate-open {
   border: 0;
   background: transparent;
@@ -2075,6 +2078,7 @@ form.desk-wait {
   text-align: left;
   border: 0;
   background: transparent;
+  color: var(--text);
   padding: 9px 10px;
   border-radius: 8px;
   cursor: pointer;
@@ -2092,6 +2096,7 @@ form.desk-wait {
 }
 .snav button svg { flex: 0 0 16px; }
 .snav button span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.snav button:hover { background: var(--hover); }
 .snav button.active { background: var(--card); font-weight: 600; }
 .vault-modal .snav {
   overflow: hidden;
@@ -3607,3 +3612,99 @@ select.pill { appearance: none; padding-right: 24px; }
 /* Look chips: a live preview of that look above the label. */
 .avatar-type { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 8px; }
 .avatar-type .avatar { width: 44px; height: 44px; }
+
+/* Danger pills keep the pill shape; the bare .danger button rule is square-ish. */
+.pill.danger { border-radius: 999px; padding: 7px 12px; box-shadow: none; }
+
+/* In-app confirm (replaces window.confirm, which freezes the embedded browser). */
+#confirm-host .confirm-overlay {
+  position: fixed;
+  z-index: 4500;
+  background: rgba(17,17,17,.32);
+  animation: confirm-fade .14s var(--ease);
+}
+.modal.confirm-modal {
+  width: min(420px, calc(100vw - 32px));
+  height: auto;
+  max-height: calc(100vh - 32px);
+  flex-direction: column;
+  gap: 8px;
+  padding: 20px 20px 16px;
+  overflow: auto;
+  box-shadow: 0 20px 60px rgba(0,0,0,.22), 0 0 0 1px var(--ring);
+  animation: confirm-pop .16s var(--ease);
+}
+.confirm-title { margin: 0; font-size: 16px; font-weight: 650; }
+.confirm-msg { margin: 0; font-size: 14px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; }
+.confirm-title + .confirm-msg { color: var(--muted); }
+.confirm-acts { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.confirm-acts .pill { min-width: 84px; min-height: 32px; font-weight: 550; }
+@keyframes confirm-fade { from { opacity: 0; } }
+@keyframes confirm-pop { from { opacity: 0; transform: translateY(6px) scale(.98); } }
+
+/* Plain message toasts read at full strength (attention toasts dim their body line). */
+.toast.flash span { opacity: 1; font-size: .88rem; line-height: 1.4; overflow-wrap: anywhere; }
+
+/* Server unreachable: a calm, fixed strip that retries on its own. */
+#conn-banner {
+  position: fixed;
+  top: 60px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4600;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100vw - 32px);
+  padding: 8px 8px 8px 14px;
+  border-radius: 999px;
+  background: var(--menu);
+  color: var(--text);
+  font-size: 13px;
+  box-shadow: 0 10px 30px rgba(17,17,17,.14), 0 0 0 1px var(--ring);
+  animation: confirm-pop .18s var(--ease);
+  -webkit-app-region: no-drag;
+}
+#conn-banner .conn-msg { min-width: 0; overflow-wrap: anywhere; }
+#conn-banner .conn-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f59e0b;
+  box-shadow: 0 0 0 0 color-mix(in srgb, #f59e0b 50%, transparent);
+  animation: conn-pulse 1.6s ease-out infinite;
+}
+#conn-banner .conn-retry { flex: 0 0 auto; min-height: 28px; padding: 5px 12px; }
+@keyframes conn-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, #f59e0b 50%, transparent); }
+  100% { box-shadow: 0 0 0 8px transparent; }
+}
+
+/* Keyboard focus: one visible ring everywhere. Several controls (rail avatars,
+   tabs, icon buttons) set outline: none for their resting look, which also hid
+   where Tab focus was. Mouse clicks do not match :focus-visible. */
+:is(button, a[href], summary, [role="button"], [role="tab"], [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent) !important;
+  outline-offset: 2px;
+}
+select:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 1px; }
+
+/* Docker card sits on the dark desk surface: the primary action reads light,
+   secondary ones are outlined, so "Start Docker" is the obvious next step. */
+.desk-docker .pill.primary { background: #fff; color: #111; box-shadow: none; }
+.desk-docker .pill.primary:hover { background: #e9e9ec; }
+.desk-docker .pill:not(.primary) { background: transparent; color: #e4e4e7; box-shadow: 0 0 0 1px rgba(255,255,255,.28); }
+.desk-docker .pill:not(.primary):hover { background: rgba(255,255,255,.08); }
+.desk-docker .pill:disabled { opacity: .6; cursor: default; }
+.desk-docker-detail {
+  display: block;
+  max-width: 100%;
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #8e8e96;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

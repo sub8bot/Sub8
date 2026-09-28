@@ -206,6 +206,17 @@ interface ToClientOptions {
 // takes the desk filesystem by injection instead.
 routines.setAutomationWriter(vm);
 
+// A stray rejection or throw from a background loop (desk sweep, docker probe,
+// wake drain, a child's 'error' nobody listened for) used to end the process,
+// and the desktop window went blank with it. Log it and keep serving; a
+// failure to bind the port still exits from httpServer's own error handler.
+process.on("unhandledRejection", (reason) => {
+  console.error("[server] unhandled rejection:", (reason as Error)?.stack || reason);
+});
+process.on("uncaughtException", (err, origin) => {
+  console.error(`[server] ${origin}:`, err?.stack || err);
+});
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = appRoot;
 const PORT = Number(process.env.PORT || 8787);
@@ -514,8 +525,13 @@ app.post("/api/dictate", (req, res) => {
     // had no ceiling at all and accumulated the whole upload in memory.
     total += c.length;
     if (total > DICTATE_MAX_BYTES) {
+      if (tooBig) return;
       tooBig = true;
-      req.destroy();
+      // Answer before hanging up; destroying first left the client with a
+      // bare connection reset instead of a 413.
+      res.setHeader("Connection", "close");
+      res.status(413).json({ ok: false, error: "audio too large" });
+      res.on("finish", () => req.destroy());
       return;
     }
     chunks.push(c);
@@ -524,7 +540,7 @@ app.post("/api/dictate", (req, res) => {
     if (tooBig) return;
     const buf = Buffer.concat(chunks);
     if (buf.length < 800) return res.status(400).json({ ok: false, error: "empty audio" });
-    const raw = path.join("/tmp", `octo-dictate-${Date.now()}`);
+    const raw = path.join("/tmp", `octo-dictate-${Date.now()}-${randomUUID().slice(0, 8)}`);
     const src = `${raw}.bin`;
     const wav = `${raw}.wav`;
     try {
@@ -562,7 +578,8 @@ app.post("/api/dictate", (req, res) => {
 });
 
 app.get("/api/health", async (_req, res) => {
-  const docker = await vm.dockerStatus();
+  // Never waits on a docker probe once one has answered; see dockerStatusNow.
+  const docker = await vm.dockerStatusNow();
   // dataDir so a client can tell OUR server from another one holding the port:
   // the desktop app used to attach to whatever answered on 8787 and silently
   // adopt its data dir. Loopback-only route, the path is the caller's own
@@ -2805,6 +2822,10 @@ app.patch("/api/bots/:id", async (req, res) => {
     } as store.BotAvatar;
     delete body.avatar;
   }
+  // Server-owned fields. Team membership moves through /api/teams, and the
+  // session ids are rotated below; none of them is the client's to set, and
+  // each flows into a file path or a desk shell command.
+  for (const k of ["teamId", "teamRole", "harnessSessionId", "grokSessionId", "harnessSessionFresh"]) delete body[k];
   Object.assign(bot, body, { id: bot.id, vm: bot.vm, messages: bot.messages, routines: bot.routines });
   const nextEffective = harnessFor(bot as AgentBotRow, settings as Parameters<typeof harnessFor>[1]).provider;
   const nextIdentity = String(bot.identityId || "");
@@ -3330,7 +3351,8 @@ function dispatchToTeammate(toId: string, content: unknown, from: DispatchFrom |
   if (!toId || !text) return;
   if (from?.teamRole !== "chief") {
     notifiedThisTurn.add(notifyKey(from?.id, toId));
-    deliverTeammateReply(toId, from, text.slice(0, 240), { explicit: true });
+    deliverTeammateReply(toId, from, text.slice(0, 240), { explicit: true }).catch((err) =>
+      console.error("teammate reply", toId, (err as Error)?.message || err));
     return;
   }
   const who = from?.name || "a teammate";
@@ -3363,7 +3385,7 @@ function dispatchToTeammate(toId: string, content: unknown, from: DispatchFrom |
     return runUserTurn(toId, prompt, false, [], { persistUser: false, replyTo: from?.id || null });
   };
   if (inflightTurns.get(toId)) {
-    void run();
+    run().catch((err) => console.error("teammate dispatch", toId, (err as Error)?.message || err));
     return;
   }
   enqueueTurn(toId, run);
@@ -4144,7 +4166,10 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
             for (const m of bot.messages || []) if (m?.id && !have.has(m.id)) b.messages.push(m);
             if (event === "routine") b.routines = bot.routines || [];
             b.awaitingUserSelection = bot.awaitingUserSelection;
-          }).then(() => undefined);
+            // agent.mts drops this promise at ~25 call sites (one inside the
+            // grok child's stdout handler), and patchBot does reject: lock
+            // timeout, or an unreadable transcript it refuses to overwrite.
+          }).then(() => undefined, (err) => console.error("persist turn event", botId, (err as Error)?.message || err));
         }
       },
     } as RunTurnOptions);

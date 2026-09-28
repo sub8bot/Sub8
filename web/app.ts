@@ -1209,7 +1209,7 @@ function persistEditorBot(bot: Bot | null | undefined, body: Record<string, unkn
       .catch(() => {});
     return;
   }
-  api(`/api/bots/${bot.id}`, { method: "PATCH", body });
+  api(`/api/bots/${bot.id}`, { method: "PATCH", body }).catch(saveFailed);
 }
 
 let liveFrameKey: string | null = null;
@@ -1655,9 +1655,19 @@ function dockerPaneLog(): string {
   return `<pre class="desk-docker-log">${escapeHtml(log.slice(-4000))}</pre>`;
 }
 
+/**
+ * The server's hint ends with the raw daemon error in parentheses ("Cannot
+ * connect to the Docker daemon at unix:///..."). Keep the sentence people read
+ * up front and move the socket path to a small detail line.
+ */
+function splitDockerHint(raw: string): { text: string; detail: string } {
+  const m = /^([\s\S]*?[.!?])\s*\(([\s\S]+)\)\s*$/.exec(raw);
+  return m ? { text: m[1]!.trim(), detail: m[2]!.trim() } : { text: raw, detail: "" };
+}
+
 function dockerPaneHtml(): string {
   const kind = dockerKind() || "starting";
-  const hint = String(state.docker?.hint || "").trim();
+  const { text: hint, detail: hintDetail } = splitDockerHint(String(state.docker?.hint || "").trim());
   const installing = dockerInstalling();
   const titles: Record<string, string> = {
     preparing: installing ? "Installing Docker…" : "Starting Docker…",
@@ -1679,7 +1689,10 @@ function dockerPaneHtml(): string {
     kind === "missing" || installing
       ? ""
       : `<button type="button" class="pill primary" data-act="recover-docker" ${busy ? "disabled" : ""}>${escapeHtml(startLabel)}</button>`;
-  const showInstall = kind === "missing" || kind === "starting" || installing || state.docker?.cli === false;
+  // "starting" with the CLI present means Docker is installed but stopped
+  // (Colima not running): Install would only confuse, Start is the fix.
+  const showInstall =
+    kind === "missing" || (kind === "starting" && state.docker?.cli !== true) || installing || state.docker?.cli === false;
   const installLabel = installing || state.dockerBusy === "install" ? "Installing…" : "Install Docker";
   const install = showInstall
     ? `<button type="button" class="pill ${kind === "missing" || installing ? "primary" : ""}" data-act="install-docker" ${busy ? "disabled" : ""}>${escapeHtml(installLabel)}</button>`
@@ -1691,6 +1704,7 @@ function dockerPaneHtml(): string {
   return `<div class="desk-docker" data-docker="${kind}">
     <strong>${titles[kind]}</strong>
     <span>${escapeHtml(details[kind])}</span>
+    ${hintDetail && details[kind] === hint ? `<code class="desk-docker-detail" title="${escapeHtml(hintDetail)}">${escapeHtml(hintDetail)}</code>` : ""}
     ${dockerPaneLog()}
     <span class="muted">${installing ? "Installing in the app — you can leave this pane open." : "Checking automatically."}</span>
     <div class="desk-docker-acts">${start}${install}${desktop}</div>
@@ -1747,8 +1761,8 @@ function paintUpdateBanner(): void {
   host.innerHTML = `<div class="update-strip">
     <span>Sub8 ${escapeHtml(u.latestVersion || "")} is available
     <span class="muted">(you have ${escapeHtml(u.currentVersion || "")})</span></span>
-    ${file ? `<a class="update-link" href="${escapeHtml(file)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>` : ""}
-    <a class="update-link" href="${escapeHtml(siteUrl())}" target="_blank" rel="noopener">sub8.bot</a>
+    ${file ? `<a class="update-link" href="${escapeHtml(safeHttpUrl(file))}" target="_blank" rel="noopener">${escapeHtml(label)}</a>` : ""}
+    <a class="update-link" href="${escapeHtml(safeHttpUrl(siteUrl()) || OFFICIAL_SITE)}" target="_blank" rel="noopener">sub8.bot</a>
     <button type="button" class="update-x" data-act="dismiss-update" title="Dismiss">×</button>
   </div>`;
 }
@@ -1803,8 +1817,11 @@ async function checkForUpdate({ silent = true }: { silent?: boolean } = {}): Pro
 }
 
 function openExternal(url: string | undefined): void {
-  if (!url) return;
-  window.open(url, "_blank", "noopener");
+  // Every caller hands over a server- or Worker-supplied URL; never let a
+  // javascript: or file: one reach window.open.
+  const safe = safeHttpUrl(url);
+  if (!safe) return;
+  window.open(safe, "_blank", "noopener");
 }
 
 function openDownload(): void {
@@ -2353,7 +2370,7 @@ function chatShotHtml(m: Message): string {
   const src = String(m.image || "").trim();
   if (!src) return "";
   // A button, not a link: a data: URL handed to the OS has "no application set to open" it.
-  return `<button type="button" class="chat-shot-link" data-act="shot-open" title="View full size"><img class="chat-shot" src="${escapeHtml(src)}" alt="Screenshot from the bot" loading="lazy" /></a>`;
+  return `<button type="button" class="chat-shot-link" data-act="shot-open" title="View full size"><img class="chat-shot" src="${escapeHtml(src)}" alt="Screenshot from the bot" loading="lazy" /></button>`;
 }
 
 function paintChat(bot: Bot | null | undefined): void {
@@ -2379,10 +2396,10 @@ function paintChat(bot: Bot | null | undefined): void {
   bindActivityFold(thread);
   if (!Array.isArray(bot.messages)) bot.messages = [];
   const chTeam = teamOf(bot);
-  // The lead has no private thread: selecting the chief of a team IS the
-  // channel view, however you got there (tab, rail, restore).
-  const leadView = Boolean(chTeam && bot.teamRole === "chief" && teamBots(chTeam).length >= 2);
-  if (chTeam && (leadView || (state.channelTeamId && chTeam.id === state.channelTeamId))) {
+  // The shared team log is its own tab. Selecting a bot — including the lead —
+  // always shows that bot's own transcript, so creating another bot does not
+  // hide the conversation you already had.
+  if (chTeam && state.channelTeamId && chTeam.id === state.channelTeamId) {
     renderTeamChannel(thread, chTeam);
     return;
   }
@@ -3444,7 +3461,7 @@ function moveBotTo(id: string, { section = "", pinned = false }: { section?: str
   if (!b) return;
   b.section = section;
   b.pinned = pinned;
-  api(`/api/bots/${id}`, { method: "PATCH", body: { section, pinned } });
+  api(`/api/bots/${id}`, { method: "PATCH", body: { section, pinned } }).catch(saveFailed);
   render();
 }
 
@@ -3469,7 +3486,7 @@ function moveTeamTo(id: string | undefined, { section = "", pinned = false }: { 
     }
   }
   // api() answers `unknown`; upsertLocalTeam guards its own argument.
-  api(`/api/teams/${id}`, { method: "PATCH", body: { section, pinned } }).then(upsertLocalTeam as (saved: unknown) => void);
+  api(`/api/teams/${id}`, { method: "PATCH", body: { section, pinned } }).then(upsertLocalTeam as (saved: unknown) => void).catch(saveFailed);
   render();
 }
 
@@ -3478,7 +3495,7 @@ function renameTeam(id: string | undefined, name: string | undefined): void {
   if (!id || !next) return;
   const rec = (state.teams || []).find((x) => x.id === id);
   if (rec) rec.name = next;
-  api(`/api/teams/${id}`, { method: "PATCH", body: { name: next } }).then(upsertLocalTeam as (saved: unknown) => void);
+  api(`/api/teams/${id}`, { method: "PATCH", body: { name: next } }).then(upsertLocalTeam as (saved: unknown) => void).catch(saveFailed);
 }
 
 
@@ -3692,11 +3709,11 @@ function paintJobBar(bot: Bot | null | undefined): void {
           const st = s.status || "pending";
           const loop = st === "looping" || (s.loopCount || 0) >= 2;
           const label = escapeHtml(s.label || who?.name || "step");
-          const extra = s.detail ? escapeHtml(String(s.detail).slice(0, 48)) : st;
+          const extra = escapeHtml(s.detail ? String(s.detail).slice(0, 48) : st);
           return `<button type="button" class="job-step is-${escapeHtml(st)}${loop ? " is-looping" : ""}" data-act="team-tab" data-id="${escapeHtml(s.botId || "")}" title="${escapeHtml(s.detail || st)}">
             <span class="job-step-dot"></span>
             <span class="job-step-name">${label}</span>
-            <span class="job-step-meta">${loop ? `looping${s.loopCount ? ` ×${s.loopCount}` : ""}` : extra}</span>
+            <span class="job-step-meta">${loop ? `looping${s.loopCount ? ` ×${escapeHtml(s.loopCount)}` : ""}` : extra}</span>
           </button>`;
         })
         .join("")}
@@ -3741,18 +3758,13 @@ function paintTeamTabs(bot: Bot): void {
   }
   host.hidden = false;
   host.closest(".chat-head")?.classList.add("has-tabs");
-  // The channel IS the conversation with the lead, like the bot app: one chief
-  // you talk to in the main tab, who opens and directs workers. So the first
-  // tab is the chief (avatar + name), the chief gets no separate tab, and
-  // having the chief selected lights this tab.
-  const chief = members.find((b) => b.teamRole === "chief") || members[0];
-  const chOn = state.channelTeamId === team.id || bot.id === chief?.id;
-  const channelTab = `<button type="button" class="chrome-tab channel-tab ${chOn ? "on" : ""} ${chief?.busy ? "busy" : ""}" data-act="team-channel" data-id="${team.id}" title="${escapeHtml(chief ? `${chief.name} · Lead of ${team.name}` : team.name)}">
-    ${chief ? `<span class="chrome-tab-ico" data-avatar="${chief.id}" data-avatar-slot="tab" data-avatar-size="22" data-avatar-framing="body"></span>` : ""}
-    <span class="chrome-tab-title">${escapeHtml(chief?.name || team.name)}</span>
+  // Team is the shared log. Every bot, lead included, is its own tab so the
+  // conversation you had before a teammate existed stays one click away.
+  const chOn = state.channelTeamId === team.id;
+  const channelTab = `<button type="button" class="chrome-tab channel-tab ${chOn ? "on" : ""}" data-act="team-channel" data-id="${team.id}" title="${escapeHtml(team.name || "Team")} · shared log">
+    <span class="chrome-tab-title">Team</span>
   </button>`;
   host.innerHTML = channelTab + members
-    .filter((b) => b.id !== chief?.id)
     .map((b) => {
       const memberOn = !chOn && b.id === bot.id;
       const role = b.teamRole === "chief" ? "Chief" : b.teamRole === "worker" ? "Worker" : "";
@@ -3776,7 +3788,9 @@ function paintChatPane(bot: Bot | null): void {
           <p>${viewComputers().length ? "The desk is on the right. The bot for that desk should appear in the rail — click it to chat." : "No Cloud desk yet. New Cloud computer creates a DigitalOcean droplet."}</p>
           <button type="button" class="pill primary" data-act="cloud-new-computer">New Cloud computer</button>
         </div>`
-      : `<div class="empty">Create a Bot to get started.</div>`;
+      : booted
+        ? `<div class="empty">Create a Bot to get started.</div>`
+        : `<div class="empty">Loading your Bots…</div>`;
     return;
   }
   const uiKey = teamOf(bot) ? "chrome-tabs-5" : isCloudPlace() ? "cloud-chrome-1" : "chrome-tabs-5";
@@ -4482,7 +4496,7 @@ async function onAvatarPhotoChange(e: Event): Promise<void> {
     paintBotEditor(bot);
     refreshAvatars();
   } catch (err) {
-    alert(String((err as Error)?.message || err));
+    flashToast(String((err as Error)?.message || err));
   }
 }
 document.addEventListener("change", (e) => { void onAvatarPhotoChange(e); });
@@ -4766,7 +4780,7 @@ function claudeCodePanelHtml(): string {
       <div class="sub">Approve in the browser, then paste the code claude.com shows you.</div>
       ${
         state.claudeAuth.signInUrl
-          ? `<div class="row"><a class="pill" href="${escapeHtml(state.claudeAuth.signInUrl)}" target="_blank" rel="noreferrer">Open sign-in page</a></div>`
+          ? `<div class="row"><a class="pill" href="${escapeHtml(safeHttpUrl(state.claudeAuth.signInUrl))}" target="_blank" rel="noreferrer">Open sign-in page</a></div>`
           : ""
       }
       <div class="row">
@@ -5075,7 +5089,7 @@ function paintModal(): void {
       host.innerHTML = vaultHtml();
     } catch (err) {
       host.innerHTML = `<div class="overlay"><div class="modal" data-modal="1"><div class="sbody">
-        <button type="button" class="close" data-act="close-modal">${iconClose()}</button>
+        <button type="button" class="close" data-act="close-modal" aria-label="Close">${iconClose()}</button>
         <h2>Password vault</h2>
         <p class="error">${escapeHtml((err as CaughtError | undefined)?.message || "Could not render the vault.")}</p>
       </div></div></div>`;
@@ -5105,7 +5119,7 @@ function advancedHtml(bot: Bot): string {
     return `<div class="overlay">
     <div class="modal" style="height:auto;max-height:88%;width:min(560px,92%)" data-modal="1">
       <div class="sbody" style="width:100%">
-        <button class="close" data-act="close-modal">×</button>
+        <button type="button" class="close" data-act="close-modal" aria-label="Close">×</button>
         <h2>Advanced</h2>
         <p class="muted" style="margin-top:-10px">Cloud desk. Nothing here is on this Mac.</p>
         <div class="adv-card">
@@ -5140,7 +5154,7 @@ function advancedHtml(bot: Bot): string {
   return `<div class="overlay">
     <div class="modal" style="height:auto;max-height:88%;width:min(560px,92%)" data-modal="1">
       <div class="sbody" style="width:100%">
-        <button class="close" data-act="close-modal">×</button>
+        <button type="button" class="close" data-act="close-modal" aria-label="Close">×</button>
         <h2>Advanced</h2>
         <p class="muted" style="margin-top:-10px">This conversation’s storage and session.</p>
         <div class="adv-card">
@@ -5469,7 +5483,7 @@ function routineEditorHtml(bot: Bot): string {
   return `<div class="overlay">
     <div class="modal routine-modal" data-modal="1">
       <div class="sbody routine-editor">
-        <button class="close" data-act="close-modal">×</button>
+        <button type="button" class="close" data-act="close-modal" aria-label="Close">×</button>
         <div class="re-toolbar">
           <label class="re-active">
             <button type="button" class="toggle ${on ? "on" : ""}" id="re-tog" data-act="routine-enabled" title="Active"><i></i></button>
@@ -5686,7 +5700,7 @@ function harnessProviderOptions(selected: string | undefined): string {
       seen.add(id);
       return true;
     })
-    .map(([id, label]) => `<option value="${id}" ${selected === id ? "selected" : ""}>${escapeHtml(label)}</option>`)
+    .map(([id, label]) => `<option value="${escapeHtml(id)}" ${selected === id ? "selected" : ""}>${escapeHtml(label)}</option>`)
     .join("");
 }
 
@@ -5827,7 +5841,7 @@ function computerPreviewHtml(c: Computer): string {
   const src = c.previewUrl || (c.previewBotId || c.attachedBotId || c.lastBotId ? `/api/bots/${c.previewBotId || c.attachedBotId || c.lastBotId}/screen` : "");
   const tick = state.previewTick || 0;
   return `<div class="cprev">
-    ${src ? `<img alt="" src="${src}${src.includes("?") ? "&" : "?"}t=${tick}" onerror="this.style.display='none'" />` : ""}
+    ${src ? `<img alt="" src="${escapeHtml(`${src}${src.includes("?") ? "&" : "?"}t=${tick}`)}" onerror="this.style.display='none'" />` : ""}
     <div class="cprev-empty">${
       c.kind === "cloud-draft" || c.draft
         ? "Draft desk"
@@ -6123,7 +6137,7 @@ function deleteBotHtml(): string {
       return `<div class="overlay">
     <div class="modal" style="height:auto;max-height:88%;width:min(480px,92%)" data-modal="1">
       <div class="sbody" style="width:100%">
-        <button class="close" data-act="close-modal">×</button>
+        <button type="button" class="close" data-act="close-modal" aria-label="Close">×</button>
         <h2>Delete ${escapeHtml(bot.name)}?</h2>
         <p class="muted">This is the Cloud desk bot. Removing it destroys the computer${
           desk ? ` (${escapeHtml(desk.name || desk.ipv4 || desk.id)})` : ""
@@ -6140,7 +6154,7 @@ function deleteBotHtml(): string {
     return `<div class="overlay">
     <div class="modal" style="height:auto;max-height:88%;width:min(480px,92%)" data-modal="1">
       <div class="sbody" style="width:100%">
-        <button class="close" data-act="close-modal">×</button>
+        <button type="button" class="close" data-act="close-modal" aria-label="Close">×</button>
         <h2>Remove ${escapeHtml(bot.name)}?</h2>
         <p class="muted">They leave the Cloud rail. The desk stays; other teammates keep their screens.</p>
         <div class="card" style="display:flex;flex-direction:column;gap:10px;padding:14px">
@@ -6158,7 +6172,7 @@ function deleteBotHtml(): string {
     return `<div class="overlay">
     <div class="modal" style="height:auto;max-height:88%;width:min(480px,92%)" data-modal="1">
       <div class="sbody" style="width:100%">
-        <button class="close" data-act="close-modal">×</button>
+        <button type="button" class="close" data-act="close-modal" aria-label="Close">×</button>
         <h2>Remove ${escapeHtml(bot.name)}?</h2>
         <p class="muted">The Bot leaves the Cloud rail. The draft desk${
           desk ? ` (${escapeHtml(desk.name)})` : ""
@@ -6175,7 +6189,7 @@ function deleteBotHtml(): string {
   return `<div class="overlay">
     <div class="modal" style="height:auto;max-height:88%;width:min(480px,92%)" data-modal="1">
       <div class="sbody" style="width:100%">
-        <button class="close" data-act="close-modal">×</button>
+        <button type="button" class="close" data-act="close-modal" aria-label="Close">×</button>
         <h2>Delete ${escapeHtml(bot.name)}?</h2>
         <p class="muted">The Bot leaves the rail. Choose what happens to its Linux computer${
           desk ? ` (${escapeHtml(desk.name)})` : ""
@@ -6197,7 +6211,7 @@ function createTeamHtml(): string {
   return `<div class="overlay">
     <div class="modal create-modal" data-modal="1">
       <div class="sbody" style="width:100%">
-        <button class="close" data-act="close-modal">×</button>
+        <button type="button" class="close" data-act="close-modal" aria-label="Close">×</button>
         <h2>Create team</h2>
         <p class="muted" style="margin-top:-8px">One shared desk. A chief and a worker who can talk to each other, each with their own Chrome window.</p>
         <label class="muted">Team name</label>
@@ -6268,7 +6282,7 @@ function createBotHtml(): string {
       return `<div class="overlay">
     <div class="modal create-modal" data-modal="1">
       <div class="sbody" style="width:100%">
-        <button class="close" data-act="close-modal">×</button>
+        <button type="button" class="close" data-act="close-modal" aria-label="Close">×</button>
         <h2>Add Cloud teammate</h2>
         <p class="muted" style="margin-top:-8px">Same Cloud desk, own screen. They use the same Grok brain.</p>
         <label class="muted">Name</label>
@@ -6286,7 +6300,7 @@ function createBotHtml(): string {
       return `<div class="overlay">
     <div class="modal create-modal" data-modal="1">
       <div class="sbody" style="width:100%">
-        <button class="close" data-act="close-modal">×</button>
+        <button type="button" class="close" data-act="close-modal" aria-label="Close">×</button>
         <h2>Add a ${escapeHtml(u.name || "desk")}?</h2>
         <p class="muted">Your plan has ${u.used} of ${u.entitled} in use. Adding one more is ${dollarsFromCents(u.unitAmountCents)}/mo, then we create the bot.</p>
         <button type="button" class="pill primary" data-act="confirm-create" id="confirm-create" style="margin-top:16px">Confirm and create</button>
@@ -6302,12 +6316,12 @@ function createBotHtml(): string {
     return `<div class="overlay">
     <div class="modal create-modal" data-modal="1">
       <div class="sbody" style="width:100%">
-        <button class="close" data-act="close-modal">×</button>
+        <button type="button" class="close" data-act="close-modal" aria-label="Close">×</button>
         <h2>Create Cloud Bot</h2>
         <p class="muted" style="margin-top:-8px">A Cloud computer (desk). Extra bots on the same desk are teammates — use Add teammate for that.</p>
         ${cloudSkuPicksHtml()}
         <p class="muted">${hint}</p>
-        <button type="button" class="pill primary" data-act="confirm-create" id="confirm-create" style="margin-top:8px">${cta}</button>
+        <button type="button" class="pill primary" data-act="confirm-create" id="confirm-create" style="margin-top:8px">${escapeHtml(cta)}</button>
       </div>
     </div>
   </div>`;
@@ -6315,7 +6329,7 @@ function createBotHtml(): string {
   return `<div class="overlay">
     <div class="modal create-modal" data-modal="1">
       <div class="sbody" style="width:100%">
-        <button class="close" data-act="close-modal">×</button>
+        <button type="button" class="close" data-act="close-modal" aria-label="Close">×</button>
         <h2>${isCloudPlace() ? "Create Cloud Bot" : "Create new Bot"}</h2>
         ${isCloudPlace() ? `<p class="muted" style="margin-top:-8px">Draft only — lives on a mock desk, not Docker.</p>` : ""}
         <div class="botset">
@@ -6662,9 +6676,17 @@ function bindVaultPassModal(): void {
     if (go) go.disabled = !(aOk && bOk);
     return aOk && bOk;
   };
+  // render() calls this on every repaint while the vault is open. Without a
+  // guard each call stacked another set of listeners on the same inputs, so the
+  // last digit fired go.click() once per repaint, and focus jumped back to the
+  // first field mid-typing.
+  let fresh = false;
   for (const field of fields) {
     const input = field.querySelector<HTMLInputElement>(".pc-input");
     if (!input) continue; // busy render: no interactive input
+    if (input.dataset.bound) continue;
+    input.dataset.bound = "1";
+    fresh = true;
     field.addEventListener("mousedown", (ev) => { ev.preventDefault(); input.focus(); });
     input.addEventListener("focus", () => paint(field));
     input.addEventListener("blur", () => paint(field));
@@ -6688,7 +6710,7 @@ function bindVaultPassModal(): void {
   }
   fields.forEach(paint);
   revalidate();
-  inputA?.focus();
+  if (fresh) inputA?.focus();
 }
 
 function repaintVault(): void {
@@ -7007,7 +7029,7 @@ function lolHtml(): string {
 function sendFreebotsPrompt(): void {
   const bot = currentBot();
   if (!bot) {
-    window.alert("Create a bot first, then send this prompt.");
+    flashToast("Create a bot first, then send this prompt.");
     return;
   }
   const typed = ($<HTMLTextAreaElement>("#lol-prompt")?.value || "").trim() || FREEBOTS_SKILL_PROMPT;
@@ -7016,7 +7038,7 @@ function sendFreebotsPrompt(): void {
   const form = $<SendForm>("#send");
   const box = form?.q;
   if (!form || !box) {
-    window.alert("Open a bot chat, then send this prompt.");
+    flashToast("Open a bot chat, then send this prompt.");
     return;
   }
   box.value = typed;
@@ -7209,7 +7231,7 @@ function claudeCodeHtml(): string {
         }
         ${
           url
-            ? `<div class="row"><a class="pill" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open sign-in page</a></div>`
+            ? `<div class="row"><a class="pill" href="${escapeHtml(safeHttpUrl(url))}" target="_blank" rel="noreferrer">Open sign-in page</a></div>`
             : ""
         }
         ${
@@ -7422,7 +7444,8 @@ function escapeHtml(s: unknown): string {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
 }
 
 let titlePointerAct = "";
@@ -7859,7 +7882,7 @@ const ACTIONS: Record<string, ActHandler> = {
   },
   "account-billing": (e) => {
     api("/api/cloud/billing/portal", { method: "POST", body: {} })
-      .then((r) => window.open((r as { url?: string }).url || "https://sub8.bot/billing", "_blank"))
+      .then((r) => window.open(safeHttpUrl((r as { url?: string }).url) || "https://sub8.bot/billing", "_blank"))
       .catch(() => window.open("https://sub8.bot/billing", "_blank"));
     return;
   },
@@ -7951,13 +7974,14 @@ const ACTIONS: Record<string, ActHandler> = {
       if (h && (h.provider === "grok-build" || h.provider === "spacexai") && !(grokModels() as (string | undefined)[]).includes(h.model)) {
         const harness = { ...h, model: "grok-4.6", baseUrl: "https://api.x.ai/v1" };
         state.settings = { ...(state.settings || {}), harness };
-        api("/api/settings", { method: "PUT", body: { harness } });
+        api("/api/settings", { method: "PUT", body: { harness } }).catch(saveFailed);
       }
       loadLocalHarness().then(() => paintModal());
     }
     return FALL_THROUGH;
   },
   "select": (e, { el }) => {
+    state.channelTeamId = null;
     rememberSelected(el.dataset.id);
     state.botEdit = false;
     state.confirmDeleteId = null;
@@ -7971,7 +7995,7 @@ const ACTIONS: Record<string, ActHandler> = {
       const picked = state.bots.find((b) => b.id === el.dataset.id);
       if (picked?.unread) {
         picked.unread = false;
-        api(`/api/bots/${picked.id}`, { method: "PATCH", body: { unread: false } });
+        api(`/api/bots/${picked.id}`, { method: "PATCH", body: { unread: false } }).catch(saveFailed);
       }
       loadBotHistory(el.dataset.id);
     }
@@ -8028,6 +8052,7 @@ const ACTIONS: Record<string, ActHandler> = {
     const members = teamBots(team);
     const pick = members.find((b) => b.id === team?.chiefId) || members.find((b) => b.teamRole === "chief") || members[0];
     if (pick) {
+      state.channelTeamId = null;
       rememberSelected(pick.id);
       loadBotHistory(pick.id);
     }
@@ -8182,7 +8207,7 @@ const ACTIONS: Record<string, ActHandler> = {
     saveBot();
     return;
   },
-  "delete-bot": (e, { el }) => {
+  "delete-bot": async (e, { el }) => {
     if (isLiveCloud()) {
       state.deleteBotId = el.dataset.id || currentBot()?.id;
       state.modal = "delete-bot";
@@ -8192,7 +8217,7 @@ const ACTIONS: Record<string, ActHandler> = {
     }
     if (isCloudPlace()) {
       const bot = botById(el.dataset.id) || currentBot();
-      if (!confirm(`Remove “${bot?.name || "this Bot"}” from Cloud? The draft desk stays.`)) return;
+      if (!(await askConfirm(`Remove “${bot?.name || "this Bot"}” from Cloud? The draft desk stays.`, { ok: "Remove", danger: true }))) return;
       deleteBot(el.dataset.id || bot?.id, true);
       return;
     }
@@ -8234,6 +8259,7 @@ const ACTIONS: Record<string, ActHandler> = {
     if (!id) return;
     state.modal = null;
     state.computerAttach = false;
+    state.channelTeamId = null;
     rememberSelected(id);
     state.botEdit = false;
     state.confirmDeleteId = null;
@@ -8243,7 +8269,7 @@ const ACTIONS: Record<string, ActHandler> = {
       const picked = state.bots.find((b) => b.id === id);
       if (picked?.unread) {
         picked.unread = false;
-        api(`/api/bots/${picked.id}`, { method: "PATCH", body: { unread: false } });
+        api(`/api/bots/${picked.id}`, { method: "PATCH", body: { unread: false } }).catch(saveFailed);
       }
       loadBotHistory(id);
     }
@@ -8278,11 +8304,11 @@ const ACTIONS: Record<string, ActHandler> = {
     const c = viewComputers().find((x) => x.id === el.dataset.id);
     if (!c) return;
     const url = c.kind === "cloud-draft" || isCloudPlace() ? (c.streamUrl as string | undefined) : c.novncPort ? `http://127.0.0.1:${c.novncPort}/` : undefined;
-    if (url) window.open(url, "_blank");
+    if (safeHttpUrl(url)) window.open(safeHttpUrl(url), "_blank");
   },
-  "computer-act": (e, { el }) => {
+  "computer-act": async (e, { el }) => {
     const doit = el.dataset.do;
-    if (doit === "destroy" && !confirm(isCloudPlace() ? "Destroy this draft computer?" : "Destroy this computer and its files? This cannot be undone.")) return;
+    if (doit === "destroy" && !(await askConfirm(isCloudPlace() ? "Destroy this draft computer?" : "Destroy this computer and its files? This cannot be undone.", { ok: "Destroy", danger: true }))) return;
     if (isCloudPlace()) {
       destroyCloudComputer(el.dataset.id);
       return;
@@ -8294,13 +8320,13 @@ const ACTIONS: Record<string, ActHandler> = {
     snapshotDesk(el.dataset.id);
     return;
   },
-  "desk-restore": (e, { el }) => {
-    if (!confirm("This replaces the desk’s files with the snapshot. The bot’s chat does not change.")) return;
+  "desk-restore": async (e, { el }) => {
+    if (!(await askConfirm("This replaces the desk’s files with the snapshot. The bot’s chat does not change.", { title: "Restore snapshot?", ok: "Restore" }))) return;
     restoreDeskImage(el.dataset.id, el.dataset.image);
     return;
   },
-  "desk-image-del": (e, { el }) => {
-    if (!confirm("Delete this snapshot? The live desk is unchanged.")) return;
+  "desk-image-del": async (e, { el }) => {
+    if (!(await askConfirm("Delete this snapshot? The live desk is unchanged.", { ok: "Delete", danger: true }))) return;
     deleteDeskImage(el.dataset.id, el.dataset.image);
     return;
   },
@@ -8330,7 +8356,7 @@ const ACTIONS: Record<string, ActHandler> = {
       loadCloudBilling();
       return;
     }
-    createCloudComputer().catch((err) => window.alert((err as CaughtError).message || "Could not create a draft desk."));
+    createCloudComputer().catch((err) => flashToast((err as CaughtError).message || "Could not create a draft desk."));
     return;
   },
   "cloud-harness-grok": (e, { el }) => {
@@ -8349,8 +8375,8 @@ const ACTIONS: Record<string, ActHandler> = {
     saveCloudBrainKey();
     return;
   },
-  "reset-vm": (e) => {
-    if (confirm("Reset this Bot’s computer? Files and logins on that desktop will be gone.")) resetVm();
+  "reset-vm": async (e) => {
+    if (await askConfirm("Reset this Bot’s computer? Files and logins on that desktop will be gone.", { ok: "Reset", danger: true })) resetVm();
     return;
   },
   "check-update": (e) => {
@@ -8421,8 +8447,13 @@ const ACTIONS: Record<string, ActHandler> = {
     render();
     return;
   },
-  "delete-routine": (e, { el }) => {
-    deleteRoutine(el.dataset.id);
+  "delete-routine": async (e, { el }) => {
+    // A routine is a standing job; one stray click used to delete it for good.
+    const id = el.dataset.id;
+    const r = (currentBot()?.routines || []).find((x) => x.id === id);
+    const what = r?.name ? `“${r.name}”` : "this routine";
+    if (!(await askConfirm(`Delete ${what}? It will stop running.`, { ok: "Delete", danger: true }))) return;
+    deleteRoutine(id);
     return;
   },
   "toggle-routine": (e, { el }) => {
@@ -8621,14 +8652,14 @@ const ACTIONS: Record<string, ActHandler> = {
           render();
         });
       } else {
-        api(`/api/bots/${b.id}`, { method: "PATCH", body: { name } });
+        api(`/api/bots/${b.id}`, { method: "PATCH", body: { name } }).catch(saveFailed);
       }
     }
     state.ctx = null;
     render();
     return;
   },
-  "ctx-tab-remove": (e, { el }) => {
+  "ctx-tab-remove": async (e, { el }) => {
     const id = el.dataset.id || state.ctx?.botId;
     const b = botById(id) || state.bots.find((x) => x.id === id);
     state.ctx = null;
@@ -8642,7 +8673,7 @@ const ACTIONS: Record<string, ActHandler> = {
     }
     const team = teamOf(b);
     const label = team ? `Remove “${b.name}” from ${team.name}? The shared desk stays.` : `Remove “${b.name}”?`;
-    if (!confirm(label)) return;
+    if (!(await askConfirm(label, { ok: "Remove", danger: true }))) return;
     deleteBot(id, true);
     return;
   },
@@ -8662,7 +8693,7 @@ const ACTIONS: Record<string, ActHandler> = {
       }
     }
     render();
-    api(`/api/teams/${encodeURIComponent(id)}`, { method: "PATCH", body: { hidden: team.hidden } }).then(upsertLocalTeam as (saved: unknown) => void);
+    api(`/api/teams/${encodeURIComponent(id)}`, { method: "PATCH", body: { hidden: team.hidden } }).then(upsertLocalTeam as (saved: unknown) => void).catch(saveFailed);
     return;
   },
   "ctx-team-dup": (e, { el }) => {
@@ -8676,25 +8707,25 @@ const ACTIONS: Record<string, ActHandler> = {
         if (made?.chiefId) rememberSelected(made.chiefId);
         render();
       } catch (err) {
-        window.alert((err as CaughtError).message || "Could not duplicate that team.");
+        flashToast((err as CaughtError).message || "Could not duplicate that team.");
       }
     })();
     return;
   },
-  "ctx-team-del": (e, { el }) => {
+  "ctx-team-del": async (e, { el }) => {
     const id = String(el.dataset.id || "");
     const team = (state.teams || []).find((t) => t.id === id);
     state.ctx = null;
     paintCtxMenu();
     if (!team) return;
     const n = teamBots(team).length;
-    if (!window.confirm(`Delete “${team.name || "this team"}”? Its ${n} bot${n === 1 ? "" : "s"} and their shared computer will be removed.`)) return;
+    if (!(await askConfirm(`Delete “${team.name || "this team"}”? Its ${n} bot${n === 1 ? "" : "s"} and their shared computer will be removed.`, { ok: "Delete team", danger: true }))) return;
     const members = new Set(teamBots(team).map((b) => b.id));
     if (state.selected && members.has(state.selected)) {
       const next = state.bots.find((b) => !b.hidden && !members.has(b.id));
       rememberSelected(next?.id || null);
     }
-    void api(`/api/teams/${encodeURIComponent(id)}`, { method: "DELETE" }).catch((err: CaughtError) => window.alert(err.message || "Could not delete that team."));
+    void api(`/api/teams/${encodeURIComponent(id)}`, { method: "DELETE" }).catch((err: CaughtError) => flashToast(err.message || "Could not delete that team."));
     return;
   },
   "ctx-rename-team-open": (e) => {
@@ -8716,7 +8747,7 @@ const ACTIONS: Record<string, ActHandler> = {
       const t = (state.teams || []).find((x) => x.id === (el.dataset.id || state.ctx!.teamId));
       if (t) {
         t.pinned = !t.pinned;
-        api(`/api/teams/${t.id}`, { method: "PATCH", body: { pinned: t.pinned } }).then(upsertLocalTeam as (saved: unknown) => void);
+        api(`/api/teams/${t.id}`, { method: "PATCH", body: { pinned: t.pinned } }).then(upsertLocalTeam as (saved: unknown) => void).catch(saveFailed);
       }
       state.ctx = null;
       render();
@@ -8725,7 +8756,7 @@ const ACTIONS: Record<string, ActHandler> = {
     const b = state.bots.find((x) => x.id === el.dataset.id);
     if (b) {
       b.pinned = !b.pinned;
-      api(`/api/bots/${b.id}`, { method: "PATCH", body: { pinned: b.pinned } });
+      api(`/api/bots/${b.id}`, { method: "PATCH", body: { pinned: b.pinned } }).catch(saveFailed);
     }
     state.ctx = null;
     render();
@@ -8756,7 +8787,7 @@ const ACTIONS: Record<string, ActHandler> = {
     if (!id || !name) return;
     const sections = sidebarSections().map((s) => (s.id === id ? { ...s, name } : s));
     state.settings = { ...(state.settings || {}), sidebarSections: sections };
-    api("/api/settings", { method: "PUT", body: { sidebarSections: sections } }).then(refreshSettings);
+    api("/api/settings", { method: "PUT", body: { sidebarSections: sections } }).then(refreshSettings).catch(saveFailed);
     state.ctx = null;
     render();
     return;
@@ -8770,26 +8801,26 @@ const ACTIONS: Record<string, ActHandler> = {
     if (ids.length) deleteMessages(ids);
     return;
   },
-  "ctx-delete-section": (e, { el }) => {
+  "ctx-delete-section": async (e, { el }) => {
     const id = el.dataset.sec || state.ctx?.secId;
     if (!id) return;
     const sec = sidebarSections().find((s) => s.id === id);
-    if (sec && !confirm(`Delete “${sec.name}”? Bots and groups in it stay, unassigned.`)) return;
+    if (sec && !(await askConfirm(`Delete “${sec.name}”? Bots and groups in it stay, unassigned.`, { ok: "Delete", danger: true }))) return;
     const sections = sidebarSections().filter((s) => s.id !== id);
     state.settings = { ...(state.settings || {}), sidebarSections: sections };
     for (const b of state.bots) {
       if (b.section === id) {
         b.section = "";
-        api(`/api/bots/${b.id}`, { method: "PATCH", body: { section: "" } });
+        api(`/api/bots/${b.id}`, { method: "PATCH", body: { section: "" } }).catch(saveFailed);
       }
     }
     for (const t of state.teams || []) {
       if (t.section === id) {
         t.section = "";
-        api(`/api/teams/${t.id}`, { method: "PATCH", body: { section: "" } }).then(upsertLocalTeam as (saved: unknown) => void);
+        api(`/api/teams/${t.id}`, { method: "PATCH", body: { section: "" } }).then(upsertLocalTeam as (saved: unknown) => void).catch(saveFailed);
       }
     }
-    api("/api/settings", { method: "PUT", body: { sidebarSections: sections } }).then(refreshSettings);
+    api("/api/settings", { method: "PUT", body: { sidebarSections: sections } }).then(refreshSettings).catch(saveFailed);
     state.ctx = null;
     render();
     return;
@@ -8808,10 +8839,10 @@ const ACTIONS: Record<string, ActHandler> = {
       if (b) {
         b.section = id;
         b.pinned = false;
-        api(`/api/bots/${b.id}`, { method: "PATCH", body: { section: id, pinned: false } });
+        api(`/api/bots/${b.id}`, { method: "PATCH", body: { section: id, pinned: false } }).catch(saveFailed);
       }
     }
-    api("/api/settings", { method: "PUT", body: { sidebarSections: sections } }).then(refreshSettings);
+    api("/api/settings", { method: "PUT", body: { sidebarSections: sections } }).then(refreshSettings).catch(saveFailed);
     state.ctx = null;
     render();
     return;
@@ -8827,7 +8858,7 @@ const ACTIONS: Record<string, ActHandler> = {
     const b = state.bots.find((x) => x.id === el.dataset.id);
     if (b) {
       b.section = sec;
-      api(`/api/bots/${b.id}`, { method: "PATCH", body: { section: sec } });
+      api(`/api/bots/${b.id}`, { method: "PATCH", body: { section: sec } }).catch(saveFailed);
     }
     state.ctx = null;
     render();
@@ -8837,7 +8868,7 @@ const ACTIONS: Record<string, ActHandler> = {
     const b = state.bots.find((x) => x.id === el.dataset.id);
     if (b) {
       b.unread = !b.unread;
-      api(`/api/bots/${b.id}`, { method: "PATCH", body: { unread: b.unread } });
+      api(`/api/bots/${b.id}`, { method: "PATCH", body: { unread: b.unread } }).catch(saveFailed);
     }
     state.ctx = null;
     render();
@@ -8869,7 +8900,7 @@ const ACTIONS: Record<string, ActHandler> = {
     const b = state.bots.find((x) => x.id === el.dataset.id);
     if (b) {
       b.hidden = !b.hidden;
-      api(`/api/bots/${b.id}`, { method: "PATCH", body: { hidden: b.hidden } });
+      api(`/api/bots/${b.id}`, { method: "PATCH", body: { hidden: b.hidden } }).catch(saveFailed);
       if (b.hidden && state.selected === b.id) {
         const next = state.bots.find((x) => !x.hidden && x.id !== b.id);
         rememberSelected(next?.id || null);
@@ -8879,7 +8910,7 @@ const ACTIONS: Record<string, ActHandler> = {
     render();
     return;
   },
-  "ctx-del": (e, { el }) => {
+  "ctx-del": async (e, { el }) => {
     const id = el.dataset.id;
     state.ctx = null;
     paintCtxMenu();
@@ -8891,7 +8922,7 @@ const ACTIONS: Record<string, ActHandler> = {
     }
     if (isCloudPlace()) {
       const bot = botById(id) || currentBot();
-      if (!id || !confirm(`Remove “${bot?.name || "this Bot"}” from Cloud? The draft desk stays.`)) return;
+      if (!id || !(await askConfirm(`Remove “${bot?.name || "this Bot"}” from Cloud? The draft desk stays.`, { ok: "Remove", danger: true }))) return;
       deleteBot(id, true);
       return;
     }
@@ -9054,17 +9085,17 @@ const ACTIONS: Record<string, ActHandler> = {
     });
     return;
   },
-  "identity-remove": (e) => {
+  "identity-remove": async (e) => {
     const id = (e?.target as HTMLElement | null)?.closest?.("[data-id]")?.getAttribute("data-id") || "";
     if (!id) return;
-    if (!window.confirm("Remove this login? Bots attached to it will ask you to sign in again.")) return;
+    if (!(await askConfirm("Remove this login? Bots attached to it will ask you to sign in again.", { ok: "Remove", danger: true }))) return;
     void (async () => {
       try {
         await api(`/api/identities/${encodeURIComponent(id)}`, { method: "DELETE" });
         await loadIdentities();
         if (state.modal === "settings" && state.section === "harnesses") paintModal();
       } catch (err) {
-        window.alert((err as CaughtError).message || "Could not remove that identity.");
+        flashToast((err as CaughtError).message || "Could not remove that identity.");
       }
     })();
     return;
@@ -9079,7 +9110,7 @@ const ACTIONS: Record<string, ActHandler> = {
         await loadIdentities();
         if (state.modal === "settings" && state.section === "harnesses") paintModal();
       } catch (err) {
-        window.alert((err as CaughtError).message || "Could not add that identity.");
+        flashToast((err as CaughtError).message || "Could not add that identity.");
       }
     })();
     return;
@@ -9237,6 +9268,22 @@ function bindDelegated(): void {
     if (e.key === "Escape" && state.deskSize === "full" && !state.modal) {
       state.deskSize = "side";
       render();
+      return;
+    }
+    // Escape backs out of the context menu, then the open modal, the same way
+    // its close button does. The lightbox and the confirm dialog handle their
+    // own Escape first.
+    if (e.key === "Escape" && !e.defaultPrevented && !document.querySelector(".lightbox, #confirm-host")) {
+      if (state.ctx) {
+        state.ctx = null;
+        paintCtxMenu();
+        return;
+      }
+      const close = state.modal ? $<HTMLElement>("#modal-host [data-act=close-modal]") : null;
+      if (close) {
+        e.preventDefault();
+        close.click();
+      }
     }
   });
   document.addEventListener("pointerdown", (e) => {
@@ -9531,7 +9578,7 @@ function bindDelegated(): void {
       const id = el.dataset.computerName;
       const name = el.value.trim();
       if (!name) return;
-      api(`/api/computers/${id}`, { method: "PATCH", body: { name } }).then(() => loadComputers());
+      api(`/api/computers/${id}`, { method: "PATCH", body: { name } }).then(() => loadComputers()).catch(saveFailed);
     }
     if (el.dataset.computerSort != null || el.classList.contains("csort")) {
       state.computerSort = el.value || "name";
@@ -9601,7 +9648,7 @@ async function loadClaudeAuth(): Promise<void> {
 async function claudeDeskLogin(): Promise<void> {
   const desk = settingsDeskId();
   if (!desk) {
-    window.alert("Select a Cloud desk bot first.");
+    flashToast("Select a Cloud desk bot first.");
     return;
   }
   state.modal = "claude-code";
@@ -9689,7 +9736,7 @@ async function claudeDeskLogout(): Promise<void> {
   try {
     await api("/api/cloud/brain/claude/auth/logout", { method: "POST", body: { computerId: desk } });
   } catch (err) {
-    window.alert((err as CaughtError | undefined)?.message || "Could not sign this desk out.");
+    flashToast((err as CaughtError | undefined)?.message || "Could not sign this desk out.");
   }
   await loadClaudeAuth();
   await loadIdentities();
@@ -10012,14 +10059,10 @@ async function onSend(e: ComposerSubmit): Promise<void> {
   const content = [text, names && !text ? `Attached ${names}` : names && text ? `(attached ${names})` : "", extras]
     .filter(Boolean)
     .join(" ");
-  // Channel view: the message belongs to the shared team channel, not the
-  // selected bot. Local posts to the team channel (with @mention wake); cloud
-  // has no channel backend yet, so it routes to the team's chief to coordinate.
-  // The lead has no private thread, so having the chief selected is the
-  // channel view too — same as paintChat.
+  // The Team tab is the only shared log. A message typed while a bot is
+  // selected stays on that bot, so a new teammate does not steal the thread.
   const ownTeam = teamOf(bot);
-  const leadView = Boolean(ownTeam && bot?.teamRole === "chief" && teamBots(ownTeam).length >= 2);
-  const channelTeam = ownTeam && (leadView || (state.channelTeamId && ownTeam.id === state.channelTeamId)) ? ownTeam : null;
+  const channelTeam = ownTeam && state.channelTeamId && ownTeam.id === state.channelTeamId ? ownTeam : null;
   if (channelTeam) {
     ((channelTeam.messages ||= []) as Message[]).push({
       // speakerRole matches the persisted copy so the bubble does not relabel
@@ -10310,7 +10353,7 @@ async function submitChoice(messageId: string | undefined, choiceId: string | un
       return;
     }
     if (card) card.pending = true;
-    window.alert((err as CaughtError | undefined)?.message || "Could not save that choice.");
+    flashToast((err as CaughtError | undefined)?.message || "Could not save that choice.");
     paintChat(bot);
   } finally {
     choiceBusy.delete(busyKey);
@@ -10328,11 +10371,22 @@ function openLightbox(src: string): void {
   el.innerHTML = `<button type="button" class="lightbox-x" data-act="lightbox-close" aria-label="Close">${iconClose()}</button><img src="${escapeHtml(src)}" alt="Screenshot" />`;
   el.addEventListener("click", (ev) => { if ((ev.target as HTMLElement).tagName !== "IMG") closeLightbox(); });
   document.body.appendChild(el);
-  const onKey = (ev: KeyboardEvent) => { if (ev.key === "Escape") { closeLightbox(); } };
-  document.addEventListener("keydown", onKey, { once: true });
+  // Not { once: true }: that dropped the listener on the first key of any
+  // kind, so Esc stopped working after an arrow key or Cmd.
+  const onKey = (ev: KeyboardEvent) => {
+    if (ev.key !== "Escape") return;
+    ev.preventDefault();
+    closeLightbox();
+  };
+  lightboxKey = onKey;
+  document.addEventListener("keydown", onKey);
+  el.querySelector<HTMLButtonElement>(".lightbox-x")?.focus();
 }
+let lightboxKey: ((ev: KeyboardEvent) => void) | null = null;
 function closeLightbox(): void {
   document.getElementById("lightbox")?.remove();
+  if (lightboxKey) document.removeEventListener("keydown", lightboxKey);
+  lightboxKey = null;
 }
 
 /** A brief, non-blocking error/info toast — never window.alert (native dialogs freeze the embedded browser). */
@@ -10340,11 +10394,97 @@ function flashToast(msg: string): void {
   let host = document.getElementById("toasts");
   if (!host) { host = document.createElement("div"); host.id = "toasts"; document.body.appendChild(host); }
   const el = document.createElement("div");
-  el.className = "toast";
+  el.className = "toast flash";
+  el.setAttribute("role", "status");
   el.innerHTML = `<span>${escapeHtml(msg)}</span><button type="button" class="toast-x" aria-label="Dismiss">\u00d7</button>`;
   el.addEventListener("click", () => el.remove());
   host.appendChild(el);
-  setTimeout(() => el.remove(), 6000);
+  // Long errors need longer than a glance to read.
+  setTimeout(() => el.remove(), Math.min(12_000, 5000 + String(msg).length * 40));
+}
+
+/**
+ * Catch for optimistic, fire-and-forget saves (pin, rename, section, unread).
+ * They used to reject unhandled and leave the UI showing a change the server
+ * never took. While the server is unreachable the reconnect banner already
+ * says so, so only a real error from a live server gets a toast.
+ */
+function saveFailed(err: unknown): void {
+  console.warn("save failed", err);
+  if (serverDown || (err as { name?: string } | null)?.name !== "ApiError") return;
+  flashToast((err as CaughtError | undefined)?.message || "Could not save that change.");
+}
+
+interface ConfirmOpts {
+  title?: string;
+  ok?: string;
+  cancel?: string;
+  danger?: boolean;
+}
+
+/**
+ * In-app replacement for window.confirm(). Resolves true on the confirm button,
+ * false on Cancel, Escape, or a click on the backdrop. It sits above every other
+ * overlay and keeps Tab inside itself while open. Destructive prompts focus
+ * Cancel so a stray Enter does not delete anything.
+ */
+let settleConfirm: ((answer: boolean) => void) | null = null;
+function askConfirm(message: string, opts: ConfirmOpts = {}): Promise<boolean> {
+  const { title = "", ok = "OK", cancel = "Cancel", danger = false } = opts;
+  // A newer question replaces an open one; the old caller hears "no".
+  settleConfirm?.(false);
+  const prev = document.activeElement as HTMLElement | null;
+  const host = document.createElement("div");
+  host.id = "confirm-host";
+  host.innerHTML = `<div class="overlay confirm-overlay">
+    <div class="modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="confirm-msg">
+      ${title ? `<h2 class="confirm-title">${escapeHtml(title)}</h2>` : ""}
+      <p class="confirm-msg" id="confirm-msg">${escapeHtml(message)}</p>
+      <div class="confirm-acts">
+        <button type="button" class="pill" data-confirm="no">${escapeHtml(cancel)}</button>
+        <button type="button" class="pill ${danger ? "danger" : "primary"}" data-confirm="yes">${escapeHtml(ok)}</button>
+      </div>
+    </div>
+  </div>`;
+  document.body.appendChild(host);
+  const buttons = [...host.querySelectorAll<HTMLButtonElement>("[data-confirm]")];
+  return new Promise<boolean>((resolve) => {
+    const done = (answer: boolean) => {
+      if (settleConfirm === done) settleConfirm = null;
+      window.removeEventListener("keydown", onKey, true);
+      host.remove();
+      if (prev?.isConnected) prev.focus?.();
+      resolve(answer);
+    };
+    settleConfirm = done;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        done(false);
+      } else if (e.key === "Tab") {
+        e.preventDefault();
+        e.stopPropagation();
+        const i = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        buttons[(i + (e.shiftKey ? -1 : 1) + buttons.length) % buttons.length]?.focus();
+      } else if (e.key === "Enter" && !buttons.includes(document.activeElement as HTMLButtonElement)) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    // Keep outside-click closers (context menu, popovers) from reacting to
+    // clicks that land on this dialog.
+    for (const type of ["pointerdown", "mousedown"]) host.addEventListener(type, (e) => e.stopPropagation());
+    host.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const t = e.target as HTMLElement;
+      const btn = t.closest<HTMLElement>("[data-confirm]");
+      if (btn) done(btn.dataset.confirm === "yes");
+      else if (t.classList.contains("confirm-overlay")) done(false);
+    });
+    (danger ? buttons[0] : buttons[1])?.focus();
+  });
 }
 
 async function openVault(): Promise<void> {
@@ -10392,7 +10532,7 @@ async function addVaultGroup(): Promise<void> {
     if (host) delete host.dataset.key;
     render();
   } catch (err) {
-    window.alert((err as CaughtError | undefined)?.message || "Could not create the group.");
+    flashToast((err as CaughtError | undefined)?.message || "Could not create the group.");
     $<HTMLInputElement>("#vault-group-name")?.focus();
   }
 }
@@ -10409,7 +10549,7 @@ function toggleVaultReveal(): void {
           input.value = (acc as VaultAccount).password || "";
         }
       })
-      .catch((err) => window.alert((err as CaughtError | undefined)?.message || "Could not reveal."));
+      .catch((err) => flashToast((err as CaughtError | undefined)?.message || "Could not reveal."));
     return;
   }
   state.vaultReveal = !state.vaultReveal;
@@ -10435,7 +10575,7 @@ async function persistVaultShare(): Promise<void> {
     const snap = await api(`/api/vault/accounts/${accountId}/grants`, { method: "PUT", body: { botIds } }) as VaultSnapshot | null;
     if (snap?.grants) state.vault.grants = snap.grants;
   } catch (err) {
-    window.alert((err as CaughtError | undefined)?.message || "Could not update sharing.");
+    flashToast((err as CaughtError | undefined)?.message || "Could not update sharing.");
   }
 }
 
@@ -10450,7 +10590,7 @@ async function saveVaultAccount({ quiet = false, editId = state.vaultEditId, sha
   const pass = $<HTMLInputElement>("#v-pass")?.value;
   if (pass && pass !== "••••") body.password = pass;
   if (editId === "new" && !body.label!.trim() && !body.site!.trim() && !body.username!.trim()) {
-    if (!quiet) window.alert("Add a name, username, or website.");
+    if (!quiet) flashToast("Add a name, username, or website.");
     return null;
   }
   const botIds = [...(share || [])];
@@ -10464,7 +10604,7 @@ async function saveVaultAccount({ quiet = false, editId = state.vaultEditId, sha
     const snap = await api(`/api/vault/accounts/${acc.id}/grants`, { method: "PUT", body: { botIds } }) as VaultSnapshot | null;
     if (snap?.grants) state.vault.grants = snap.grants;
   } catch (err) {
-    if (!quiet) window.alert((err as CaughtError | undefined)?.message || "Could not save the login.");
+    if (!quiet) flashToast((err as CaughtError | undefined)?.message || "Could not save the login.");
     return null;
   }
   state.vault = await api("/api/vault") as VaultSnapshot;
@@ -10479,7 +10619,7 @@ async function saveVaultAccount({ quiet = false, editId = state.vaultEditId, sha
 }
 
 async function deleteVaultAccount(id: string | undefined): Promise<void> {
-  if (!id || !window.confirm("Delete this login? Bots will lose access.")) return;
+  if (!id || !(await askConfirm("Delete this login? Bots will lose access.", { ok: "Delete", danger: true }))) return;
   state.vault = await api(`/api/vault/accounts/${id}`, { method: "DELETE" }) as VaultSnapshot;
   state.vaultEditId = null;
   const host = $("#modal-host");
@@ -10507,13 +10647,14 @@ async function importVaultBackup(file: File): Promise<void> {
   try {
     payload = JSON.parse(await file.text());
   } catch {
-    window.alert("That file is not valid JSON.");
+    flashToast("That file is not valid JSON.");
     return;
   }
   const n = Array.isArray(payload.accounts) ? payload.accounts.length : 0;
   const g = Array.isArray(payload.groups) ? payload.groups.length : 0;
-  const ok = window.confirm(
+  const ok = await askConfirm(
     `Replace all passwords, groups, and sharing with this backup (${n} login${n === 1 ? "" : "s"}, ${g} group${g === 1 ? "" : "s"})? The file contains secrets in plaintext.`,
+    { title: "Import vault backup?", ok: "Replace vault", danger: true },
   );
   if (!ok) return;
   try {
@@ -10566,7 +10707,7 @@ async function confirmCreateTeam(): Promise<void> {
       btn.disabled = false;
       btn.textContent = "Create chief + worker";
     }
-    window.alert((err as CaughtError | undefined)?.message || "Could not create the team.");
+    flashToast((err as CaughtError | undefined)?.message || "Could not create the team.");
   }
 }
 
@@ -10590,7 +10731,8 @@ async function confirmCreateBot(): Promise<void> {
         method: "POST",
         body: { computerId: desk, name, job: description, description },
       }) as CloudDraftState;
-      state.cloudDraft = snap;
+      state.channelTeamId = null;
+      state.cloudDraft = mergeCloudDraft(state.cloudDraft, snap) as CloudDraftState;
       resetCreateForm();
       if (snap.bot?.id) rememberSelected(snap.bot.id);
       state.modal = null;
@@ -10607,7 +10749,7 @@ async function confirmCreateBot(): Promise<void> {
         loadCloudBilling();
         return;
       }
-      window.alert((err as CaughtError | undefined)?.message || "Could not add the teammate.");
+      flashToast((err as CaughtError | undefined)?.message || "Could not add the teammate.");
     }
     return;
   }
@@ -10632,7 +10774,8 @@ async function confirmCreateBot(): Promise<void> {
           harness,
         },
       }) as CloudDraftState;
-      state.cloudDraft = snap;
+      state.channelTeamId = null;
+      state.cloudDraft = mergeCloudDraft(state.cloudDraft, snap) as CloudDraftState;
       const bot = snap.bot;
       resetCreateForm();
       rememberSelected(bot!.id);
@@ -10649,6 +10792,7 @@ async function confirmCreateBot(): Promise<void> {
         harness,
       },
     }) as Bot;
+    state.channelTeamId = null;
     resetCreateForm();
     rememberSelected(bot.id);
     state.modal = null;
@@ -10666,7 +10810,7 @@ async function confirmCreateBot(): Promise<void> {
       btn.disabled = false;
       btn.textContent = "Create Bot";
     }
-    window.alert((err as CaughtError | undefined)?.message || "Could not create the bot.");
+    flashToast((err as CaughtError | undefined)?.message || "Could not create the bot.");
   }
 }
 
@@ -10678,7 +10822,7 @@ async function persistCloudRoutine({ bot, name, instruction, close, quiet }: { b
   if (!computerId) return null;
   const intervalMinutes = cloudIntervalFromTriggers(state.routineTriggers);
   if (!intervalMinutes) {
-    if (!quiet) window.alert("Cloud routines run on an interval. Pick “every N minutes” or “every hour”.");
+    if (!quiet) flashToast("Cloud routines run on an interval. Pick “every N minutes” or “every hour”.");
     return null;
   }
   const id = state.editingRoutineId;
@@ -10708,7 +10852,7 @@ async function persistCloudRoutine({ bot, name, instruction, close, quiet }: { b
     else paintRoutineList(bot);
     return saved;
   } catch (err) {
-    if (!quiet) window.alert((err as CaughtError | undefined)?.message || "Could not save the routine.");
+    if (!quiet) flashToast((err as CaughtError | undefined)?.message || "Could not save the routine.");
     return null;
   }
 }
@@ -10719,7 +10863,7 @@ async function persistRoutine({ close = false, quiet = !close }: { close?: boole
   const instruction = ($<ValueEl>("#ri")?.value || "").trim();
   const name = ($<ValueEl>("#rn")?.value || "").trim() || "Routine";
   if (!instruction) {
-    if (!quiet) window.alert("Add an instruction before saving this job.");
+    if (!quiet) flashToast("Add an instruction before saving this job.");
     return null;
   }
   if (isCloudPlace()) return persistCloudRoutine({ bot, name, instruction, close, quiet });
@@ -10766,7 +10910,7 @@ async function persistRoutine({ close = false, quiet = !close }: { close?: boole
     }
     return created;
   } catch (err) {
-    if (!quiet) window.alert((err as CaughtError | undefined)?.message || "Could not save the routine.");
+    if (!quiet) flashToast((err as CaughtError | undefined)?.message || "Could not save the routine.");
     return null;
   }
 }
@@ -10783,7 +10927,7 @@ async function testRoutine(): Promise<void> {
   try {
     await api(`/api/bots/${bot.id}/routines/${id}/run`, { method: "POST" });
   } catch (err) {
-    window.alert((err as CaughtError | undefined)?.message || "Could not start a test run.");
+    flashToast((err as CaughtError | undefined)?.message || "Could not start a test run.");
     return;
   }
   state.modal = null;
@@ -10805,7 +10949,7 @@ async function deleteRoutine(id: string | null | undefined): Promise<void> {
     try {
       await api("/api/cloud/brain/routines", { method: "DELETE", body: { computerId, id } });
     } catch (err) {
-      window.alert((err as CaughtError | undefined)?.message || "Could not delete the routine.");
+      flashToast((err as CaughtError | undefined)?.message || "Could not delete the routine.");
     }
     await loadCloudRoutines(bot, { force: true });
     render();
@@ -10840,7 +10984,7 @@ async function toggleRoutine(id: string | undefined): Promise<void> {
         body: { computerId, id, enabled: row.enabled === false },
       });
     } catch (err) {
-      window.alert((err as CaughtError | undefined)?.message || "Could not update the routine.");
+      flashToast((err as CaughtError | undefined)?.message || "Could not update the routine.");
     }
     await loadCloudRoutines(bot, { force: true });
     render();
@@ -10871,7 +11015,7 @@ async function deleteBot(id: string | null | undefined, keepComputer = true): Pr
           if (!deskId) throw new Error("No Cloud computer on this bot.");
           state.cloudDraft = await api(`/api/cloud/draft/computers/${deskId}`, { method: "DELETE" }) as CloudDraftState;
         } else if (isCloudChief(bot)) {
-          window.alert("The desk bot stays until you destroy the Cloud computer.");
+          flashToast("The desk bot stays until you destroy the Cloud computer.");
           render();
           return;
         } else {
@@ -10883,7 +11027,7 @@ async function deleteBot(id: string | null | undefined, keepComputer = true): Pr
         if (state.selectedCloud === id) rememberSelected(viewBots().find((b) => !b.hidden)?.id || null);
         render();
       } catch (err) {
-        window.alert((err as CaughtError | undefined)?.message || "Could not delete the bot.");
+        flashToast((err as CaughtError | undefined)?.message || "Could not delete the bot.");
         render();
       }
       return;
@@ -10894,7 +11038,7 @@ async function deleteBot(id: string | null | undefined, keepComputer = true): Pr
       if (state.selectedCloud === id) rememberSelected(viewBots().find((b) => !b.hidden)?.id || null);
       render();
     } catch (err) {
-      window.alert((err as CaughtError | undefined)?.message || "Could not delete the bot.");
+      flashToast((err as CaughtError | undefined)?.message || "Could not delete the bot.");
     }
     return;
   }
@@ -10904,18 +11048,23 @@ async function deleteBot(id: string | null | undefined, keepComputer = true): Pr
   state.deleteBotId = null;
   state.botEdit = false;
   state.modal = null;
-  if (state.selected === id) rememberSelected(state.bots.find((b) => !b.hidden)?.id || null);
+  if (state.selected === id) {
+    rememberSelected(state.bots.find((b) => !b.hidden)?.id || null);
+    // Take control belongs to the bot that was deleted, not the next one.
+    state.humanControl = Boolean(state.bots.find((b) => b.id === state.selected)?.humanControl);
+    state.channelTeamId = null;
+  }
   render();
   try {
     await api(`/api/bots/${id}`, { method: "DELETE", body: { keepComputer: Boolean(keepComputer) } });
   } catch (err) {
     forgottenBots.delete(id);
-    window.alert((err as CaughtError | undefined)?.message || "Could not delete the bot.");
-    await refresh();
+    flashToast((err as CaughtError | undefined)?.message || "Could not delete the bot.");
+    await refresh().catch(() => {});
     return;
   }
-  await refresh();
-  loadComputers();
+  await refresh().catch(() => {});
+  loadComputers().catch(() => {});
 }
 
 async function refreshComputerPreviews(): Promise<void> {
@@ -10940,8 +11089,10 @@ async function recoverDocker(): Promise<void> {
     if (Array.isArray(r.computers)) state.computers = r.computers;
     await refresh();
     await loadComputers();
-  } catch {
-    /* pane already shows the current Docker state */
+  } catch (err) {
+    // The pane shows the current Docker state, but a failed click that changes
+    // nothing on screen reads as a dead button; say why.
+    flashToast((err as CaughtError | undefined)?.message || "Could not start Docker.");
   } finally {
     state.dockerBusy = false;
     paintDockerGate();
@@ -11041,7 +11192,7 @@ async function computerAction(id: string | undefined, action: string | undefined
     await refresh();
     loadComputerStats();
   } catch (err) {
-    window.alert((err as CaughtError | undefined)?.message || "That computer action failed.");
+    flashToast((err as CaughtError | undefined)?.message || "That computer action failed.");
   }
 }
 
@@ -11074,7 +11225,7 @@ function openSnapshotsForBot(botId: string | undefined): void {
   state.ctx = null;
   paintCtxMenu();
   if (!computerId) {
-    window.alert("This bot has no computer.");
+    flashToast("This bot has no computer.");
     return;
   }
   state.modal = "computers";
@@ -11115,11 +11266,11 @@ async function moveToCloudFromBot(botId: string | undefined): Promise<void> {
   const bot = botById(botId) || state.bots.find((b) => b.id === botId);
   const computerId = bot?.vm?.computerId;
   if (!computerId) {
-    window.alert("This bot has no computer to move.");
+    flashToast("This bot has no computer to move.");
     return;
   }
   const name = String(bot?.name || "Bot").trim() || "Bot";
-  if (!window.confirm(`Move “${name}” to Cloud? We’ll snapshot this desk, create a Cloud computer with the same name, and copy its files. Chat stays in Sub8.`)) {
+  if (!(await askConfirm(`Move “${name}” to Cloud? We’ll snapshot this desk, create a Cloud computer with the same name, and copy its files. Chat stays in Sub8.`, { ok: "Move to Cloud" }))) {
     return;
   }
   state.ctx = null;
@@ -11140,7 +11291,7 @@ async function moveToCloudFromBot(botId: string | undefined): Promise<void> {
     state.modal = null;
     render();
   } catch (err) {
-    window.alert((err as CaughtError | undefined)?.message || "Could not move this desk to Cloud.");
+    flashToast((err as CaughtError | undefined)?.message || "Could not move this desk to Cloud.");
   } finally {
     stopImageJobPoll();
     state.computerImagesBusy = false;
@@ -11157,7 +11308,7 @@ async function moveToCloudFromComputer(computerId: string | undefined): Promise<
     await moveToCloudFromBot(botId);
     return;
   }
-  window.alert("Attach this desk to a bot first, then Move to Cloud.");
+  flashToast("Attach this desk to a bot first, then Move to Cloud.");
 }
 
 async function snapshotDesk(computerId: string | undefined): Promise<boolean> {
@@ -11171,7 +11322,7 @@ async function snapshotDesk(computerId: string | undefined): Promise<boolean> {
     await loadComputerImages(computerId);
     return true;
   } catch (err) {
-    window.alert((err as CaughtError | undefined)?.message || "Could not snapshot this desk.");
+    flashToast((err as CaughtError | undefined)?.message || "Could not snapshot this desk.");
     return false;
   } finally {
     stopImageJobPoll();
@@ -11192,7 +11343,7 @@ async function restoreDeskImage(computerId: string | undefined, imageId: string 
     await loadComputers();
     await loadComputerImages(computerId);
   } catch (err) {
-    window.alert((err as CaughtError | undefined)?.message || "Could not restore that snapshot.");
+    flashToast((err as CaughtError | undefined)?.message || "Could not restore that snapshot.");
   } finally {
     stopImageJobPoll();
     state.computerImagesBusy = false;
@@ -11211,7 +11362,7 @@ async function deleteDeskImage(computerId: string | undefined, imageId: string |
     await api(`/api/computers/${computerId}/images/${imageId}`, { method: "DELETE" });
     await loadComputerImages(computerId);
   } catch (err) {
-    window.alert((err as CaughtError | undefined)?.message || "Could not delete that snapshot.");
+    flashToast((err as CaughtError | undefined)?.message || "Could not delete that snapshot.");
   } finally {
     stopImageJobPoll();
     state.computerImagesBusy = false;
@@ -11238,7 +11389,7 @@ async function persistCloudIdentity(
     if (next?.identityId) bot.identityId = next.identityId;
     if (next?.harness) bot.harness = next.harness;
   } catch (err) {
-    window.alert((err as CaughtError | undefined)?.message || "Could not attach that identity.");
+    flashToast((err as CaughtError | undefined)?.message || "Could not attach that identity.");
   }
 }
 
@@ -11324,7 +11475,7 @@ async function deleteMessages(ids: string[]): Promise<void> {
     paintChat(bot);
   } catch (err) {
     for (const id of ids) forgottenMessages.delete(`${bot.id}:${id}`);
-    window.alert((err as CaughtError | undefined)?.message || "Could not delete the message.");
+    flashToast((err as CaughtError | undefined)?.message || "Could not delete the message.");
     await refresh();
   }
 }
@@ -11385,7 +11536,7 @@ async function rebootVm(): Promise<void> {
   } catch (err) {
     bot.vm = { ...(bot.vm || {}), status: "error", error: (err as CaughtError).message };
     paintLivePane(bot);
-    window.alert((err as CaughtError).message || "Could not reboot the computer.");
+    flashToast((err as CaughtError).message || "Could not reboot the computer.");
   }
 }
 
@@ -11421,7 +11572,7 @@ async function resumeVm(): Promise<void> {
       live.vm = { ...(live.vm || {}), status: "error", error: (err as CaughtError).message };
       paintLivePane(live);
     } else {
-      window.alert((err as CaughtError).message || "Could not start the computer.");
+      flashToast((err as CaughtError).message || "Could not start the computer.");
     }
   }
 }
@@ -11691,7 +11842,7 @@ async function addCloudSkuToPlan(sku: string): Promise<void> {
   const out = await api("/api/cloud/billing/checkout", { method: "POST", body: { items: cloudPlanItems(sku, 1) } }) as { subscription?: unknown; url?: string };
   state.cloudBilling = { ...(state.cloudBilling || {}), ...(out.subscription ? { subscription: out.subscription } : {}) };
   if (out.url) {
-    window.open(out.url, "_blank", "noopener");
+    if (safeHttpUrl(out.url)) window.open(safeHttpUrl(out.url), "_blank", "noopener");
     const ok = await waitForCloudSkuSpare(sku);
     if (!ok) throw new Error("Plan did not update yet. Finish checkout, then try Create again.");
     return;
@@ -11720,7 +11871,7 @@ async function confirmCreateCloudDesk(): Promise<void> {
         btn.disabled = false;
         btn.textContent = "Confirm and create";
       }
-      window.alert((err as CaughtError | undefined)?.message || "Could not update the plan.");
+      flashToast((err as CaughtError | undefined)?.message || "Could not update the plan.");
       return;
     }
   }
@@ -11744,7 +11895,7 @@ async function confirmCreateCloudDesk(): Promise<void> {
       rebuildCreateModal();
       return;
     }
-    window.alert((err as CaughtError | undefined)?.message || "Could not create the Cloud bot.");
+    flashToast((err as CaughtError | undefined)?.message || "Could not create the Cloud bot.");
   }
 }
 
@@ -11771,7 +11922,7 @@ async function destroyCloudComputer(id: string | undefined): Promise<void> {
     if (state.modal === "computers") paintModal();
     else render();
   } catch (err) {
-    window.alert((err as CaughtError).message || "Could not destroy the draft desk.");
+    flashToast((err as CaughtError).message || "Could not destroy the draft desk.");
   }
 }
 
@@ -11784,9 +11935,9 @@ async function startCloudGrokOAuth(): Promise<void> {
     const href = started.verificationUriComplete || started.verificationUri;
     if (wait) {
       wait.hidden = false;
-      wait.innerHTML = `Open <a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">Grok sign-in</a> on this device. Code <strong>${escapeHtml(started.userCode || "")}</strong>.`;
+      wait.innerHTML = `Open <a href="${escapeHtml(safeHttpUrl(href))}" target="_blank" rel="noreferrer">Grok sign-in</a> on this device. Code <strong>${escapeHtml(started.userCode || "")}</strong>.`;
     }
-    if (href) window.open(href, "_blank", "noopener");
+    if (safeHttpUrl(href)) window.open(safeHttpUrl(href), "_blank", "noopener");
     if (cloudGrokPoll) clearInterval(cloudGrokPoll);
     cloudGrokPoll = setInterval(async () => {
       try {
@@ -11809,7 +11960,7 @@ async function startCloudGrokOAuth(): Promise<void> {
     if (wait) {
       wait.hidden = false;
       wait.textContent = (err as CaughtError).message || "Could not start Grok.";
-    } else window.alert((err as CaughtError).message || "Could not start Grok.");
+    } else flashToast((err as CaughtError).message || "Could not start Grok.");
   }
 }
 
@@ -11822,7 +11973,7 @@ async function saveCloudBrainKey(): Promise<void> {
     await loadIdentities();
     render();
   } catch (err) {
-    window.alert((err as CaughtError).message || "Could not save the key.");
+    flashToast((err as CaughtError).message || "Could not save the key.");
   }
 }
 
@@ -11837,7 +11988,7 @@ async function signCloudHarness(id: string | undefined, kind: string | undefined
     state.cloudDraft = snap;
     render();
   } catch (err) {
-    window.alert((err as CaughtError).message || "Could not update harness.");
+    flashToast((err as CaughtError).message || "Could not update harness.");
   }
 }
 
@@ -12178,7 +12329,11 @@ function applyTheme(): void {
   const t = state.settings?.themePreference || "system";
   const root = document.documentElement;
   root.dataset.theme = t;
-  root.style.colorScheme = t === "system" ? "light dark" : t;
+  // Every palette in styles.css is a light one now (Dark is the warm light
+  // theme), so native controls must render light too. "light dark" let an OS in
+  // dark mode paint unstyled buttons, selects and scrollbars with white text on
+  // these light surfaces.
+  root.style.colorScheme = "light";
 }
 
 async function setHumanControl(on: boolean): Promise<void> {
@@ -12233,7 +12388,125 @@ function paintControlChrome(): void {
   wrap.classList.toggle("human", Boolean(state.humanControl));
 }
 
+// ---------------------------------------------------------------------------
+// Server reachability. The renderer talks to a local HTTP server that can be
+// restarting (update, crash, sleep/wake). Without this the window kept showing
+// whatever it last painted, or "Create a Bot to get started." when the very
+// first fetch failed, and never loaded anything once the server came back.
+let booted = false;
+let bootError: unknown = null;
+let serverDown = false;
+let healthFails = 0;
+let rebooting = false;
+
+/** A fetch that never reached the server, or one the server answered with an error status. */
+function isFetchFailure(err: unknown): boolean {
+  const e = err as { name?: string; message?: string } | null;
+  if (!e) return false;
+  if (e.name === "ApiError") return true;
+  return e instanceof TypeError && /fetch|network|load failed/i.test(String(e.message || ""));
+}
+
+function paintConnBanner(): void {
+  const show = serverDown || (!booted && Boolean(bootError));
+  let host = document.getElementById("conn-banner");
+  if (!show) {
+    host?.remove();
+    return;
+  }
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "conn-banner";
+    host.setAttribute("role", "status");
+    host.setAttribute("aria-live", "polite");
+    host.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement).closest("[data-conn-retry]")) void probeServer(true);
+    });
+    document.body.appendChild(host);
+  }
+  const reached = !serverDown && (bootError as { name?: string } | null)?.name === "ApiError";
+  const msg = reached
+    ? `Sub8 could not load: ${String((bootError as Error).message || "server error")}. Retrying…`
+    : "Can’t reach the Sub8 server. Reconnecting…";
+  const key = `${reached}:${msg}`;
+  if (host.dataset.key === key) return;
+  host.dataset.key = key;
+  host.innerHTML = `<span class="conn-dot" aria-hidden="true"></span><span class="conn-msg">${escapeHtml(msg)}</span><button type="button" class="pill conn-retry" data-conn-retry>Retry now</button>`;
+}
+
+/** Re-pull everything the server owns after a gap, so the UI is not stale. */
+async function resyncAfterReconnect(): Promise<void> {
+  if (!booted) {
+    await rebootApp();
+    return;
+  }
+  await refreshSettings().catch(() => {});
+  await refresh().catch(() => {});
+  loadComputers().catch(() => {});
+}
+
+/** Finish a boot that failed because the server was not there yet. */
+async function rebootApp(): Promise<void> {
+  if (rebooting || booted) return;
+  rebooting = true;
+  try {
+    await refreshSettings();
+    await refresh();
+    booted = true;
+    bootError = null;
+    render();
+    document.documentElement.dataset.appReady = "1";
+    loadComputers().catch(() => {});
+    checkForUpdate({ silent: true }).catch(() => {});
+    void loadVaultCloud();
+    await loadHarnessStatus().catch(() => {});
+    if (needsBrainSetup(state.settings, state.harnessStatus)) openBrainSetup();
+  } catch (err) {
+    console.error("Sub8 reload failed", err);
+    bootError = booted || !isFetchFailure(err) ? null : err;
+  } finally {
+    rebooting = false;
+    paintConnBanner();
+  }
+}
+
+function markServer(ok: boolean): void {
+  if (ok) {
+    healthFails = 0;
+    const wasDown = serverDown;
+    serverDown = false;
+    paintConnBanner();
+    if (wasDown || (!booted && bootError)) void resyncAfterReconnect();
+    return;
+  }
+  healthFails += 1;
+  // One missed poll is a blip (the server is busy); two in a row is an outage.
+  if (healthFails >= 2 || !booted) serverDown = true;
+  paintConnBanner();
+}
+
+let probing = false;
+async function probeServer(now = false): Promise<void> {
+  if (probing) return;
+  probing = true;
+  try {
+    await api("/api/health");
+    markServer(true);
+    if (now && !booted) await rebootApp();
+  } catch (err) {
+    // An error status still means something answered.
+    markServer((err as { name?: string } | null)?.name === "ApiError");
+  } finally {
+    probing = false;
+  }
+}
+
+let listening = false;
 function listen(): void {
+  // Boot can fail after listen() already ran; a second call would open a
+  // second EventSource and every event would be applied twice.
+  if (listening) return;
+  listening = true;
   let es: EventSource | null = null;
   let opened = false;
   let retry = 0;
@@ -12246,29 +12519,38 @@ function listen(): void {
       }
     }
     es = new EventSource("/api/events");
-    es.addEventListener("attention", (e: MessageEvent<string>) => {
+    // One bad frame (or a paint that throws on it) must not take the whole
+    // handler down with an uncaught error; log it and keep the stream.
+    const safe = (fn: (e: MessageEvent<string>) => void) => (e: Event) => {
+      try {
+        fn(e as MessageEvent<string>);
+      } catch (err) {
+        console.warn(`sub8 event "${e.type}" failed`, err);
+      }
+    };
+    es.addEventListener("attention", safe((e: MessageEvent<string>) => {
       try {
         showAttention(JSON.parse(e.data));
       } catch {
         /* malformed event */
       }
-    });
-    es.addEventListener("cloud-thread", (e: MessageEvent<string>) => {
+    }));
+    es.addEventListener("cloud-thread", safe((e: MessageEvent<string>) => {
       const d = JSON.parse(e.data);
       const bot = (state.cloudDraft?.bots || []).find((b) => b.id === d.botId);
       if (!bot) return;
       if (d.messagesFailed) return;
       bot.messages = mergeCloudMessages(bot.messages, d.messages);
       if (isCloudPlace()) render();
-    });
-    es.addEventListener("cloud", (e: MessageEvent<string>) => {
+    }));
+    es.addEventListener("cloud", safe((e: MessageEvent<string>) => {
       const d = JSON.parse(e.data);
       if (!d || !Array.isArray(d.bots)) return;
       // mergeCloudDraft only touches id/messages, so it types its rows by those.
       state.cloudDraft = mergeCloudDraft(state.cloudDraft, d) as CloudDraftState;
       if (isCloudPlace()) render();
-    });
-    es.addEventListener("bots", (e: MessageEvent<string>) => {
+    }));
+    es.addEventListener("bots", safe((e: MessageEvent<string>) => {
       syncBots(JSON.parse(e.data));
       if (isCloudPlace()) return;
       if (state.bots.some((b) => b.teamId)) {
@@ -12276,8 +12558,8 @@ function listen(): void {
       } else {
         render();
       }
-    });
-    es.addEventListener("teams", (e: MessageEvent<string>) => {
+    }));
+    es.addEventListener("teams", safe((e: MessageEvent<string>) => {
       try {
         const rows = JSON.parse(e.data);
         if (Array.isArray(rows)) state.teams = rows;
@@ -12286,8 +12568,8 @@ function listen(): void {
       }
       if (isCloudPlace()) return;
       render();
-    });
-    es.addEventListener("channels", (e: MessageEvent<string>) => {
+    }));
+    es.addEventListener("channels", safe((e: MessageEvent<string>) => {
       try {
         const rows = JSON.parse(e.data);
         if (Array.isArray(rows)) state.channels = rows;
@@ -12295,8 +12577,8 @@ function listen(): void {
         /* keep */
       }
       paintChannelRail();
-    });
-    es.addEventListener("job", (e: MessageEvent<string>) => {
+    }));
+    es.addEventListener("job", safe((e: MessageEvent<string>) => {
       try {
         const { teamId, job } = JSON.parse(e.data);
         if (!teamId) return;
@@ -12316,11 +12598,11 @@ function listen(): void {
       if (isCloudPlace()) return;
       const selected = state.bots.find((b) => b.id === state.selected);
       if (selected) paintJobBar(selected);
-    });
-    es.addEventListener("computers", () => {
+    }));
+    es.addEventListener("computers", safe(() => {
       loadComputers();
-    });
-    es.addEventListener("routine", (e: MessageEvent<string>) => {
+    }));
+    es.addEventListener("routine", safe((e: MessageEvent<string>) => {
       const { botId, routine } = JSON.parse(e.data);
       if (!routine?.id) return;
       const bot = state.bots.find((b) => b.id === botId);
@@ -12331,8 +12613,8 @@ function listen(): void {
       else rows.push(routine);
       bot.routines = rows;
       if (!isCloudPlace() && botId === state.selected) paintRoutineList(bot);
-    });
-    es.addEventListener("bot", (e: MessageEvent<string>) => {
+    }));
+    es.addEventListener("bot", safe((e: MessageEvent<string>) => {
       const bot = adoptBot(JSON.parse(e.data));
       if (isCloudPlace()) return;
       const selected = state.bots.find((b) => b.id === state.selected);
@@ -12353,8 +12635,8 @@ function listen(): void {
         refreshAvatars();
         if (bot.id === selected.id && (state.showComputer || state.deskSize === "full")) attachLiveFrame(selected);
       } else render();
-    });
-    es.addEventListener("harness-status", (e: MessageEvent<string>) => {
+    }));
+    es.addEventListener("harness-status", safe((e: MessageEvent<string>) => {
       try {
         const status = JSON.parse(e.data);
         if (status?.harnesses) {
@@ -12366,8 +12648,8 @@ function listen(): void {
       }
       paintHarnessBanner();
       if (state.modal === "settings" && state.section === "harnesses") paintModal();
-    });
-    es.addEventListener("control", (e: MessageEvent<string>) => {
+    }));
+    es.addEventListener("control", safe((e: MessageEvent<string>) => {
       const { botId, on } = JSON.parse(e.data);
       if (isCloudPlace() || botId !== state.selected) return;
       // "control" carries TWO different payloads: the Take control toggle sends
@@ -12383,11 +12665,11 @@ function listen(): void {
       if (typeof on !== "boolean") return;
       state.humanControl = on;
       paintControlChrome();
-    });
+    }));
     // The server sends SSE frames named "error"; they arrive as MessageEvents on
     // the same name EventSource uses for a transport failure, whose .data is
     // undefined and whose JSON.parse throws into the catch below, as before.
-    es.addEventListener("error", (e) => {
+    es.addEventListener("error", safe((e) => {
       try {
         const { botId } = JSON.parse((e as MessageEvent<string>).data);
         const bot = state.bots.find((b) => b.id === botId);
@@ -12398,19 +12680,22 @@ function listen(): void {
       } catch {
         /* ignore */
       }
-    });
-    es.addEventListener("tool", (e: MessageEvent<string>) => {
+    }));
+    es.addEventListener("tool", safe((e: MessageEvent<string>) => {
       const { botId, name, args } = JSON.parse(e.data);
       const bot = state.bots.find((b) => b.id === botId);
       if (!bot || name === "send_message") return;
       applyChatBusy(bot, { type: "tool", name, args });
       if (!isCloudPlace() && botId === state.selected && $("#thread")) paintChat(bot);
-    });
-    es.addEventListener("teammate", (e: MessageEvent<string>) => {
+    }));
+    es.addEventListener("teammate", safe((e: MessageEvent<string>) => {
       const data = JSON.parse(e.data);
       if (data.gone) {
         state.bots = state.bots.filter((b) => b.id !== data.gone);
-        if (state.selected === data.gone) rememberSelected(state.bots.find((b) => !b.hidden)?.id || null);
+        if (state.selected === data.gone) {
+          rememberSelected(state.bots.find((b) => !b.hidden)?.id || null);
+          state.humanControl = Boolean(state.bots.find((b) => b.id === state.selected)?.humanControl);
+        }
       }
       if (data.bot) adoptBot(data.bot);
       api("/api/teams")
@@ -12419,8 +12704,8 @@ function listen(): void {
           render();
         })
         .catch(() => {});
-    });
-    es.addEventListener("team-message", (e: MessageEvent<string>) => {
+    }));
+    es.addEventListener("team-message", safe((e: MessageEvent<string>) => {
       const msg = JSON.parse(e.data);
       let team = (state.teams || []).find((t) => t.id === msg.teamId) || teamFromBots(msg.teamId);
       if (team) {
@@ -12457,8 +12742,8 @@ function listen(): void {
           paintTeamTabs(selected!);
         }
       }
-    });
-    es.addEventListener("message", (e) => {
+    }));
+    es.addEventListener("message", safe((e) => {
       const { botId, ...msg } = JSON.parse(e.data);
       const bot = state.bots.find((b) => b.id === botId);
       if (!bot) return;
@@ -12473,7 +12758,7 @@ function listen(): void {
         trimBotMessages(bot);
         if (botId !== state.selected && (msg.role === "assistant" || msg.kind === "tool")) {
           bot.unread = true;
-          api(`/api/bots/${botId}`, { method: "PATCH", body: { unread: true } });
+          api(`/api/bots/${botId}`, { method: "PATCH", body: { unread: true } }).catch(() => {});
         }
       }
       applyChatBusy(bot, { type: "message", msg });
@@ -12481,8 +12766,8 @@ function listen(): void {
       if (botId === state.selected && $("#thread")) {
         paintChat(bot);
       } else render();
-    });
-    es.addEventListener("log", (e: MessageEvent<string>) => {
+    }));
+    es.addEventListener("log", safe((e: MessageEvent<string>) => {
       const { botId, m } = JSON.parse(e.data);
       const bot = state.bots.find((b) => b.id === botId);
       if (!bot) return;
@@ -12512,25 +12797,25 @@ function listen(): void {
         const label = $("#screen-label");
         if (label && bot.vm.status === "starting" && !bot.vm.novncPort) label.textContent = m;
       }
-    });
-    es.addEventListener("vm-status", (e: MessageEvent<string>) => {
+    }));
+    es.addEventListener("vm-status", safe((e: MessageEvent<string>) => {
       const { botId, status, hint } = JSON.parse(e.data);
       const bot = state.bots.find((b) => b.id === botId);
       if (!bot) return;
       bot.vm = { ...(bot.vm || {}), status: status || bot.vm?.status, hint: hint || bot.vm?.hint };
       if (!isCloudPlace() && botId === state.selected) paintScreenStatus(bot);
-    });
-    es.addEventListener("screen", (e: MessageEvent<string>) => {
+    }));
+    es.addEventListener("screen", safe((e: MessageEvent<string>) => {
       const { botId, url } = JSON.parse(e.data);
       if (botId) missingStills.delete(botId);
       if (isCloudPlace() || botId !== state.selected) return;
       const still = $<HTMLImageElement>(".screen-still");
       if (!still) return;
       if (url) refreshStill(still, botId);
-    });
+    }));
     es.onerror = () => {
-      const label = $("#screen-label");
-      /* keep the label as just the bot's screen name */
+      // The stream dropping is usually the first sign the server went away.
+      void probeServer();
       if (es && es.readyState === EventSource.CLOSED) {
         clearTimeout(retry);
         retry = setTimeout(attach, 1500);
@@ -12559,7 +12844,10 @@ let startingVm = false;
  */
 let lastFocusedField: HTMLElement | null = null;
 let lastPointerDownAt = 0;
+let focusGuard = false;
 function installStreamFocusGuard(): void {
+  if (focusGuard) return;
+  focusGuard = true;
   document.addEventListener("focusin", (e) => {
     if (isFieldEl(e.target as HTMLElement)) lastFocusedField = e.target as HTMLElement;
   }, true);
@@ -12668,22 +12956,15 @@ function watchStream(): void {
     });
 }
 
-(async function init() {
-  try {
-  await refreshSettings();
-  const ev = await runningAppVersion();
-  if (ev) {
-    state.appVersion = ev;
-    tagSentryVersion(ev);
-  }
-  await refresh();
-  listen();
-  installStreamFocusGuard();
-  render();
-  loadComputers().catch(() => {});
-  setInterval(() => {
-    if (state.modal === "computers") loadComputerStats();
-  }, 4000);
+/**
+ * Timers and window listeners the app needs whether or not the first load
+ * worked. A boot that failed (server not up yet) used to skip all of these, so
+ * nothing ever polled /api/health and the window never recovered.
+ */
+let loopsStarted = false;
+function startLoops(): void {
+  if (loopsStarted) return;
+  loopsStarted = true;
   if (window.sub8Desktop?.onPausing) {
     window.sub8Desktop.onPausing(() => {
       let host = $("#quit-pause");
@@ -12695,24 +12976,16 @@ function watchStream(): void {
       host.innerHTML = `<div class="overlay"><div class="modal" style="height:auto;width:min(400px,90%)"><div class="sbody" style="width:100%"><h2>Pausing computers…</h2><p class="muted">They'll wake when you open Sub8 again.</p></div></div></div>`;
     });
   }
-  document.documentElement.dataset.appReady = "1";
-  checkForUpdate({ silent: true }).catch(() => {});
-  await loadHarnessStatus();
-  if (setupQuery().get("setup") === "1" || needsBrainSetup(state.settings, state.harnessStatus)) {
-    openBrainSetup();
-  } else if (wantsGrokBuild() && state.hasGrokAuth === false) {
-    state.grokAuthAsk = false;
-  }
-  const bot = state.bots.find((b) => b.id === state.selected);
-  if (!isCloudPlace() && bot && bot.vm?.container && bot.vm.status !== "running") {
-    resumeVm().catch(() => {});
-  }
+  setInterval(() => {
+    if (state.modal === "computers") loadComputerStats();
+  }, 4000);
   setInterval(watchStream, 8_000);
   setInterval(() => void pollVaultPending(), 6_000);
   void loadVaultCloud(); // the in-chat approve card needs to know locked vs unlocked
   setInterval(() => {
     api("/api/health")
       .then((h) => {
+        markServer(true);
         if (!(h as { docker?: DockerState } | null)?.docker) return;
         const was = dockerMissing();
         // The early return above proved it; the cast is what loses the narrowing.
@@ -12729,7 +13002,7 @@ function watchStream(): void {
           if (bot) resumeVm().catch(() => {});
         }
       })
-      .catch(() => {});
+      .catch((err) => markServer((err as { name?: string } | null)?.name === "ApiError"));
   }, 3_000);
   window.addEventListener("focus", () => {
     const bot = state.bots.find((b) => b.id === state.selected);
@@ -12739,10 +13012,48 @@ function watchStream(): void {
       refreshSettings().catch(() => {});
     }
   });
+}
+
+(async function init() {
+  try {
+  await refreshSettings();
+  const ev = await runningAppVersion();
+  if (ev) {
+    state.appVersion = ev;
+    tagSentryVersion(ev);
+  }
+  await refresh();
+  listen();
+  installStreamFocusGuard();
+  render();
+  booted = true;
+  loadComputers().catch(() => {});
+  document.documentElement.dataset.appReady = "1";
+  checkForUpdate({ silent: true }).catch(() => {});
+  await loadHarnessStatus();
+  if (setupQuery().get("setup") === "1" || needsBrainSetup(state.settings, state.harnessStatus)) {
+    openBrainSetup();
+  } else if (wantsGrokBuild() && state.hasGrokAuth === false) {
+    state.grokAuthAsk = false;
+  }
+  const bot = state.bots.find((b) => b.id === state.selected);
+  if (!isCloudPlace() && bot && bot.vm?.container && bot.vm.status !== "running") {
+    resumeVm().catch(() => {});
+  }
+  startLoops();
   } catch (err) {
     console.error("Sub8 init failed", err);
+    // Only a failed fetch is worth retrying; a code error would just throw again.
+    if (!booted && isFetchFailure(err)) bootError = err;
     try {
       listen();
+      installStreamFocusGuard();
+    } catch {
+      /* ignore */
+    }
+    try {
+      startLoops();
+      if (isFetchFailure(err)) markServer(false);
     } catch {
       /* ignore */
     }

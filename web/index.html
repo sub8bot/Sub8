@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Sub8</title>
-    <link rel="stylesheet" href="/styles.css?v=sub894" />
+    <link rel="stylesheet" href="/styles.css?v=sub895" />
     <script type="importmap">
       {
         "imports": {
@@ -16,19 +16,32 @@
   </head>
   <body>
     <div id="app"></div>
-    <script src="/vendor/sentry.js?v=sub894"></script>
+    <script src="/vendor/sentry.js?v=sub895"></script>
     <script>
-      window.addEventListener("error", (event) => {
-        if (document.documentElement.dataset.appReady) return;
-        const app = document.getElementById("app");
-        if (!app || app.querySelector("#shell-root") || document.getElementById("boot-error")) return;
-        const msg = String(event.message || "script error").replace(/[<>&]/g, "");
-        app.innerHTML =
-          '<div id="boot-error" style="padding:28px;font:14px/1.45 system-ui,sans-serif"><h2 style="margin:0 0 8px">Sub8 failed to load</h2><p style="margin:0">' +
-          msg +
-          "</p><p style=\"margin:12px 0 0;opacity:.7\">Reload the window. If it stays blank, open Developer Tools from the View menu.</p></div>";
-      });
+      (function () {
+        // Last-resort boot screen. app.js replaces #app with the shell as soon as
+        // it runs; if it never does (a script error, a module that failed to
+        // load, a server that accepts but never answers) the window would stay
+        // blank, so say what happened and offer a reload.
+        function fail(message) {
+          if (document.documentElement.dataset.appReady) return;
+          var app = document.getElementById("app");
+          if (!app || app.querySelector("#shell-root") || document.getElementById("boot-error")) return;
+          var msg = String(message || "script error").replace(/[<>&"]/g, "");
+          app.innerHTML =
+            '<div id="boot-error" style="max-width:520px;margin:18vh auto 0;padding:28px;font:14px/1.45 -apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:#1c1c1e"><h2 style="margin:0 0 8px;font-size:18px">Sub8 failed to load</h2><p style="margin:0;color:#5e5e68">' +
+            msg +
+            '</p><p style="margin:12px 0 16px;color:#5e5e68">Reload the window. If it stays blank, open Developer Tools from the View menu.</p><button type="button" onclick="location.reload()" style="font:inherit;font-weight:600;border:0;border-radius:999px;padding:8px 16px;background:#1c1c1e;color:#fff;cursor:pointer">Reload</button></div>';
+        }
+        window.__sub8BootFail = fail;
+        window.addEventListener("error", function (event) {
+          fail(event.message);
+        });
+        setTimeout(function () {
+          fail("Sub8 is taking too long to start. The local server may still be starting up.");
+        }, 20000);
+      })();
     </script>
-    <script type="module" src="/app.js?v=sub894"></script>
+    <script type="module" src="/app.js?v=sub895" onerror="window.__sub8BootFail &amp;&amp; window.__sub8BootFail('Could not load the app script.')"></script>
   </body>
 </html>

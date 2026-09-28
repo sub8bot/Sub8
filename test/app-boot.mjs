@@ -166,7 +166,9 @@ assert.match(app, /function typedChoiceAnswer\(/);
 
 {
   const main = readFileSync(path.join(root, "electron", "main.mts"), "utf8");
-  assert.match(main, /Sub8 failed to start/, "packaged window must not stay white if the server never binds");
+  assert.match(main, /Sub8 is reconnecting/, "packaged window must not stay white if the server never binds");
+  assert.match(main, /render-process-gone/, "a dead renderer must reload instead of leaving a white window");
+  assert.match(main, /scheduleServerRestart\(\)/, "a server that dies while the app is open must be restarted");
   assert.match(main, /waitForServer\(\)\.then\(\(up\)/, "do not loadURL in finally when the server is down");
 }
 

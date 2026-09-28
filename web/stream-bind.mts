@@ -25,6 +25,10 @@ export function novncAutoconnectUrl(raw: string | null | undefined, { viewOnly =
   const s = String(raw || "").trim();
   if (!s) return "";
   const relative = !/^[a-z][a-z0-9+.-]*:/i.test(s);
+  // This lands in an iframe src. A javascript: or data: URL there runs in the
+  // app's own origin, so only http(s) and same-origin paths get through.
+  if (!relative && !/^https?:/i.test(s)) return "";
+  if (relative && /^\s*\/\//.test(s)) return "";
   let u: URL;
   try {
     u = relative ? new URL(s, "http://local.invalid") : new URL(s);

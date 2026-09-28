@@ -414,6 +414,9 @@ function spawnDeskNc(container: string): ChildProcess {
   );
   child.stdin.on("error", () => {});
   child.stdout.on("error", () => {});
+  // The proxy hangs up on remote 'error' too; this keeps a missing docker CLI
+  // (ENOENT) from being an unhandled 'error' before it attaches.
+  child.on("error", () => {});
   return child;
 }
 
@@ -480,9 +483,11 @@ export async function warmLocalDesks({
   }
   const warmed: Array<{ name: string; harnessPort: number; botId: string }> = [];
   if (!wanted.size) return { warmed };
-  if (typeof ensure === "function") ensure(onLog).catch(() => {});
   const listed = await listStates({ force: true });
+  // Docker down: nothing to warm and nothing to build against. The image is
+  // checked again by the first provision once Docker is back.
   if (!listed?.ok) return { warmed };
+  if (typeof ensure === "function") ensure(onLog).catch(() => {});
   for (const [name, bot] of wanted) {
     const st = listed.states?.get(name);
     if (!st?.running) continue;
@@ -1100,10 +1105,26 @@ function decorateDocker(value: DockerStatus | null | undefined): DecoratedDocker
   };
 }
 
+/**
+ * How long a probed status stands. A healthy answer is re-checked every 4s. A
+ * failed one backs off to 20s: each probe is up to half a dozen CLI spawns
+ * (version, context inspect, one `docker info` per socket), and the UI's 3s
+ * health poll plus the 12s desk sweep kept all of them running nonstop while
+ * Colima was simply off. Recover, install and every state change invalidate
+ * the cache (and reset the streak), so a fix made from the app shows at once.
+ */
+function dockerStatusTtl(value: DockerStatus | null): number {
+  if (!value || value.ok) return 4000;
+  return Math.min(20_000, 4000 * Math.max(1, dockerFailStreak));
+}
+
+/** Last status any probe produced; survives invalidateDockerCache. */
+let lastDockerStatus: DockerStatus | null = null;
+
 export async function dockerStatus(): Promise<DecoratedDockerStatus> {
   const now = Date.now();
   let value: DockerStatus | null;
-  if (dockerStatusCache.value && now - dockerStatusCache.at < 4000) {
+  if (dockerStatusCache.value && now - dockerStatusCache.at < dockerStatusTtl(dockerStatusCache.value)) {
     value = dockerStatusCache.value;
   } else if (dockerStatusInflight) {
     value = await dockerStatusInflight;
@@ -1113,7 +1134,23 @@ export async function dockerStatus(): Promise<DecoratedDockerStatus> {
     });
     value = await dockerStatusInflight;
   }
+  lastDockerStatus = value;
   return decorateDocker(value);
+}
+
+/**
+ * dockerStatus without waiting on a probe once one has answered: returns the
+ * last known status at once and refreshes it in the background when stale.
+ * /api/health uses this. The desktop shell probes it with a 500-800ms timeout
+ * to tell whether its server is alive, and a fresh probe with Docker down (or
+ * queued behind two long `docker exec`s) routinely took longer, so a healthy
+ * server read as dead and the shell started a second one on the next port.
+ */
+export async function dockerStatusNow(): Promise<DecoratedDockerStatus> {
+  if (!lastDockerStatus) return dockerStatus();
+  const fresh = dockerStatusCache.value && Date.now() - dockerStatusCache.at < dockerStatusTtl(dockerStatusCache.value);
+  if (!fresh) dockerStatus().catch(() => {});
+  return decorateDocker(dockerStatusCache.value || lastDockerStatus);
 }
 
 export function parseLocalbotPs(out: string | null | undefined): Map<string, ContainerState> {
@@ -1330,7 +1367,8 @@ async function startDockerDesktop(platform: string = process.platform): Promise<
     const exe = dockerDesktopPath("win32");
     if (!exe || !fsSync.existsSync(exe)) return { ok: false, log: "Docker Desktop is not installed." };
     try {
-      spawn(exe, [], { detached: true, stdio: "ignore", windowsHide: true }).unref();
+      // A failed spawn is reported as an async 'error' event, not a throw.
+      spawn(exe, [], { detached: true, stdio: "ignore", windowsHide: true }).on("error", () => {}).unref();
     } catch (err) {
       return { ok: false, log: String((err as Error).message || err) };
     }
@@ -1845,6 +1883,14 @@ export function startHostGrokOAuth(): { started: boolean } {
     env: process.env,
     stdio: ["ignore", "pipe", "pipe"] as StdioOptions,
   });
+  // Nothing reads the output; drain it so a chatty login cannot fill the pipe.
+  hostLoginChild.stdout?.resume();
+  hostLoginChild.stderr?.resume();
+  // No grok on PATH is an async ENOENT 'error'. Unheard, it kills the server.
+  hostLoginChild.on("error", (err) => {
+    console.error("grok login --oauth", err.message || err);
+    hostLoginChild = null;
+  });
   hostLoginChild.on("close", () => {
     hostLoginChild = null;
     pushHostGrokAuthAll().catch(() => {});
@@ -2008,6 +2054,13 @@ function progressLogger(onLog: LogFn, prefix: string): (chunk: unknown) => void 
   };
 }
 
+/** True when a docker CLI failure means "no daemon to talk to", not a bad command. */
+export function dockerUnreachable(out: unknown): boolean {
+  return /cannot connect to the docker daemon|is the docker daemon running|error during connect|docker\.sock: connect: (no such file|connection refused)|failed to connect to the docker api/i.test(
+    String(out || ""),
+  );
+}
+
 export async function ensureImage(onLog: LogFn = () => {}): Promise<void> {
   const override = String(process.env.LOCALBOT_IMAGE || "").trim();
   if (override) {
@@ -2027,6 +2080,9 @@ export async function ensureImage(onLog: LogFn = () => {}): Promise<void> {
   }
 
   const haveSlim = await docker(["image", "inspect", "-f", "{{.Created}}", SLIM_IMAGE], { timeout: 8_000 });
+  // An unreachable daemon also fails the inspect. Building (then pulling the
+  // fallback) against it only logged three failures per boot and threw anyway.
+  if (!haveSlim.ok && dockerUnreachable(haveSlim.out)) throw new Error(`Docker is not running: ${haveSlim.out.slice(-300)}`);
   const created = haveSlim.ok ? Date.parse(String(haveSlim.out || "").trim()) || 0 : 0;
   if (haveSlim.ok) {
     resolvedImage = SLIM_IMAGE;
@@ -2034,13 +2090,26 @@ export async function ensureImage(onLog: LogFn = () => {}): Promise<void> {
     return;
   }
 
+  // A slim build that just failed for a real reason (network, Dockerfile) is
+  // not retried on every provision: each attempt is up to ten minutes of build
+  // plus a fallback pull. Reuse the fallback image while the cooldown runs.
+  if (Date.now() - slimFailedAt < SLIM_RETRY_MS) {
+    const haveFallback = await docker(["image", "inspect", "-f", "{{.Id}}", FALLBACK_IMAGE], { timeout: 8_000 });
+    if (haveFallback.ok) {
+      resolvedImage = FALLBACK_IMAGE;
+      return;
+    }
+  }
   await buildSlimImage(onLog, { first: true });
 }
 
 let slimRebuild: Promise<boolean> | null = null;
+let slimFailedAt = 0;
+const SLIM_RETRY_MS = 30 * 60_000;
 
 function scheduleSlimRebuild(onLog: LogFn): Promise<boolean> {
   if (slimRebuild) return slimRebuild;
+  if (Date.now() - slimFailedAt < SLIM_RETRY_MS) return Promise.resolve(false);
   onLog("Computer image is out of date; rebuilding in the background. Existing desks keep running.");
   slimRebuild = buildSlimImage(onLog, { first: false }).finally(() => {
     slimRebuild = null;
@@ -2058,9 +2127,18 @@ async function buildSlimImage(onLog: LogFn, { first }: { first?: boolean | undef
   });
   if (built.ok) {
     resolvedImage = SLIM_IMAGE;
+    slimFailedAt = 0;
     onLog("Computer image is ready.");
     return true;
   }
+  if (dockerUnreachable(built.out)) {
+    // Not a bad Dockerfile: the daemon went away. The fallback pull would fail
+    // the same way, and a rebuild is retried on the next ensureImage.
+    onLog("Docker is not running; the computer image will build once it is.");
+    if (!first) return false;
+    throw new Error(`Docker is not running: ${built.out.slice(-300)}`);
+  }
+  slimFailedAt = Date.now();
   if (!first) {
     onLog("Rebuild failed; keeping the current computer image.");
     resolvedImage = SLIM_IMAGE;

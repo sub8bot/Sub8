@@ -23,7 +23,11 @@ export function identityRuntimeDir(identity: Pick<Identity, "id" | "runtimeRef" 
   if (identity.runtimeRef === "host" || !identity.runtimeRef) {
     return "";
   }
-  return path.join(dataDir, "identities", identity.runtimeRef || identity.id, identity.provider);
+  // runtimeRef arrives verbatim from POST /api/identities. It names one
+  // directory; a "../.." there sent the host CLI's isolated HOME (and the
+  // credentials written into it) anywhere on disk.
+  const ref = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(identity.runtimeRef) ? identity.runtimeRef : identity.id;
+  return path.join(dataDir, "identities", ref, identity.provider);
 }
 
 export async function loadNormalizedIdentities(): Promise<Identity[]> {

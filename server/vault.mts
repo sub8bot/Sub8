@@ -730,6 +730,10 @@ async function handleVaultRequest(bot: VaultDeskBot): Promise<void> {
     ["exec", "-u", "abc", box, "bash", "-lc", "cat /tmp/sub8-vault-req.json 2>/dev/null || true"],
     { timeout: 2500 },
   );
+  // A failed exec's output is docker's own error ("Cannot connect to the
+  // Docker daemon", "Container ... is paused"), not a request. Parsing it
+  // failed, and the consume below spent a second docker call every 2s per desk.
+  if (!peek.ok) return;
   const raw = String(peek.out || "").trim();
   if (!raw) return;
   const consume = () => vm.docker(["exec", "-u", "abc", box, "rm", "-f", "/tmp/sub8-vault-req.json"]);
@@ -766,6 +770,8 @@ export function startVaultBridge(loadBots: () => Promise<readonly VaultDeskBot[]
     if (ticking) return;
     ticking = true;
     try {
+      // Docker down: every desk's exec would fail. dockerStatus is cached.
+      if (!(await vm.dockerStatus()).ok) return;
       const bots = await loadBots();
       for (const bot of bots) {
         // octo-vault file drops are only used by Grok Build inside the VM.

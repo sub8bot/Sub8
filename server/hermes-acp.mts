@@ -208,15 +208,30 @@ function attachChild(proc: ChildProcessWithoutNullStreams): void {
     buf += chunk.toString();
     const lines = buf.split("\n");
     buf = lines.pop() || "";
-    for (const line of lines) if (line.trim()) handleLine(line);
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      // handleLine answers permission requests through send(), which throws
+      // once stdin is gone. A throw here is an uncaught exception.
+      try {
+        handleLine(line);
+      } catch (err) {
+        console.error("hermes-acp", (err as Error).message || err);
+      }
+    }
   });
   proc.stderr.on("data", () => {});
-  proc.on("exit", () => {
-    child = null;
+  const gone = (why: string) => {
+    if (child === proc) child = null;
     sessions.clear();
-    for (const [, p] of pending) p.reject(new Error("Hermes ACP exited"));
+    for (const [, p] of pending) p.reject(new Error(why));
     pending.clear();
-  });
+  };
+  proc.on("exit", () => gone("Hermes ACP exited"));
+  // A missing or unrunnable hermes binary is an async 'error' (ENOENT/EACCES),
+  // and a write after it dies is an EPIPE on stdin. Unheard, either one kills
+  // the whole server.
+  proc.on("error", (err) => gone(`Hermes ACP failed to start: ${err.message || err}`));
+  proc.stdin.on("error", () => {});
 }
 
 export async function ensureHermesAcp({ bin, env, home }: HermesAcpSpawnOptions = {}): Promise<void> {

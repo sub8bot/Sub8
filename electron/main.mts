@@ -48,28 +48,43 @@ function portFree(port: number): Promise<boolean> {
   });
 }
 
-async function resolvePort(): Promise<{ port: number; already: boolean }> {
-  // A healthy answer on 8787 is not proof it is OUR server. An orphaned dev
-  // server (the repo's data/, left holding the port after a Force Quit, since
-  // the child is only killed from before-quit) would be adopted by the
-  // packaged app, which then operates on the wrong bots.json entirely.
-  // /api/health names the dir it serves, so compare before attaching.
-  const want = app.isPackaged ? path.join(app.getPath("userData"), "data") : null;
+/**
+ * True only for a Sub8 server that serves the data dir this build expects.
+ * `{ ok: true }` alone is not enough: any dev server (a wrangler worker, say)
+ * can answer that on 8787, and adopting it loads a foreign site into the
+ * window. Sub8's /api/health also reports `docker` and `dataDir`.
+ */
+function isOurHealth(body: unknown): boolean {
+  if (!body || typeof body !== "object") return false;
+  const b = body as { ok?: unknown; dataDir?: unknown; docker?: unknown };
+  if (b.ok !== true) return false;
+  const theirs = typeof b.dataDir === "string" ? b.dataDir : "";
+  if (!theirs) return !app.isPackaged && "docker" in b;
+  if (!app.isPackaged) return true;
+  return path.resolve(theirs) === path.resolve(path.join(app.getPath("userData"), "data"));
+}
+
+async function probeHealth(url: string, timeoutMs: number): Promise<"ours" | "foreign" | "down"> {
   try {
-    const r = await fetch("http://127.0.0.1:8787/api/health", { signal: AbortSignal.timeout(500) });
-    if (r.ok) {
-      const body = (await r.json().catch(() => null)) as { dataDir?: unknown } | null;
-      const theirs = typeof body?.dataDir === "string" ? body.dataDir : "";
-      // No dataDir means a server older than this field: attach as before
-      // rather than refuse a healthy one over a missing key.
-      if (!want || !theirs || path.resolve(theirs) === path.resolve(want)) {
-        return { port: 8787, already: true };
-      }
-    }
+    const r = await fetch(`${url}/api/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    const body = await r.json().catch(() => null);
+    return r.ok && isOurHealth(body) ? "ours" : "foreign";
   } catch {
-    /* free or not ours */
+    return "down";
   }
-  for (const p of [8787, 8791, 8792, 8793]) {
+}
+
+const PORTS = [8787, 8791, 8792, 8793, 8794];
+
+async function resolvePort(): Promise<{ port: number; already: boolean }> {
+  // A healthy answer is not proof it is OUR server. An orphaned dev server
+  // (the repo's data/, left holding the port after a Force Quit) or an
+  // unrelated project would otherwise be adopted. /api/health names the dir
+  // it serves, so compare before attaching.
+  for (const p of PORTS) {
+    if ((await probeHealth(`http://127.0.0.1:${p}`, 500)) === "ours") return { port: p, already: true };
+  }
+  for (const p of PORTS) {
     if (await portFree(p)) return { port: p, already: false };
   }
   return { port: 8787, already: false };
@@ -118,7 +133,14 @@ function startServer(): ChildProcess | null {
   fs.mkdirSync(data, { recursive: true });
   const files = root.endsWith(".asar") ? root.replace(/\.asar$/, ".asar.unpacked") : root;
   const serverPath = path.join(root, "server", "index.mjs");
-  const log = fs.openSync(path.join(app.getPath("userData"), "server.log"), "a");
+  const logPath = path.join(app.getPath("userData"), "server.log");
+  try {
+    // Appended forever otherwise; keep one previous generation for support.
+    if (fs.statSync(logPath).size > 5 * 1024 * 1024) fs.renameSync(logPath, `${logPath}.1`);
+  } catch {
+    /* no log yet */
+  }
+  const log = fs.openSync(logPath, "a");
   const child = spawn(process.execPath, [serverPath], {
     cwd: app.getPath("userData"),
     env: {
@@ -143,22 +165,67 @@ function startServer(): ChildProcess | null {
     },
     stdio: ["ignore", log, log],
   });
-  child.on("exit", (code) => {
-    if (code && code !== 0) {
-      console.error("Sub8 server exited", code);
-      Sentry.captureException(new Error(`Sub8 server exited ${code}`));
-    }
+  fs.closeSync(log);
+  child.on("error", (err) => {
+    console.error("Sub8 server failed to spawn", err);
+    Sentry.captureException(err);
+  });
+  child.on("exit", (code, signal) => {
+    if (serverProc === child) serverProc = null;
+    if (quitting) return;
+    // Any exit while the app is open is unexpected: a crash, an OOM kill
+    // (signal, no code), or a clean exit after an error. The window would
+    // otherwise sit on a dead page forever.
+    console.error("Sub8 server exited", code, signal);
+    Sentry.captureException(new Error(`Sub8 server exited ${code ?? signal}`));
+    scheduleServerRestart();
   });
   return child;
 }
 
 let serverProc: ChildProcess | null = null;
+let restartTimer: NodeJS.Timeout | null = null;
+let restartTimes: number[] = [];
+
+function mainWindow(): BrowserWindow | null {
+  const win = BrowserWindow.getAllWindows()[0];
+  return win && !win.isDestroyed() ? win : null;
+}
+
+function scheduleServerRestart() {
+  if (quitting || restartTimer || !app.isPackaged || process.env.LOCALBOT_URL) return;
+  const now = Date.now();
+  restartTimes = restartTimes.filter((t) => now - t < 5 * 60_000);
+  restartTimes.push(now);
+  // 1s, 2s, 4s ... capped at 30s while it keeps dying.
+  const delay = Math.min(30_000, 1000 * 2 ** (restartTimes.length - 1));
+  restartTimer = setTimeout(async () => {
+    restartTimer = null;
+    if (quitting) return;
+    // The port may have been taken while we were down (another project's dev
+    // server, say). Re-resolve rather than fail to bind the old one.
+    const resolved = await resolvePort();
+    const next = `http://127.0.0.1:${resolved.port}`;
+    const moved = next !== URL;
+    PORT = String(resolved.port);
+    URL = next;
+    if (!resolved.already) serverProc = startServer();
+    const up = await waitForServer(40);
+    const win = mainWindow();
+    if (!win) return;
+    if (up) {
+      // Reload either way: the old page's sockets point at a dead server.
+      win.loadURL(URL);
+    } else {
+      showStartupError(win, moved);
+    }
+  }, delay);
+}
 
 async function waitForServer(tries = 20) {
   for (let i = 0; i < tries; i++) {
     try {
-      const res = await fetch(`${URL}/api/health`, { signal: AbortSignal.timeout(800) });
-      if (res.ok) return true;
+      if ((await probeHealth(URL, 800)) === "ours") return true;
     } catch {
       /* not up yet */
     }
@@ -174,6 +241,37 @@ function iconPath(): string | undefined {
     path.join(here, "..", "build", "icon.png"),
   ];
   return candidates.find((p) => fs.existsSync(p));
+}
+
+let recovering = false;
+
+/** Error page for when the server is not answering; keeps polling and reloads once it is. */
+function showStartupError(win: BrowserWindow, moved: boolean, reason = "") {
+  if (win.isDestroyed()) return;
+  const esc = (v: string) => v.replace(/[<>&"]/g, "");
+  const log = path.join(app.getPath("userData"), "server.log");
+  const why = reason || `The local server is not answering on ${URL}${moved ? " (it moved to a new port)" : ""}.`;
+  const html = `<!doctype html><meta charset="utf-8"><title>Sub8</title>
+<body style="font:14px/1.5 -apple-system,system-ui,sans-serif;margin:0;padding:56px 32px;color:#1d1d1f;background:#fff">
+<div style="max-width:34em;margin:0 auto">
+<h2 style="margin:0 0 8px;font-size:20px">Sub8 is reconnecting…</h2>
+<p style="margin:0">${esc(why)}</p>
+<p style="margin:12px 0 0;color:#6e6e73">Sub8 retries on its own and reloads when the server is back. If this stays, quit and reopen Sub8. The last error is in <code>${esc(log)}</code>.</p>
+</div></body>`;
+  win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
+  if (recovering) return;
+  recovering = true;
+  (async () => {
+    while (!quitting && !win.isDestroyed()) {
+      if (!serverProc && !restartTimer && app.isPackaged && !process.env.LOCALBOT_URL) scheduleServerRestart();
+      if (await waitForServer(5)) {
+        if (!win.isDestroyed()) win.loadURL(URL);
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+    recovering = false;
+  })();
 }
 
 function create() {
@@ -232,23 +330,56 @@ function create() {
       win.loadURL(URL);
       return;
     }
-    const log = path.join(app.getPath("userData"), "server.log");
-    const html = `<!doctype html><meta charset="utf-8"><title>Sub8</title>
-<body style="font:14px/1.45 system-ui,sans-serif;padding:28px;max-width:40em">
-<h2 style="margin:0 0 8px">Sub8 failed to start</h2>
-<p style="margin:0">The local server never answered on ${URL.replace(/[<>&]/g, "")}.</p>
-<p style="margin:12px 0 0;opacity:.7">The last error is in <code>${log.replace(/[<>&]/g, "")}</code>. Reload the window after fixing it.</p>
-</body>`;
-    win.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
+    showStartupError(win, false);
     Sentry.captureException(new Error(`Sub8 server did not start at ${URL}`));
   });
   let fails = 0;
-  win.webContents.on("did-fail-load", (_e, code) => {
-    if (code === -3 || fails >= 3) return;
+  win.webContents.on("did-finish-load", () => {
+    if (win.webContents.getURL().startsWith(URL)) fails = 0;
+  });
+  win.webContents.on("did-fail-load", (_e, code, _desc, _url, isMainFrame) => {
+    // A failed subframe (the desk's VNC iframe) must not reload the whole app.
+    if (!isMainFrame || code === -3) return;
+    if (fails >= 3) {
+      showStartupError(win, false);
+      return;
+    }
     fails += 1;
     setTimeout(() => {
       if (!win.isDestroyed()) win.loadURL(URL);
-    }, 600);
+    }, 600 * fails);
+  });
+  // A dead renderer leaves the window white with nothing to click. Reload it,
+  // unless it keeps dying, then say so instead of looping.
+  let crashes: number[] = [];
+  win.webContents.on("render-process-gone", (_e, details) => {
+    if (quitting || win.isDestroyed()) return;
+    Sentry.captureException(new Error(`Sub8 renderer gone: ${details.reason} (${details.exitCode})`));
+    if (details.reason === "clean-exit") return;
+    const now = Date.now();
+    crashes = crashes.filter((t) => now - t < 60_000);
+    crashes.push(now);
+    if (crashes.length > 3) {
+      showStartupError(win, false, `The window crashed ${crashes.length} times in a minute (${details.reason}).`);
+      return;
+    }
+    setTimeout(() => {
+      if (!win.isDestroyed()) win.loadURL(URL);
+    }, 500);
+  });
+  let hung: NodeJS.Timeout | null = null;
+  win.on("unresponsive", () => {
+    if (hung) return;
+    hung = setTimeout(() => {
+      hung = null;
+      if (win.isDestroyed()) return;
+      Sentry.captureException(new Error("Sub8 renderer unresponsive for 20s"));
+      win.webContents.forcefullyCrashRenderer();
+    }, 20_000);
+  });
+  win.on("responsive", () => {
+    if (hung) clearTimeout(hung);
+    hung = null;
   });
   win.webContents.setWindowOpenHandler(({ url }) => {
     // Only http(s) leaves the app. A data:/blob: URL handed to macOS gets
@@ -384,7 +515,15 @@ if (!gotLock) {
       if (serverProc && !serverProc.killed) serverProc.kill();
       app.quit();
     };
-    fetch(`${URL}/api/computers/pause-all`, { method: "POST", signal: AbortSignal.timeout(12_000) })
+    if (restartTimer) clearTimeout(restartTimer);
+    // Only POST to a server we know is ours: after a crash the port can belong
+    // to another project by now.
+    probeHealth(URL, 1500)
+      .then((who) =>
+        who === "ours"
+          ? fetch(`${URL}/api/computers/pause-all`, { method: "POST", signal: AbortSignal.timeout(12_000) })
+          : null,
+      )
       .catch(() => {})
       .finally(finish);
   });

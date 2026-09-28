@@ -29,12 +29,24 @@ export const identitiesPath = path.join(dataDir, "identities.json");
 export const conversationsDir = path.join(dataDir, "conversations");
 export const screensDir = path.join(dataDir, "screens");
 
+/**
+ * An id names one file in its directory, never a path. Team transcripts are
+ * `team-${teamId}`, and a teamId written through PATCH /api/bots/:id (or a
+ * route param, which Express 5 decodes %2F in) of "/../../settings" pointed
+ * the transcript writer at data/settings.json and replaced it.
+ */
+function fileId(id: string): string {
+  const s = String(id);
+  if (!s || /[\/\\\0]/.test(s) || s === "." || s === "..") throw new Error(`invalid id ${JSON.stringify(s).slice(0, 80)}`);
+  return s;
+}
+
 export function conversationPath(id: string): string {
-  return path.join(conversationsDir, `${id}.json`);
+  return path.join(conversationsDir, `${fileId(id)}.json`);
 }
 
 export function screenPath(id: string): string {
-  return path.join(screensDir, `${id}.png`);
+  return path.join(screensDir, `${fileId(id)}.png`);
 }
 
 export const defaultSettings: Settings = {

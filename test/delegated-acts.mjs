@@ -21,6 +21,7 @@ const app = readFileSync(path.join(root, "web", "app.ts"), "utf8");
 // silently dropped on the way into the table is invisible until a user clicks it,
 // so pin the set rather than trusting the diff.
 const HANDLED = [
+  "request-access",
   "account-billing",
   "account-cloud-later",
   "account-cloud-never",
@@ -285,8 +286,8 @@ assert.deepEqual(covered, expected);
 // 175 -> 176: team-channel (the lead's tab is the team channel).
 // 176 -> 177: identity-remove (Identities → Remove a login).
 // 177 -> 178: copy-link (card hints with a URL: Copy link).
-assert.equal(HANDLED.length, 213);
-assert.equal(covered.length, 213);
+assert.equal(HANDLED.length, 214);
+assert.equal(covered.length, 214);
 
 console.log(
   "ok delegated-acts (" + keys.length + " in ACTIONS, " + new Set(chain).size +

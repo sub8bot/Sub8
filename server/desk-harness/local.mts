@@ -76,6 +76,14 @@ export async function ensureLocalHarness({ port, token, bot, env = process.env }
     stdio: ["ignore", "pipe", "pipe"],
   });
   children.set(want, child);
+  // Nothing reads these pipes. Unread, the harness blocks on its first 64KB of
+  // logging and stops answering; drain them.
+  child.stdout?.resume();
+  child.stderr?.resume();
+  child.on("error", (err) => {
+    console.error("desk-harness local", err.message || err);
+    if (children.get(want) === child) children.delete(want);
+  });
   child.on("exit", () => {
     if (children.get(want) === child) children.delete(want);
   });

@@ -19,7 +19,7 @@ if [ -z "${XAI_API_KEY:-}" ]; then
   echo "note: XAI_API_KEY is empty — only needed for SpaceXAI, not Grok Build"
 fi
 SERVER=""
-if curl -sf -m 2 http://127.0.0.1:8787/api/health | grep -q '"ok":true'; then
+if curl -sf -m 2 http://127.0.0.1:8787/api/health | grep -q '"dataDir"'; then
   echo "Server already running on http://127.0.0.1:8787"
 else
   node server/index.mjs &

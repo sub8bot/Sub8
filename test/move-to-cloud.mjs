@@ -29,7 +29,11 @@ assert.deepEqual(
 assert.equal(destInConfig("./Desktop/MOVE-MARKER.txt"), "/config/Desktop/MOVE-MARKER.txt");
 
 const cmd = shellWriteFile("/config/Desktop/MOVE-MARKER.txt", "hello-cloud");
-assert.match(cmd, /mkdir -p "\/config\/Desktop"/);
+assert.match(cmd, /mkdir -p '\/config\/Desktop'/);
+// A tar entry name is not trusted: $(...) must stay literal.
+const hostile = shellWriteFile("/config/it's $(id).md", "x");
+const quotedDest = hostile.split(" > ")[1];
+assert.equal(execFileSync("sh", ["-c", `printf %s ${quotedDest}`], { encoding: "utf8" }), "/config/it's $(id).md");
 assert.match(cmd, /base64 -d/);
 assert.equal(cmd.includes("hello-cloud"), false, "payload is base64, not raw");
 

@@ -49,7 +49,18 @@ export function parseCloudStreamPath(urlPath: string | null | undefined): { comp
   const m = /^\/api\/cloud\/stream\/([^/]+)(?:\/(.*))?$/.exec(pathOnly);
   if (!m) return null;
   const rest = String(m[2] || "").replace(/^\/+/, "");
-  return { computerId: decodeURIComponent(String(m[1] || "")), rest: rest || "vnc.html" };
+  // A malformed escape (`%E0`) throws URIError, and this runs synchronously in
+  // the server's 'upgrade' listener, where a throw is an uncaught exception.
+  let computerId: string;
+  try {
+    computerId = decodeURIComponent(String(m[1] || ""));
+  } catch {
+    return null;
+  }
+  // `rest` is appended to /api/desk/<id>/ on the Worker with the user's bearer
+  // token; a dot segment would climb out of that desk to any other GET route.
+  if (rest.split("?")[0]!.split("/").some((seg) => /^(\.|%2e){1,2}$/i.test(seg))) return null;
+  return { computerId, rest: rest || "vnc.html" };
 }
 
 export function isCloudStreamWsPath(urlPath: string | null | undefined): boolean {
@@ -153,17 +164,36 @@ function pipeSockets(a: WsSock, b: WsSock): void {
 
 /** Same-origin noVNC for the desktop Cloud pane: assets + RFB over the Worker session. */
 export function attachCloudStreamProxy(app: StreamApp, httpServer: HttpServer, opts: CloudStreamProxyOpts): void {
-  app.get("/api/cloud/stream/:computerId", (req, res, next) => {
-    proxyAsset(req, res, opts).catch(next);
+  // These routes are registered after index.mts's apiErrorHandler (they need
+  // the http server), so next(err) reached express's finalhandler, which puts
+  // err.stack in the body. Answer the failure here instead.
+  const failed = (res: StreamRes) => (err: unknown) => {
+    console.error("[api] cloud stream failed:", (err as Error)?.message || err);
+    try {
+      res.status(502).json({ ok: false, error: String((err as Error)?.message || "cloud stream failed") });
+    } catch {
+      /* headers already sent */
+    }
+  };
+  app.get("/api/cloud/stream/:computerId", (req, res) => {
+    proxyAsset(req, res, opts).catch(failed(res));
   });
-  app.get("/api/cloud/stream/:computerId/*asset", (req, res, next) => {
-    proxyAsset(req, res, opts).catch(next);
+  app.get("/api/cloud/stream/:computerId/*asset", (req, res) => {
+    proxyAsset(req, res, opts).catch(failed(res));
   });
 
   const wss = new WsServerCtor({ noServer: true });
   httpServer.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+    // Node drops its own socket 'error' listener before emitting 'upgrade', so
+    // a client that resets while the token is fetched (or on any path this
+    // proxy does not own) raised an unhandled 'error' and killed the server.
+    socket.on("error", () => {});
     const url = String(req.url || "");
-    if (!isCloudStreamWsPath(url)) return;
+    if (!isCloudStreamWsPath(url)) {
+      // Nothing else answers upgrades; an unanswered one held the socket open.
+      if (httpServer.listenerCount("upgrade") === 1) socket.destroy();
+      return;
+    }
     const parsed = parseCloudStreamPath(url);
     if (!parsed) {
       socket.destroy();
@@ -183,6 +213,18 @@ export function attachCloudStreamProxy(app: StreamApp, httpServer: HttpServer, o
       const target = wsUrl(workerDeskAssetUrl(base, parsed.computerId, "websockify", { display: displayOf(url) }));
       wss.handleUpgrade(req, socket, head, (client: WsSock) => {
         const upstream = new WsClient(target, { headers: { Authorization: `Bearer ${token}` } });
+        // pipeSockets only listens once the upstream opens. Until then a
+        // client error was an unhandled 'error', and a client that left
+        // stranded the upstream connection.
+        const dropUpstream = () => {
+          try {
+            upstream.close();
+          } catch {
+            /* ignore */
+          }
+        };
+        client.on("error", dropUpstream);
+        client.on("close", dropUpstream);
         const open = () => pipeSockets(client, upstream);
         if (upstream.readyState === WsClient.OPEN) open();
         else upstream.once("open", open);

@@ -2494,6 +2494,9 @@ function recapForGrok(bot: AgentBot): string {
 }
 
 async function grokSessionOnDisk(box: string, sessionId: string): Promise<boolean> {
+  // Interpolated into `bash -lc` below, and the id is a stored bot field that
+  // PATCH /api/bots/:id could set. Real ids are UUIDs.
+  if (!/^[A-Za-z0-9._-]+$/.test(String(sessionId || ""))) return false;
   const r = await vm.docker([
     "exec",
     "-u",
