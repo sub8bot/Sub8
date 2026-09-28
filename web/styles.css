@@ -3644,6 +3644,8 @@ select.pill { appearance: none; padding-right: 24px; }
 
 /* Plain message toasts read at full strength (attention toasts dim their body line). */
 .toast.flash span { opacity: 1; font-size: .88rem; line-height: 1.4; overflow-wrap: anywhere; }
+.toast.flash.has-action { max-width: 380px; cursor: default; }
+.toast.flash .toast-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
 
 /* Server unreachable: a calm, fixed strip that retries on its own. */
 #conn-banner {

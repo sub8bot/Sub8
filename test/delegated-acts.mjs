@@ -221,6 +221,7 @@ const HANDLED = [
   "vault-cloud-enable-open",
   "vault-cloud-forgot",
   "vault-cloud-lock",
+  "vault-cloud-sync",
   "vault-cloud-unlock",
   "vault-cloud-unlock-open",
   "vault-delete",
@@ -286,8 +287,9 @@ assert.deepEqual(covered, expected);
 // 175 -> 176: team-channel (the lead's tab is the team channel).
 // 176 -> 177: identity-remove (Identities → Remove a login).
 // 177 -> 178: copy-link (card hints with a URL: Copy link).
-assert.equal(HANDLED.length, 214);
-assert.equal(covered.length, 214);
+// 214 -> 215: vault-cloud-sync (Sync now when the cloud vault copy is behind).
+assert.equal(HANDLED.length, 215);
+assert.equal(covered.length, 215);
 
 console.log(
   "ok delegated-acts (" + keys.length + " in ACTIONS, " + new Set(chain).size +

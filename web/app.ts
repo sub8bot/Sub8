@@ -733,7 +733,7 @@ interface AppState {
   teachFrames: string[];
   attachments: AttachedFile[];
   vault: VaultSnapshot;
-  vaultCloud: { enabled: boolean; unlocked: boolean; alwaysOn: string[]; updatedAt: number | null; gate?: { exists: boolean; locked: boolean; remaining: number } | null } | null;
+  vaultCloud: { enabled: boolean; unlocked: boolean; alwaysOn: string[]; updatedAt: number | null; pending?: boolean; lastError?: string | null; gate?: { exists: boolean; locked: boolean; remaining: number } | null } | null;
   vaultCloudPrompt: "enable" | "unlock" | null;
   vaultCloudError: string | null;
   vaultCloudConfirmDisable: boolean;
@@ -6489,7 +6489,7 @@ function vaultSharePanelHtml(): string {
   // and a sync needs the key — say so instead of letting the toggle look done.
   const lockedNote =
     cloudBots.length && state.vaultCloud?.enabled && !state.vaultCloud?.unlocked
-      ? `<div class="vault-share-note">Cloud vault is locked — grants to cloud bots sync when you unlock. <button type="button" class="linklike" data-act="vault-cloud-unlock-open">Unlock</button></div>`
+      ? `<div class="vault-share-note">Cloud vault is locked. Cloud bots will not see new logins or sharing changes until you unlock and sync. <button type="button" class="linklike" data-act="vault-cloud-unlock-open">Unlock</button></div>`
       : "";
   return `<div class="vault-share-panel" id="vault-share-panel" ${state.vaultShareOpen ? "" : "hidden"}>
     ${lockedNote}
@@ -6786,9 +6786,12 @@ async function vaultCloudCall(path: string, body?: Record<string, unknown>): Pro
   state.vaultCloudBusy = true;
   repaintVault();
   try {
-    state.vaultCloud = (await api(`/api/vault/cloud/${path}`, { method: "POST", body: body || {} })) as typeof state.vaultCloud;
+    const r = (await api(`/api/vault/cloud/${path}`, { method: "POST", body: body || {} })) as (NonNullable<typeof state.vaultCloud> & { cloudSync?: VaultCloudSync }) | null;
+    state.vaultCloud = r;
     state.vaultCloudPrompt = null;
     state.vaultCloudError = null;
+    // Unlocking pushes everything saved while locked; say whether it made it.
+    if (path === "unlock" && r?.cloudSync === "failed") void noteVaultCloudSync("failed");
   } catch (err) {
     state.vaultCloudError = (err as CaughtError | undefined)?.message || "That didn't work.";
   } finally {
@@ -6876,8 +6879,22 @@ function vaultCloudHtml(): string {
   if (!c.unlocked) {
     return `<div class="vault-cloud">
       <div class="lbl">Cloud vault · locked</div>
-      <div class="sub">Enter your passcode to sync and edit.</div>
-      <button type="button" class="pill primary" data-act="vault-cloud-unlock-open" style="margin-top:8px">Unlock</button>
+      <div class="sub">${
+        c.pending
+          ? "Changes on this Mac are waiting to sync. Cloud desks will not see them until you unlock."
+          : "Enter your passcode to sync and edit."
+      }</div>
+      <button type="button" class="pill primary" data-act="vault-cloud-unlock-open" style="margin-top:8px">${c.pending ? "Unlock and sync" : "Unlock"}</button>
+    </div>`;
+  }
+  if (c.pending) {
+    return `<div class="vault-cloud">
+      <div class="lbl">Cloud vault · on <span class="hbadge warn">not synced</span></div>
+      <div class="sub">${escapeHtml(c.lastError ? `The last sync failed (${c.lastError}). Cloud desks have an older copy.` : "Some changes have not reached the cloud yet.")}</div>
+      <div class="row" style="gap:6px;margin-top:8px">
+        <button type="button" class="pill primary" data-act="vault-cloud-sync">Sync now</button>
+        <button type="button" class="pill" data-act="vault-cloud-lock">Lock</button>
+      </div>
     </div>`;
   }
   return `<div class="vault-cloud">
@@ -7691,6 +7708,7 @@ const ACTIONS: Record<string, ActHandler> = {
     void vaultCloudCall("unlock", { passcode: a });
   },
   "vault-cloud-lock": () => { void vaultCloudCall("lock"); },
+  "vault-cloud-sync": () => { void syncVaultNow(); },
   "vault-cloud-disable": () => { state.vaultCloudConfirmDisable = true; repaintVault(); },
   "vault-cloud-disable-cancel": () => { state.vaultCloudConfirmDisable = false; repaintVault(); },
   "vault-cloud-disable-confirm": () => { state.vaultCloudConfirmDisable = false; void vaultCloudCall("disable"); },
@@ -10390,17 +10408,27 @@ function closeLightbox(): void {
 }
 
 /** A brief, non-blocking error/info toast — never window.alert (native dialogs freeze the embedded browser). */
-function flashToast(msg: string): void {
+/** An optional button on a flash toast (for example "Unlock and sync"). */
+interface ToastAction { label: string; run: () => void }
+
+function flashToast(msg: string, action?: ToastAction): void {
   let host = document.getElementById("toasts");
   if (!host) { host = document.createElement("div"); host.id = "toasts"; document.body.appendChild(host); }
   const el = document.createElement("div");
-  el.className = "toast flash";
+  el.className = `toast flash${action ? " has-action" : ""}`;
   el.setAttribute("role", "status");
-  el.innerHTML = `<span>${escapeHtml(msg)}</span><button type="button" class="toast-x" aria-label="Dismiss">\u00d7</button>`;
+  el.innerHTML = `<span>${escapeHtml(msg)}</span>${
+    action ? `<div class="toast-actions"><button type="button" class="pill primary" data-k="act">${escapeHtml(action.label)}</button></div>` : ""
+  }<button type="button" class="toast-x" aria-label="Dismiss">\u00d7</button>`;
+  el.querySelector<HTMLButtonElement>('[data-k="act"]')?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    el.remove();
+    action!.run();
+  });
   el.addEventListener("click", () => el.remove());
   host.appendChild(el);
-  // Long errors need longer than a glance to read.
-  setTimeout(() => el.remove(), Math.min(12_000, 5000 + String(msg).length * 40));
+  // Long errors need longer than a glance to read; a toast with a button stays long enough to press it.
+  setTimeout(() => el.remove(), action ? 20_000 : Math.min(12_000, 5000 + String(msg).length * 40));
 }
 
 /**
@@ -10572,10 +10600,59 @@ async function persistVaultShare(): Promise<void> {
   const botIds = [...(state.vaultShare || [])];
   if (!accountId || accountId === "new") return;
   try {
-    const snap = await api(`/api/vault/accounts/${accountId}/grants`, { method: "PUT", body: { botIds } }) as VaultSnapshot | null;
+    const snap = await api(`/api/vault/accounts/${accountId}/grants`, { method: "PUT", body: { botIds } }) as (VaultSnapshot & { cloudSync?: VaultCloudSync }) | null;
     if (snap?.grants) state.vault.grants = snap.grants;
+    // A locked vault already shows the note in the share panel; only a failed push needs a toast here.
+    if (snap?.cloudSync === "failed") void noteVaultCloudSync(snap.cloudSync);
+    else void loadVaultCloud();
   } catch (err) {
     flashToast((err as CaughtError | undefined)?.message || "Could not update sharing.");
+  }
+}
+
+/** What the server did with the cloud copy after a vault change. */
+type VaultCloudSync = "synced" | "locked" | "failed" | "syncing";
+
+/** Open the passcode dialog over the vault (opening the vault first when a toast outlived it). */
+function openVaultUnlock(): void {
+  const show = () => { state.vaultCloudPrompt = "unlock"; state.vaultCloudError = null; repaintVault(); };
+  if (state.modal === "vault") show();
+  else void openVault().then(show);
+}
+
+/** Push the vault to the cloud now and report how it went. */
+async function syncVaultNow(): Promise<void> {
+  try {
+    const r = (await api("/api/vault/cloud/sync", { method: "POST", body: {} })) as NonNullable<typeof state.vaultCloud> & { cloudSync?: VaultCloudSync };
+    state.vaultCloud = r;
+    if (state.modal === "vault") repaintVault();
+    if (r.cloudSync === "synced") flashToast("Synced. Cloud desks now see your latest logins.");
+    else void noteVaultCloudSync(r.cloudSync);
+  } catch (err) {
+    flashToast((err as CaughtError | undefined)?.message || "Could not sync the vault.");
+  }
+}
+
+/**
+ * Tell the user when a vault change stayed on this Mac. Local desks read this
+ * Mac's vault directly, but cloud desks and the phone read the synced copy,
+ * which only updates while the vault is unlocked. Without this the save looked
+ * done and a cloud bot's vault_list simply did not have the new login.
+ */
+async function noteVaultCloudSync(result: VaultCloudSync | undefined): Promise<void> {
+  await loadVaultCloud();
+  if (!cloudProductOn() || !state.vaultCloud?.enabled) return;
+  if (result === "locked") {
+    flashToast("Saved on this Mac only. Cloud desks will not see this login until you unlock the vault to sync it.", {
+      label: "Unlock and sync",
+      run: openVaultUnlock,
+    });
+  } else if (result === "failed") {
+    const why = state.vaultCloud?.lastError ? ` (${state.vaultCloud.lastError})` : "";
+    flashToast(`Saved on this Mac, but the cloud sync failed${why}. Cloud desks still have the old copy.`, {
+      label: "Retry sync",
+      run: () => { void syncVaultNow(); },
+    });
   }
 }
 
@@ -10595,19 +10672,23 @@ async function saveVaultAccount({ quiet = false, editId = state.vaultEditId, sha
   }
   const botIds = [...(share || [])];
   let acc: VaultAccount;
+  let cloudSync: VaultCloudSync | undefined;
   try {
     if (editId && editId !== "new") {
       acc = await api(`/api/vault/accounts/${editId}`, { method: "PATCH", body }) as VaultAccount;
     } else {
       acc = await api("/api/vault/accounts", { method: "POST", body }) as VaultAccount;
     }
-    const snap = await api(`/api/vault/accounts/${acc.id}/grants`, { method: "PUT", body: { botIds } }) as VaultSnapshot | null;
+    const snap = await api(`/api/vault/accounts/${acc.id}/grants`, { method: "PUT", body: { botIds } }) as (VaultSnapshot & { cloudSync?: VaultCloudSync }) | null;
     if (snap?.grants) state.vault.grants = snap.grants;
+    cloudSync = snap?.cloudSync;
   } catch (err) {
     if (!quiet) flashToast((err as CaughtError | undefined)?.message || "Could not save the login.");
     return null;
   }
   state.vault = await api("/api/vault") as VaultSnapshot;
+  // Autosaves only speak up when a push failed; an explicit save also says when it waits on unlock.
+  if (!quiet || cloudSync === "failed") void noteVaultCloudSync(cloudSync);
   if (quiet) return acc;
   state.vaultEditId = acc.id;
   state.vaultReveal = false;

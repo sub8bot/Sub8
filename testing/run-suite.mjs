@@ -41,6 +41,7 @@ const EXCLUDED = new Map([]);
 const ORDER = [
   "vault.mjs",
   "vault-routing.mjs",
+  "vault-sync.mjs",
   "isolation.mjs",
   "context.mjs",
   "delivery.mjs",

@@ -56,7 +56,18 @@ export interface CloudVaultStatus {
   unlocked: boolean;
   alwaysOn: string[];
   updatedAt: number | null;
+  /**
+   * True when this Mac holds vault changes the cloud copy does not have yet:
+   * edits made while locked, or a push that failed. Cloud desks and the phone
+   * read the cloud copy, so they do not see those changes until a sync.
+   */
+  pending: boolean;
+  /** The last push error, if the most recent sync attempt failed. */
+  lastError: string | null;
 }
+
+/** What one sync attempt did. "locked": nothing was sent because the vault key is not in memory. */
+export type CloudSyncResult = "synced" | "locked" | "failed";
 
 const ENVELOPE_PATH = path.join(dataDir, "vault-cloud.json");
 const AAD = "sub8-vault-file";
@@ -66,6 +77,9 @@ let keyset: Keyset | null = null;
 /** The cloud escrow key, imported into memory while we hold it (to seal always-on items). */
 let escrowKey: Awaited<ReturnType<typeof importWrappingKey>> | null = null;
 let writeLock: Promise<void> = Promise.resolve();
+/** Serializes resync + push, so an older envelope can never land at the Worker after a newer one. */
+let pushChain: Promise<unknown> = Promise.resolve();
+let lastPushError: string | null = null;
 
 function withLock<T>(fn: () => Promise<T>): Promise<T> {
   const run = writeLock.then(fn, fn);
@@ -93,8 +107,14 @@ async function writeEnvelope(env: CloudVaultEnvelope): Promise<void> {
   await fs.rename(tmp, ENVELOPE_PATH);
 }
 
+/**
+ * Cloud sync is on for this computer. Holding the vault key counts: the key
+ * only comes from the passcode gate, so an unlocked vault with no local sync
+ * copy yet (gate set up elsewhere, or the copy was lost) is still enabled.
+ * Keying this on the file alone made every edit skip the push forever.
+ */
 export function isEnabled(): boolean {
-  return fsSync.existsSync(ENVELOPE_PATH);
+  return keyset !== null || fsSync.existsSync(ENVELOPE_PATH);
 }
 
 export function isUnlocked(): boolean {
@@ -103,7 +123,17 @@ export function isUnlocked(): boolean {
 
 export async function status(): Promise<CloudVaultStatus> {
   const env = await readEnvelope();
-  return { enabled: Boolean(env), unlocked: isUnlocked(), alwaysOn: env?.alwaysOn || [], updatedAt: env?.updatedAt || null };
+  const mtime = await _vaultFileMtime();
+  // No sync copy but a local vault: nothing has been sealed for the cloud yet.
+  const stale = env ? mtime > env.updatedAt : mtime > 0;
+  return {
+    enabled: Boolean(env) || isUnlocked(),
+    unlocked: isUnlocked(),
+    alwaysOn: env?.alwaysOn || [],
+    updatedAt: env?.updatedAt || null,
+    pending: stale || Boolean(lastPushError),
+    lastError: lastPushError,
+  };
 }
 
 /** Seal the current local vault into a fresh envelope, re-sealing always-on items under the escrow key. */
@@ -161,12 +191,17 @@ export function lock(): void {
   escrowKey = null;
 }
 
-/** Re-seal the local vault into the envelope (call after any local vault change while unlocked). Returns the envelope to sync, or null when locked/off. */
+/**
+ * Re-seal the local vault into the envelope (call after any local vault change while unlocked).
+ * Returns the envelope to sync, or null when locked. A missing local sync copy is
+ * rebuilt from the local vault: returning null there left an unlocked vault that
+ * never pushed another change (new logins and grants never reached cloud desks).
+ */
 export function resync(): Promise<CloudVaultEnvelope | null> {
   return withLock(async () => {
+    if (!keyset) return null;
     const env = await readEnvelope();
-    if (!env || !keyset) return null;
-    const next = await buildEnvelope(keyset, env.alwaysOn);
+    const next = await buildEnvelope(keyset, env?.alwaysOn || []);
     await writeEnvelope(next);
     return next;
   });
@@ -179,8 +214,13 @@ export function applyPulled(env: CloudVaultEnvelope): Promise<void> {
     if (local && local.updatedAt >= env.updatedAt) return; // ours is newer/equal
     // Edits made on this Mac AFTER the remote was written (e.g. while locked) win:
     // replacing the file would silently drop them. The unlock path re-seals and
-    // pushes right after this, so the cloud catches up instead.
-    if ((await _vaultFileMtime()) > env.updatedAt) return;
+    // pushes right after this, so the cloud catches up instead. With no local
+    // sync copy at all, keep the remote one as that copy (the local vault is not
+    // touched) so the re-seal carries its always-on list forward.
+    if ((await _vaultFileMtime()) > env.updatedAt) {
+      if (!local) await writeEnvelope(env);
+      return;
+    }
     await writeEnvelope(env);
     if (keyset) {
       const file = JSON.parse(await openText(env.data, keyset.vaultKey, AAD)) as VaultFile;
@@ -189,11 +229,35 @@ export function applyPulled(env: CloudVaultEnvelope): Promise<void> {
   });
 }
 
+/**
+ * Re-seal the local vault and hand the envelope to `push` (the Worker PUT).
+ * Runs one at a time, in call order, so pushes reach the Worker oldest first.
+ * Never throws: the result says whether the cloud now has this Mac's vault.
+ */
+export function syncToCloud(push: (env: CloudVaultEnvelope) => Promise<unknown>): Promise<CloudSyncResult> {
+  const run = pushChain.then(async (): Promise<CloudSyncResult> => {
+    if (!keyset) return "locked";
+    try {
+      const env = await resync();
+      if (!env) return "locked";
+      await push(env);
+      lastPushError = null;
+      return "synced";
+    } catch (err) {
+      lastPushError = (err as Error)?.message || "Cloud sync failed.";
+      return "failed";
+    }
+  });
+  pushChain = run.catch(() => {});
+  return run;
+}
+
 /** Turn off the cloud vault on this computer (the local Keychain vault is untouched). */
 export function disable(): Promise<void> {
   return withLock(async () => {
     keyset = null;
     escrowKey = null;
+    lastPushError = null;
     await fs.unlink(ENVELOPE_PATH).catch(() => {});
   });
 }

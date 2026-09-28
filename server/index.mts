@@ -1491,11 +1491,6 @@ app.get("/api/update", async (req, res) => {
   res.json(await appUpdate.checkForAppUpdate({ current } as { current?: string }));
 });
 
-/**
- * After any local vault change, keep the cloud copy in step: re-seal and push to
- * the Worker. Best-effort and non-blocking — a local edit never waits on the
- * network, and a sync failure never fails the edit.
- */
 /** Make sure this computer holds the cloud escrow key (fetch it, or mint + upload one), so always-on can be offered. No-op offline. */
 async function adoptCloudEscrow(): Promise<void> {
   const existing = await account.getCloudEscrowKey().catch(() => null);
@@ -1507,12 +1502,33 @@ async function adoptCloudEscrow(): Promise<void> {
   await account.putCloudEscrowKey(fresh).catch(() => {});
 }
 
-function syncVaultToCloud(): void {
-  if (!vaultSync.isEnabled() || !vaultSync.isUnlocked()) return;
-  void vaultSync
-    .resync()
-    .then((env) => (env ? account.putCloudVault(env).catch((e: Error) => console.error("[vault] cloud push failed:", e.message)) : undefined))
-    .catch(() => {});
+/**
+ * After any local vault change (logins, groups, grants, import), keep the cloud
+ * copy in step: re-seal and push to the Worker. Cloud desks list logins from
+ * that copy's grant index, so a grant change that skips this never reaches them.
+ * Never throws. Locked: returns "locked" at once, nothing is sent, and the
+ * unlock route pushes everything later.
+ */
+function syncVaultToCloud(): Promise<vaultSync.CloudSyncResult> {
+  if (!vaultSync.isUnlocked()) return Promise.resolve("locked");
+  return vaultSync.syncToCloud(async (env) => {
+    try {
+      await account.putCloudVault(env);
+    } catch (e) {
+      console.error("[vault] cloud push failed:", (e as Error).message);
+      throw e;
+    }
+  });
+}
+
+/**
+ * The same sync for a route that reports the outcome to the UI (so it can say
+ * "saved here, not synced yet"), bounded so a slow Worker never holds a save.
+ * "syncing" means the push is still running in the background.
+ */
+async function syncVaultForReply(): Promise<vaultSync.CloudSyncResult | "syncing"> {
+  const timeout = new Promise<"syncing">((resolve) => setTimeout(() => resolve("syncing"), 8000).unref?.());
+  return Promise.race([syncVaultToCloud(), timeout]);
 }
 
 app.get("/api/vault/cloud", async (_req, res) => {
@@ -1556,11 +1572,11 @@ app.post("/api/vault/cloud/unlock", async (req, res) => {
     if (remote) await vaultSync.applyPulled(remote as unknown as vaultSync.CloudVaultEnvelope).catch(() => {});
     // Always re-seal and push after an unlock: it self-heals a cloud with no blob, and it is the
     // moment the escrow-sealed `index` (what cloud desks list) and escrow entries get refreshed.
-    const env = await vaultSync.resync().catch(() => null);
-    if (env) await account.putCloudVault(env).catch((e: Error) => console.error("[vault] cloud push (unlock) failed:", e.message));
+    // Everything saved while locked (new logins, grants) reaches cloud desks here.
+    const cloudSync = await syncVaultToCloud();
     const local = await vaultSync.status();
     const gate = await account.vaultGateStatus().catch(() => null);
-    res.json({ ...local, enabled: Boolean(gate?.exists) || local.enabled, gate });
+    res.json({ ...local, enabled: Boolean(gate?.exists) || local.enabled, gate, cloudSync });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
   }
@@ -1597,6 +1613,18 @@ app.post("/api/vault/cloud/deny", async (req, res) => {
     if (!id) return res.status(400).json({ error: "id required" });
     await account.vaultFillDeny(id);
     res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+// Push this Mac's vault to the cloud now (the Retry on a failed-sync notice).
+app.post("/api/vault/cloud/sync", async (_req, res) => {
+  try {
+    const cloudSync = await syncVaultForReply();
+    const local = await vaultSync.status();
+    const gate = await account.vaultGateStatus().catch(() => null);
+    res.json({ ...local, enabled: Boolean(gate?.exists) || local.enabled, gate, cloudSync });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
   }
@@ -1650,29 +1678,29 @@ app.get("/api/vault", async (_req, res) => {
 app.post("/api/vault/groups", async (req, res) => {
   const group = await vault.upsertGroup({ id: req.body?.id, name: req.body?.name });
   res.json(group);
-  syncVaultToCloud();
+  void syncVaultToCloud();
 });
 
 app.delete("/api/vault/groups/:id", async (req, res) => {
   res.json(await vault.deleteGroup(req.params.id));
-  syncVaultToCloud();
+  void syncVaultToCloud();
 });
 
 app.post("/api/vault/accounts", async (req, res) => {
   const acc = await vault.upsertAccount(req.body || {});
   res.json(acc);
-  syncVaultToCloud();
+  void syncVaultToCloud();
 });
 
 app.patch("/api/vault/accounts/:id", async (req, res) => {
   const acc = await vault.upsertAccount({ ...(req.body || {}), id: req.params.id });
   res.json(acc);
-  syncVaultToCloud();
+  void syncVaultToCloud();
 });
 
 app.delete("/api/vault/accounts/:id", async (req, res) => {
   res.json(await vault.deleteAccount(req.params.id));
-  syncVaultToCloud();
+  void syncVaultToCloud();
 });
 
 app.get("/api/vault/accounts/:id/reveal", async (req, res) => {
@@ -1697,7 +1725,7 @@ app.post("/api/vault/import", async (req, res) => {
     const snap = await vault.importVault(req.body, mode);
     const bots = (await store.loadBots()) as IndexBot[];
     for (const bot of bots) vault.pushListToBot(bot as vault.VaultBot).catch(() => {});
-    res.json(snap);
+    res.json({ ...snap, cloudSync: await syncVaultForReply() });
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
   }
@@ -2100,7 +2128,8 @@ app.put("/api/vault/grants/:botId", async (req, res) => {
   const ids = await vault.setGrants(req.params.botId, req.body?.accountIds || []);
   const bot = await store.getBot(req.params.botId) as IndexBot | null;
   if (bot) vault.pushListToBot(bot as vault.VaultBot).catch(() => {});
-  res.json({ botId: req.params.botId, accountIds: ids });
+  // Cloud bots are not in this Mac's bot list: they read grants from the cloud copy.
+  res.json({ botId: req.params.botId, accountIds: ids, cloudSync: await syncVaultForReply() });
 });
 
 app.put("/api/vault/accounts/:id/grants", async (req, res) => {
@@ -2108,7 +2137,10 @@ app.put("/api/vault/accounts/:id/grants", async (req, res) => {
   if (!snap) return res.status(404).json({ error: "not found" });
   const bots = await store.loadBots() as IndexBot[];
   for (const bot of bots) vault.pushListToBot(bot as vault.VaultBot).catch(() => {});
-  res.json(snap);
+  // Local desks got their list above; cloud desks read grants from the cloud copy,
+  // which only changes on a sync. This used to skip it, so a login shared with a
+  // cloud bot never showed up in that bot's vault_list.
+  res.json({ ...snap, cloudSync: await syncVaultForReply() });
 });
 
 app.put("/api/settings", async (req, res) => {
