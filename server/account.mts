@@ -47,6 +47,7 @@ import {
   liveDeskAction as cloudLiveDeskAction,
   liveBrainDeleteMate as cloudLiveDeleteMate,
   liveBrainTurn as cloudLiveBrainTurn,
+  liveBrainTurns as cloudLiveBrainTurns,
   liveBrainAbort as cloudLiveBrainAbort,
   liveBrainSetModel as cloudLiveBrainSetModel,
   liveBillingSummary as cloudLiveBillingSummary,
@@ -355,6 +356,62 @@ export interface CloudBot {
   desk: CloudDesk;
   brain?: CloudBrain | undefined;
   messagesFailed?: boolean | undefined;
+  /**
+   * Server truth for "is this bot working": true while the Worker holds a
+   * queued or running turn for it. Undefined when the Worker could not say
+   * (older Worker, request failed), so the app keeps its own guess.
+   */
+  cloudBusy?: boolean | undefined;
+  /** The bot's first queued/running turn, with why it is waiting (position, routine). */
+  cloudTurn?: CloudActiveTurn | null | undefined;
+  /** The bot's identity is out of quota until `until` (routines are paused). */
+  usageLimit?: { until: number; message: string } | null | undefined;
+}
+
+/** One queued or running Worker turn, as GET /api/brain/turns lists it. */
+export interface CloudActiveTurn {
+  turnId: string;
+  botId: string;
+  status: string;
+  display: number;
+  routine: boolean;
+  createdAt: number;
+  startedAt: number;
+  /** Turns ahead of it on its display; 0 = running or next. */
+  position: number;
+}
+
+/** GET /api/brain/turns. */
+interface CloudTurnsBody {
+  turns?: CloudActiveTurn[] | undefined;
+  usageLimits?: Record<string, { until: number; message: string }> | undefined;
+}
+
+/** The chief answers to "", "default" and its full id on the Worker. */
+function sameCloudBot(turnBotId: string, botId: string, computerId: string): boolean {
+  const chief = cloudBotId(computerId);
+  const norm = (id: string) => (!id || id === "default" || id === computerId ? chief : id);
+  return norm(String(turnBotId || "")) === norm(String(botId || ""));
+}
+
+/** Which Worker quota bucket a bot's harness spends (cloud/src/usage-limit.ts usageLimitIdentity). */
+function usageFamily(harness: CloudBotHarness | undefined): string {
+  const p = String(harness?.provider || "");
+  if (/^claude/i.test(p)) return "claude";
+  if (p === "grok-build" || p === "grok-oauth") return "grok";
+  return "key";
+}
+
+/** Fold the Worker's turn list onto the snapshot's bots. Exported for tests. */
+export function applyCloudTurns(bots: CloudBot[], computerId: string, body: CloudTurnsBody | null): void {
+  if (!body || !Array.isArray(body.turns)) return;
+  for (const bot of bots) {
+    const mine = body.turns.filter((t) => sameCloudBot(t.botId, bot.id, computerId));
+    bot.cloudBusy = mine.length > 0;
+    bot.cloudTurn = mine.find((t) => t.status === "running") || mine[0] || null;
+    const lim = body.usageLimits?.[usageFamily(bot.harness)];
+    bot.usageLimit = lim && Number(lim.until) > Date.now() ? lim : null;
+  }
 }
 
 /** One Cloud team, assembled from the bots that carry the same `teamId`. */
@@ -811,6 +868,9 @@ export async function liveSnapshot(): Promise<LiveSnapshot> {
   const mine = live.filter((c) => c.userId === row.session!.userId);
   const bots: CloudBot[] = [];
   for (const c of mine) {
+    // In parallel with the team read; an older Worker without the route just
+    // leaves cloudBusy undefined.
+    const turnsP = (cloudLiveBrainTurns({ token, computerId: c.id }) as Promise<CloudTurnsBody>).catch(() => null);
     let team: CloudTeamBody | null = null;
     try {
       team = await cloudLiveBrainTeam({ token, computerId: c.id });
@@ -836,6 +896,7 @@ export async function liveSnapshot(): Promise<LiveSnapshot> {
         return bot;
       }),
     );
+    applyCloudTurns(threaded, String(c.id || ""), await turnsP);
     bots.push(...threaded);
   }
   lastSnapshotBots = bots.map((b) => ({ id: b.id, computerId: b.computerId || b.vm?.computerId || "" }));

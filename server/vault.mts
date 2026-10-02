@@ -797,7 +797,9 @@ export function _resetKeyCache(): void {
  * "edited here while locked" from "the cloud is simply newer". */
 export async function _vaultFileMtime(): Promise<number> {
   try {
-    return (await fs.stat(VAULT_PATH)).mtimeMs;
+    // Whole milliseconds: sync stamps envelopes with Date.now(), and a write in
+    // the same millisecond (mtimeMs 1000.4 vs 1000) read as newer than the seal.
+    return Math.floor((await fs.stat(VAULT_PATH)).mtimeMs);
   } catch {
     return 0;
   }

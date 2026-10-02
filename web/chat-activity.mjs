@@ -112,6 +112,10 @@ export function lastActivity(messages) {
     const rows = Array.isArray(messages) ? messages : [];
     for (let i = rows.length - 1; i >= 0; i--) {
         const m = rows[i];
+        // A step from before the user's latest message belongs to the last turn,
+        // not this one: "Opened Chrome" from an hour ago is not what it is doing now.
+        if (m && m.role === "user")
+            return null;
         if (m && isActivityRow(m) && m.kind !== "think")
             return m;
     }
@@ -198,4 +202,133 @@ export function applyChatBusy(bot, event) {
         return bot;
     }
     return bot;
+}
+/**
+ * A usage or rate limit the harness hit, as the harness worded it: "You've hit
+ * your weekly limit · resets Oct 3, 4pm (UTC)", "Claude usage limit reached.
+ * Your limit will reset at 5pm", "Rate limit exceeded". Null for anything else.
+ * `scope` is the window when the text names one ("weekly", "5-hour").
+ */
+export function usageLimitInfo(text) {
+    const t = String(text ?? "").trim();
+    if (!t || t.length > 600)
+        return null;
+    const hit = /\b(?:you['’]?ve|you have)\s+(?:hit|reached|used up)\s+(?:your\s+)?([a-z0-9-]+(?:\s[a-z0-9-]+)?\s+)?(?:usage\s+)?limit\b/i.exec(t) ||
+        /\b(?:([a-z0-9-]+)\s+)?usage limit (?:reached|exceeded|hit)\b/i.exec(t) ||
+        /^(?:error:?\s*)?(?:429\s*)?(?:api\s+)?()(?:rate|quota) limit(?:ed| reached| exceeded)?\b/i.exec(t) ||
+        /^(?:error:?\s*)?(?:you(?:'re| are)\s+)?()(?:out of|no more) (?:credits|usage|extra usage|quota)\b/i.exec(t);
+    if (!hit)
+        return null;
+    let scope = String(hit[1] || "").trim().toLowerCase();
+    if (/^(your|the|a|claude|grok|codex|api|usage)$/.test(scope))
+        scope = "";
+    const r = /\b(?:resets?|will reset|reset)\s+(?:at\s+|on\s+|in\s+)?([^.\n·]+(?:\([^)]*\))?)/i.exec(t);
+    const reset = r ? r[1].trim().replace(/[\s,;:]+$/, "") : "";
+    return { scope, reset };
+}
+const ERROR_LEAD = /^(?:error\b|⚠|could not\b|couldn['’]t\b|failed\b|cloud chat failed|the (?:harness|desk|brain|model) (?:exited|crashed|failed|stopped)|harness (?:exited|failed|crashed)|request failed|timed out\b|turn (?:failed|timed out))/i;
+/** Classify an assistant/system row as a notice, or null for a normal reply. */
+export function chatNoticeKind(m) {
+    if (!m)
+        return null;
+    if (m.role !== "assistant" && m.role !== "system")
+        return null;
+    if (m.kind && m.kind !== "error" && m.kind !== "notice" && m.kind !== "system")
+        return null;
+    const text = String(m.content || "").trim();
+    if (!text || m.image)
+        return null;
+    if (usageLimitInfo(text))
+        return "limit";
+    if (m.kind === "error" || (text.length <= 400 && ERROR_LEAD.test(text)))
+        return "error";
+    if (m.kind === "system" || m.kind === "notice" || m.role === "system" || /^stopped\.?$/i.test(text))
+        return "system";
+    return null;
+}
+/**
+ * The key two rows must share to fold into one "×N" bubble. Notices fold when
+ * near-identical (case, spacing and numbers ignored, so "resets Oct 3" and
+ * "resets Oct 4" still fold); plain assistant replies fold only when the text
+ * is exactly the same. User rows, cards and screenshots never fold.
+ */
+export function chatRepeatKey(m) {
+    if (!m || (m.role !== "assistant" && m.role !== "system"))
+        return "";
+    if (m.image || m.toId)
+        return "";
+    if (m.kind && m.kind !== "error" && m.kind !== "notice" && m.kind !== "system")
+        return "";
+    const text = String(m.content || "").trim();
+    if (!text)
+        return "";
+    const kind = chatNoticeKind(m);
+    const who = String(m.speakerId || m.speakerName || "");
+    if (kind) {
+        const norm = text.toLowerCase().replace(/\d+/g, "#").replace(/\s+/g, " ");
+        return `${kind}:${who}:${norm}`;
+    }
+    return `same:${who}:${text}`;
+}
+/**
+ * Fold consecutive rows that share a repeat key into runs. Activity rows
+ * (think/tool) sitting between two members of the same run are absorbed into
+ * it, so a routine that does a step and then hits the same limit every ten
+ * minutes still reads as one bubble. Everything else passes through as a run
+ * of one, in order.
+ */
+export function collapseRepeats(rows, keyOf = chatRepeatKey) {
+    const out = [];
+    let i = 0;
+    while (i < rows.length) {
+        const m = rows[i];
+        const key = keyOf(m);
+        const run = { first: m, last: m, items: [m], skipped: [] };
+        i += 1;
+        if (key) {
+            for (;;) {
+                let j = i;
+                while (j < rows.length && isActivityRow(rows[j]))
+                    j += 1;
+                if (j < rows.length && keyOf(rows[j]) === key) {
+                    run.skipped.push(...rows.slice(i, j));
+                    run.items.push(rows[j]);
+                    run.last = rows[j];
+                    i = j + 1;
+                    continue;
+                }
+                break;
+            }
+        }
+        out.push(run);
+    }
+    return out;
+}
+/** "12s", "1:05", "1:02:09" for a running turn. */
+export function formatElapsed(ms) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    if (s < 60)
+        return `${s}s`;
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = String(s % 60).padStart(2, "0");
+    return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+}
+/** Seconds after which a turn still on its first label offers Stop and Retry. */
+export const TURN_STALL_MS = 45_000;
+/** Seconds before the working row starts showing elapsed time. */
+export const TURN_CLOCK_AFTER_MS = 4_000;
+/**
+ * What the working row says for a turn that has been running `elapsed` ms
+ * with `label` as its live step. A turn that never got past "Starting…" by
+ * TURN_STALL_MS is called out as stalled so the UI can offer a way out.
+ */
+export function workingRowState(label, elapsed) {
+    const starting = /^starting\b/i.test(label.trim());
+    const stalled = starting && elapsed >= TURN_STALL_MS;
+    return {
+        text: stalled ? "Still starting…" : label,
+        clock: elapsed >= TURN_CLOCK_AFTER_MS ? formatElapsed(elapsed) : "",
+        stalled,
+    };
 }

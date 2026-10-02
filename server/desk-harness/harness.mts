@@ -30,6 +30,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { dataDir } from "../paths.mjs";
+import { isUsageLimitNotice } from "../usage-limit.mjs";
 import { getBot, patchBot } from "@sub8/store";
 import { pluginsForHarness, createPluginsCache, pluginsPromptBlock, type HarnessExec } from "@sub8/harness-plugins";
 import {
@@ -616,6 +617,35 @@ export async function claudeExportCredentials(): Promise<ClaudeCredentialsResult
   }
 }
 
+/** The OAuth block of a Claude credential file, as far as the adopt check reads it. */
+function claudeOauthOf(creds: ClaudeCredentials | null | undefined): { refreshToken: string; accessToken: string; expiresAt: number } | null {
+  const o = (creds as { claudeAiOauth?: { refreshToken?: unknown; accessToken?: unknown; expiresAt?: unknown } } | null | undefined)?.claudeAiOauth;
+  if (!o || typeof o !== "object") return null;
+  return { refreshToken: String(o.refreshToken || ""), accessToken: String(o.accessToken || ""), expiresAt: Number(o.expiresAt) || 0 };
+}
+
+/**
+ * Should this desk take the account's Claude credential instead of its own?
+ *
+ * "Only when the desk is logged out" kept a desk on the OLD login after the
+ * user signed in with a different account: the old one was still logged in,
+ * just out of weekly quota, so every turn answered "You've hit your weekly
+ * limit" while Identities showed the new account. Adopt when the account copy
+ * is a different login that was issued after the desk's. The same login, or a
+ * desk that has refreshed past the account copy since (refresh tokens rotate),
+ * keeps its own: overwriting a fresher token with a stale copy would sign the
+ * desk out.
+ */
+export function shouldAdoptClaudeCredentials(account: ClaudeCredentials | null | undefined, onDesk: ClaudeCredentials | null | undefined): boolean {
+  const a = claudeOauthOf(account);
+  if (!a || !(a.refreshToken || a.accessToken)) return false;
+  const d = claudeOauthOf(onDesk);
+  if (!d || !(d.refreshToken || d.accessToken)) return true;
+  if (a.refreshToken && a.refreshToken === d.refreshToken) return false;
+  if (!a.refreshToken && a.accessToken === d.accessToken) return false;
+  return a.expiresAt > d.expiresAt;
+}
+
 /** Adopt an account-level credential on THIS desk. Mirrors grok's auth.json injection. */
 export async function claudeImportCredentials(credentials: ClaudeCredentials | null | undefined): Promise<ClaudeCredentialsResult> {
   if (!credentials || typeof credentials !== "object") return { ok: false, error: "no credentials" };
@@ -737,6 +767,9 @@ export async function claudeLoginCode(
   }
   return { ok: true, loggedIn: true, authMethod: status.authMethod };
 }
+
+/** A bare harness quota line ("You've hit your weekly limit · resets ..."). */
+export { isUsageLimitNotice };
 
 /** True when this turn should run Claude Code instead of grok. */
 export function isClaudeProvider(provider: unknown): boolean {
@@ -1088,18 +1121,24 @@ export async function runTurn(body: TurnBody, emit: EmitTurnEvent, opts: RunTurn
     // Not "is there a file" — "does the CLI consider itself logged in". A desk
     // holding a hollow or expired file never re-adopted a fresh credential.
     const status = await claudeAuthStatus().catch(() => ({ loggedIn: false }));
-    if (!status.loggedIn) await claudeImportCredentials(t.claudeAuth);
+    const onDesk = status.loggedIn ? (await claudeExportCredentials()).credentials : null;
+    if (!status.loggedIn || shouldAdoptClaudeCredentials(t.claudeAuth, onDesk)) await claudeImportCredentials(t.claudeAuth);
   }
   // Every cloud turn is a fresh CLI session (no --resume), so the recap IS the
   // Bot's memory of this conversation. Without it "try again" means nothing.
   const recapRows = (t.history || [])
     .filter((m) => (m.role === "user" || m.role === "assistant") && String(m.content || "").trim())
+    // Quota notices are not conversation: a day of "You've hit your weekly
+    // limit" rows filled the whole recap and the bot forgot what it was doing.
+    .filter((m) => !(m.role === "assistant" && isUsageLimitNotice(m.content)))
     .slice(-24)
     .map((m) => `${m.role === "user" ? "User" : "You"}: ${String(m.content).replace(/\s+/g, " ").trim().slice(0, 400)}`);
   const recap = recapRows.length ? `Earlier in this conversation (oldest first; the last line is the most recent):\n${recapRows.join("\n")}\n\nNow the user says:\n` : "";
-  const prompt = claude
-    ? `${recap}${t.text}\n\nUse the sub8 tools. Do not only send a plan.`
-    : `${t.system ? `${t.system}\n\n` : ""}${recap}${t.text}\n\nUse the sub8 tools. Do not only send a plan.`;
+  // Conditional on purpose. "Use the sub8 tools." after a bare "hi" turned a
+  // greeting into a minute of screenshots and shell calls ending in "I've
+  // demonstrated the Sub8 tools in action" (KekiusBot, 2026-10-02).
+  const nudge = "\n\nIf this needs the computer, use the sub8 tools and do the work; do not only send a plan. If it is just conversation, reply briefly.";
+  const prompt = claude ? `${recap}${t.text}${nudge}` : `${t.system ? `${t.system}\n\n` : ""}${recap}${t.text}${nudge}`;
 
   const env: NodeJS.ProcessEnv = { ...hostEnv(), GROK_HOME: home };
   let args: string[];

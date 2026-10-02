@@ -199,6 +199,9 @@ const HANDLED = [
   "start-teach",
   "stop-teach",
   "stop-turn",
+  "retry-turn",
+  "switch-identity",
+  "jump-latest",
   "take-control",
   "teach-task",
   "team-channel",
@@ -288,8 +291,10 @@ assert.deepEqual(covered, expected);
 // 176 -> 177: identity-remove (Identities → Remove a login).
 // 177 -> 178: copy-link (card hints with a URL: Copy link).
 // 214 -> 215: vault-cloud-sync (Sync now when the cloud vault copy is behind).
-assert.equal(HANDLED.length, 215);
-assert.equal(covered.length, 215);
+// 215 -> 218: retry-turn (stalled or reply-less turn), switch-identity (usage
+//             limit notice), jump-latest (the "Jump to latest" pill).
+assert.equal(HANDLED.length, 218);
+assert.equal(covered.length, 218);
 
 console.log(
   "ok delegated-acts (" + keys.length + " in ACTIONS, " + new Set(chain).size +

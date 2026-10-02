@@ -48,6 +48,7 @@ import * as cloudDraft from "./cloud/draft.mjs";
 import { attachCloudStreamProxy } from "./cloud/stream-proxy.mjs";
 import { resolveChoice, visibleChoiceReply, applyInternalEmit } from "@sub8/choice";
 import * as spendGuard from "./spend-guard.mjs";
+import { activeBotLimit, parseUsageLimit, routinePausedNotice, type BotUsageLimit } from "./usage-limit.mjs";
 import * as mcpRemote from "@sub8/web-fetch/mcp-remote";
 
 import type { Request, Response } from "express";
@@ -123,6 +124,9 @@ type IndexBot = store.Bot & {
   messages: IndexMessage[];
   routines?: (store.StoredRoutine & memory.MemoryRoutine)[];
   awaitingUserSelection?: boolean;
+  identityId?: string;
+  /** The quota the bot's identity is out of, until it resets (usage-limit.mts). */
+  usageLimit?: BotUsageLimit | null;
 };
 
 /**
@@ -2866,6 +2870,9 @@ app.patch("/api/bots/:id", async (req, res) => {
     bot.grokSessionId = bot.harnessSessionId;
     bot.harnessSessionFresh = true;
   }
+  // Another identity is another quota: routines paused on the old one's
+  // limit run again on the next tick.
+  if (prevIdentity !== nextIdentity || prevEffective !== nextEffective) bot.usageLimit = null;
   await store.upsertBot(bot);
   broadcast("bot", toClient(bot));
   res.json(toClient(bot));
@@ -3247,6 +3254,31 @@ async function restoreHumanControl(): Promise<number> {
  * already consumed something durable to get here has then lost it — see
  * fireDurableWake.
  */
+/** How long a Stop waits for the aborted turn to unwind before the bot's queue moves on. */
+const STOP_RELEASE_MS = 5_000;
+/**
+ * No local turn holds a bot longer than this. The CLI harnesses cap a turn at
+ * 20 minutes themselves; this is the backstop for a turn that never settles
+ * (a hung await outside the harness), which otherwise kept the bot "busy"
+ * forever and folded every later message into it as a nudge nobody read.
+ */
+const TURN_WATCHDOG_MS = 30 * 60_000;
+
+/**
+ * Let the next queued turn start even if the current one has not settled.
+ * Aborting only asks the turn to stop; a turn stuck in an await that ignores
+ * the signal kept the lock, so every later message queued behind it forever.
+ */
+function releaseTurnLock(botId: string): void {
+  const held = turnLocks.get(botId);
+  if (!held) return;
+  const grace = new Promise<void>((resolve) => {
+    const t = setTimeout(resolve, STOP_RELEASE_MS);
+    t.unref?.();
+  });
+  turnLocks.set(botId, Promise.race([held, grace]));
+}
+
 function enqueueTurn(botId: string, fn: () => unknown, onSkipped?: () => void): Promise<unknown> {
   const epoch = epochOf(botId);
   const run = () => {
@@ -3628,6 +3660,8 @@ function stopTurn(botId: string): void {
     }
   }
   busyIds.delete(botId);
+  inflightTurns.delete(botId);
+  releaseTurnLock(botId);
   // Aborting the host loop only stops us reading; the desk keeps running the
   // work (a `sleep 300` outlived a stop that answered {ok:true,stopped:true}).
   store
@@ -4078,8 +4112,42 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
   const ac = new AbortController();
   turnAbort.set(botId, ac);
   busyIds.add(botId);
-  const bag = { nudges: [] };
+  const bag = { nudges: [] as string[] };
   inflightTurns.set(botId, bag);
+  // Backstop for a turn that never settles: end it, free the bot, and run
+  // whatever the user said meanwhile instead of leaving it in a dead turn.
+  const watchdog = setTimeout(() => {
+    if (turnAbort.get(botId) !== ac) return;
+    console.error("turn watchdog: ending a turn that ran past", TURN_WATCHDOG_MS, "ms", botId);
+    try {
+      ac.abort();
+    } catch {
+      /* ignore */
+    }
+    turnAbort.delete(botId);
+    const leftover = bag.nudges.splice(0);
+    if (inflightTurns.get(botId) === bag) inflightTurns.delete(botId);
+    busyIds.delete(botId);
+    releaseTurnLock(botId);
+    const note = {
+      id: `wd${Date.now()}`,
+      role: "assistant",
+      content: "My last turn stopped responding, so I ended it. Send the request again if it still matters.",
+      ts: Date.now(),
+    };
+    store
+      .patchBot(botId, (b) => {
+        b.messages = b.messages || [];
+        b.messages.push(note);
+      })
+      .then((b) => {
+        broadcast("message", { botId, ...note });
+        if (b) broadcast("bot", toClient(b as IndexBot));
+      })
+      .catch(() => {});
+    if (leftover.length) enqueueTurn(botId, () => runUserTurn(botId, leftover.join("\n"), false, [], { persistUser: false }));
+  }, TURN_WATCHDOG_MS);
+  watchdog.unref?.();
   try {
     let bot = await store.getBot(botId) as IndexBot | null;
     if (!bot) return;
@@ -4205,6 +4273,7 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
         }
       },
     } as RunTurnOptions);
+    await settleUsageLimit(botId, bot, turnStart, hidden);
     if (opts.replyTo && !settings.__didReply && !notifiedThisTurn.has(notifyKey(botId, opts.replyTo))) {
       const latest = await store.getBot(botId) as IndexBot | null;
       // The worker's real answer reaches the lead and the channel; the
@@ -4269,17 +4338,79 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
     // the catch and left it behind. The next dispatch to that worker then saw
     // the stale key, suppressed the forced step-ping, and the chief waited
     // indefinitely for a report that would never come.
+    clearTimeout(watchdog);
     notifiedThisTurn.delete(notifyKey(botId, opts.replyTo));
     const leftover = bag.nudges.splice(0);
+    // Only this turn's own state. After a Stop (or the watchdog) a newer turn
+    // may already own the bot; clearing ITS busy flag and nudge bag here made
+    // the UI show idle mid-turn and dropped what the user typed into it.
+    const current = turnAbort.get(botId) === ac || !turnAbort.has(botId);
     if (turnAbort.get(botId) === ac) turnAbort.delete(botId);
-    inflightTurns.delete(botId);
-    busyIds.delete(botId);
+    if (inflightTurns.get(botId) === bag) inflightTurns.delete(botId);
+    if (current) busyIds.delete(botId);
     const live = await store.getBot(botId) as IndexBot | null;
     if (live) broadcast("bot", toClient(live));
     if (leftover.length && !ac.signal.aborted) {
       enqueueTurn(botId, () => runUserTurn(botId, leftover.join("\n"), false, [], { persistUser: false }));
     }
   }
+}
+
+/**
+ * A turn that ended on "You've hit your weekly limit · resets ..." records the
+ * limit on the bot so routines wait for the reset (tickRoutines). One notice
+ * per condition: a routine fire that hits the same limit again leaves no row,
+ * the first one says what happens next. Any other reply clears the record.
+ * `bot` is the turn's own in-memory row (runUserTurn upserts it last), so both
+ * it and the stored row are updated.
+ */
+async function settleUsageLimit(botId: string, bot: IndexBot, turnStart: number, hidden: boolean): Promise<void> {
+  const reply = [...(bot.messages || [])]
+    .reverse()
+    .find((m) => m.role === "assistant" && !m.kind && Number(m.ts || 0) >= turnStart && String(m.content || "").trim());
+  if (!reply) return;
+  const now = Date.now();
+  const parsed = parseUsageLimit(reply.content, now);
+  if (!parsed) {
+    if (bot.usageLimit) {
+      bot.usageLimit = null;
+      await store.patchBot(botId, (b) => {
+        (b as IndexBot).usageLimit = null;
+      }).catch(() => {});
+    }
+    return;
+  }
+  const repeat = Boolean(activeBotLimit(bot, now));
+  const record: BotUsageLimit = {
+    until: Math.max(parsed.until, repeat ? Number(bot.usageLimit?.until) || 0 : 0),
+    message: parsed.message,
+    at: repeat ? Number(bot.usageLimit?.at) || now : now,
+    identityId: String(bot.identityId || ""),
+    provider: String(bot.harness?.provider || ""),
+  };
+  bot.usageLimit = record;
+  const hasRoutines = (bot.routines || []).some((r) => r && r.enabled !== false);
+  const content = !hidden
+    ? `${parsed.message}\n\nSwitch me to another identity to keep going before then.`
+    : hasRoutines
+      ? routinePausedNotice(record, now)
+      : parsed.message;
+  if (hidden && repeat) {
+    // The thread already says this; another copy is the spam this exists to stop.
+    const at = (bot.messages || []).indexOf(reply);
+    if (at >= 0) bot.messages.splice(at, 1);
+    await store.patchBot(botId, (b) => {
+      (b as IndexBot).usageLimit = record;
+    }).catch(() => {});
+    await store.deleteMessages(botId, [String(reply.id)]).catch(() => null);
+    return;
+  }
+  if (!repeat) reply.content = content;
+  await store.patchBot(botId, (b) => {
+    (b as IndexBot).usageLimit = record;
+    const row = (b.messages || []).find((m) => m.id === reply.id);
+    if (row && !repeat) row.content = content;
+  }).catch(() => {});
 }
 
 async function tickRoutines() {
@@ -4348,6 +4479,10 @@ async function tickRoutines() {
     }
     const due = routines.dueRoutines(bot as routines.RoutineBot, now, { timeZone });
     if (!due.length) continue;
+    // Out of quota: the fire would only answer the same limit line. Leave the
+    // routine due (not stamped) so it runs on the first tick after the reset,
+    // or right away once the bot is switched to another identity.
+    if (activeBotLimit(bot, now)) continue;
     const packs = routines.packDue(due);
     for (const pack of packs) {
       const accepted: store.StoredRoutine[] = [];

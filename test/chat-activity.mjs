@@ -2,8 +2,14 @@ import assert from "node:assert/strict";
 import {
   activityLabel,
   applyChatBusy,
+  chatNoticeKind,
+  chatRepeatKey,
+  collapseRepeats,
+  formatElapsed,
   isTurnClosingAssistant,
   liveBusyLabel,
+  usageLimitInfo,
+  workingRowState,
 } from "../web/chat-activity.mjs";
 
 assert.equal(activityLabel({ summary: "Opened Chrome", action: "open" }), "Opened Chrome");
@@ -103,5 +109,67 @@ assert.equal(bot.busy, false, "late tool after the server idles must not resurre
 applyChatBusy(bot, { type: "send" });
 applyChatBusy(bot, { type: "bot", busy: false });
 assert.equal(bot.busy, false);
+
+// A step from the previous turn is not what the bot is doing now.
+assert.equal(
+  liveBusyLabel({
+    busy: true,
+    messages: [
+      { role: "activity", kind: "tool", summary: "Opened Chrome", action: "open" },
+      { role: "assistant", content: "Done." },
+      { role: "user", content: "hi" },
+    ],
+  }),
+  "Starting…",
+);
+
+// Usage limits, as the harnesses word them.
+assert.deepEqual(usageLimitInfo("You've hit your weekly limit · resets Oct 3, 4pm (UTC)"), { scope: "weekly", reset: "Oct 3, 4pm (UTC)" });
+assert.deepEqual(usageLimitInfo("You've hit your limit · resets 5pm"), { scope: "", reset: "5pm" });
+assert.equal(usageLimitInfo("Claude AI usage limit reached. Your limit will reset at 9pm.")?.reset, "9pm");
+assert.ok(usageLimitInfo("Rate limit exceeded"));
+assert.equal(usageLimitInfo("I checked the rate limit docs and the bill looks fine."), null);
+assert.equal(usageLimitInfo("Here is the summary you asked for."), null);
+
+const limit = (id, ts) => ({ id, ts, role: "assistant", content: "You've hit your weekly limit · resets Oct 3, 4pm (UTC)" });
+assert.equal(chatNoticeKind(limit("a", 1)), "limit");
+assert.equal(chatNoticeKind({ role: "assistant", content: "Error: harness exited with code 1" }), "error");
+assert.equal(chatNoticeKind({ role: "assistant", content: "Stopped." }), "system");
+assert.equal(chatNoticeKind({ role: "assistant", content: "Hello! How can I help?" }), null);
+assert.equal(chatNoticeKind({ role: "user", content: "Error: my code fails" }), null, "user text is never a notice");
+assert.equal(chatNoticeKind({ role: "assistant", kind: "choices", content: "Error?" }), null);
+
+// Near-identical notices share a key; plain replies only when exact; users never.
+assert.equal(chatRepeatKey(limit("a", 1)), chatRepeatKey({ ...limit("b", 2), content: "You've hit your weekly limit · resets Oct 4, 5pm (UTC)" }));
+assert.equal(chatRepeatKey({ role: "user", content: "hi" }), "");
+assert.notEqual(chatRepeatKey({ role: "assistant", content: "No change." }), chatRepeatKey({ role: "assistant", content: "No change!" }));
+
+const rows = [
+  { id: "u", role: "user", content: "watch the bill", ts: 0 },
+  ...Array.from({ length: 23 }, (_, i) => limit(`l${i}`, 1000 + i)),
+  { id: "e1", role: "assistant", content: "Error: harness exited with code 1", ts: 3000 },
+  { id: "t1", role: "activity", kind: "tool", summary: "Looked at the screen", ts: 3001 },
+  { id: "e2", role: "assistant", content: "Error: harness exited with code 1", ts: 3002 },
+  { id: "r", role: "assistant", content: "Back online.", ts: 4000 },
+];
+const runs = collapseRepeats(rows);
+assert.equal(runs.length, 4);
+assert.equal(runs[1].items.length, 23);
+assert.equal(runs[1].first.id, "l0");
+assert.equal(runs[1].last.id, "l22");
+assert.equal(runs[2].items.length, 2, "an activity row between two identical errors folds into the run");
+assert.deepEqual(runs[2].skipped.map((m) => m.id), ["t1"]);
+assert.equal(runs[3].first.id, "r");
+// An activity row that is not followed by the same notice stays in the transcript.
+const tailRuns = collapseRepeats([limit("x", 1), { id: "t", role: "activity", kind: "tool", ts: 2 }]);
+assert.equal(tailRuns.length, 2);
+
+assert.equal(formatElapsed(3_400), "3s");
+assert.equal(formatElapsed(65_000), "1:05");
+assert.equal(formatElapsed(3_729_000), "1:02:09");
+assert.deepEqual(workingRowState("Starting…", 1_000), { text: "Starting…", clock: "", stalled: false });
+assert.deepEqual(workingRowState("Starting…", 12_000), { text: "Starting…", clock: "12s", stalled: false });
+assert.deepEqual(workingRowState("Starting…", 52_000), { text: "Still starting…", clock: "52s", stalled: true });
+assert.equal(workingRowState("Reading a page", 90_000).stalled, false, "a turn that is doing steps is not stalled");
 
 console.log("ok chat-activity");

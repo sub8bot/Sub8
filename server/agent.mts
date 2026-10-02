@@ -1007,7 +1007,15 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
     }
   }
 
-  const viaDesk = await tryDeskBrain({ bot, settings, userText: savedLogin?.did ? `${userText}\n\n${savedLogin.brief}` : userText, emit, signal, hidden });
+  // The in-desk harness (vm/desk-harness.py) only ever runs grok, on the
+  // grok login copied into the desk, and its /turn takes no provider. Handing
+  // it every turn meant a bot switched to Claude, Codex or an API identity was
+  // still answered by Grok on the host's account: the identity switch did
+  // nothing (and spent the wrong quota). Only a grok-build bot goes through it.
+  const viaDesk =
+    harness.provider === "grok-build"
+      ? await tryDeskBrain({ bot, settings, userText: savedLogin?.did ? `${userText}\n\n${savedLogin.brief}` : userText, emit, signal, hidden })
+      : null;
   if (viaDesk) return viaDesk;
 
   if (harness.kind === "cli-host") {

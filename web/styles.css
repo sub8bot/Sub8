@@ -3710,3 +3710,152 @@ select:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 55%, 
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+
+/* Chat notices: errors, usage limits and system lines read apart from replies,
+   and a run of the same one folds into a single bubble with a count. */
+.notice {
+  align-self: flex-start;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: min(86%, 36rem);
+  padding: 10px 14px;
+  border-radius: 14px;
+  font-size: 13.5px;
+  line-height: 1.45;
+  white-space: normal;
+  background: color-mix(in srgb, var(--bubble) 70%, transparent);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--text);
+}
+.notice .notice-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.notice .notice-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+.notice.is-limit .notice-body { white-space: normal; }
+.notice .notice-sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.notice .notice-ico { flex: 0 0 auto; margin-top: 1px; display: inline-flex; }
+.notice.is-limit {
+  background: color-mix(in srgb, #f59e0b 9%, var(--bg));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #f59e0b 35%, var(--line));
+}
+.notice.is-limit .notice-ico { color: #b45309; }
+.notice.is-error {
+  background: color-mix(in srgb, var(--danger) 6%, var(--bg));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 25%, var(--line));
+}
+.notice.is-error .notice-ico { color: var(--danger); }
+.notice.is-system { color: var(--muted); background: transparent; }
+.notice-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.notice-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.notice-act { padding: 5px 11px; font-size: 12.5px; }
+
+.repeat-wrap { align-self: flex-start; display: flex; flex-direction: column; gap: 4px; max-width: 72%; }
+.repeat-wrap > .bubble { max-width: 100%; }
+.repeat-more { font-size: 12px; color: var(--muted); }
+.repeat-more > summary {
+  list-style: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  padding: 2px 8px 2px 2px;
+  border-radius: 999px;
+  user-select: none;
+}
+.repeat-more > summary::-webkit-details-marker { display: none; }
+.repeat-more > summary:hover { color: var(--text); }
+.repeat-count {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: var(--chip);
+  box-shadow: 0 0 0 1px var(--ring);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.repeat-more > summary::after { content: "Show times"; opacity: .8; }
+.repeat-more[open] > summary::after { content: "Hide times"; }
+.repeat-times {
+  margin: 6px 0 0;
+  padding: 0 0 0 18px;
+  max-height: 160px;
+  overflow: auto;
+  columns: 2;
+  column-gap: 20px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The working row: a clock after a few seconds, Stop and Retry once a start stalls. */
+.working { flex-wrap: wrap; }
+.working-time { font-variant-numeric: tabular-nums; opacity: .8; font-weight: 400; }
+.working-time:empty { display: none; }
+.working-actions { display: inline-flex; gap: 6px; margin-left: 4px; }
+.working-act { padding: 4px 10px; font-size: 12px; }
+.working.is-stalled .working-dot { border-color: #f59e0b; border-right-color: transparent; }
+
+.queued-note {
+  align-self: flex-end;
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: -4px;
+}
+
+/* "Jump to latest" floats over the bottom of the thread when the reader has scrolled up. */
+.jump-latest-host { position: relative; height: 0; display: flex; justify-content: center; z-index: 3; }
+.jump-latest {
+  position: absolute;
+  bottom: 8px;
+  border: 0;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 6px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  background: var(--on);
+  color: var(--on-fg);
+  box-shadow: 0 4px 14px rgba(0,0,0,.16);
+}
+.jump-latest[hidden] { display: none; }
+.jump-latest:hover { filter: brightness(1.1); }
+
+/* Bot editor: the avatar card scrolls with the form. It used to be sticky, and
+   its "Edit look" button rode over the fields and the Notifications card. */
+.bot-editor .avatar-studio { position: static; background: none; z-index: auto; margin: 4px 0 14px; padding-bottom: 0; }
+.bot-editor .avatar-studio .avatar-edit { position: relative; z-index: 1; }
+.bot-editor select.field,
+.bot-editor .field-select {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.harness-static { gap: 8px; min-width: 0; overflow: hidden; }
+.harness-static-name { color: var(--text); font-weight: 500; flex: 0 0 auto; }
+.harness-static-model {
+  color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.field-flash { animation: field-flash 1.4s var(--ease); }
+@keyframes field-flash {
+  0%, 60% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+/* A teammate that is mid-task shows it on its @chip. */
+.mention-chip.is-busy { border-style: solid; color: var(--text); }
+.mention-chip.is-busy::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: 1px;
+  animation: pulse 1.4s ease-in-out infinite;
+}

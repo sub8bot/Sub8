@@ -360,6 +360,12 @@ export async function liveBrainTurn({ token, computerId, id }: ComputerIdOptions
   return http.cloudApi(`/api/brain/turn?${q}`, { baseUrl: needBase(), token });
 }
 
+/** Queued + running turns on one desk, and the account's live quota limits (Worker GET /api/brain/turns). */
+export async function liveBrainTurns({ token, computerId }: ComputerIdOptions = {}) {
+  const q = new URLSearchParams({ computerId: computerId || "default" });
+  return http.cloudApi(`/api/brain/turns?${q}`, { baseUrl: needBase(), token });
+}
+
 export async function liveBrainSetModel({ token, identityId, model }: { token?: string | undefined; identityId?: string | undefined; model?: string | undefined } = {}) {
   return http.cloudApi("/api/brain/model", { baseUrl: needBase(), token, method: "POST", body: { identityId, model } });
 }

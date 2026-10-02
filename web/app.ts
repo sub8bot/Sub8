@@ -6,7 +6,8 @@ import { listModelsForProvider, modelFieldKind, pickListedModel } from "./harnes
 import { formatChatText } from "./markdown.js";
 import { HARNESS_INSTALL, apiPreset, brainSetupHtml, harnessSetupBannerHtml, needsBrainSetup } from "./brain-setup.mjs";
 import { mergeCloudMessages, mergeCloudDraft, isTransientChatStatus } from "./chat-merge.mjs";
-import { activityLabel, applyChatBusy, liveBusyLabel } from "./chat-activity.mjs";
+import { activityLabel, applyChatBusy as applyChatBusyPure, liveBusyLabel, usageLimitInfo, chatNoticeKind, collapseRepeats, workingRowState, formatElapsed } from "./chat-activity.mjs";
+import type { ChatBusyEvent, ChatNoticeKind } from "./chat-activity.mjs";
 import { api } from "./api-client.mjs";
 import { iconAbout, iconBack, iconChevrons, iconClip, iconClock, iconClose, iconCompact, iconComputer, iconExpand, iconGear, iconGitHub, iconGlobe, iconHarness, iconLicense, iconLock, iconMic, iconMonitor, iconPerson, iconPlus, iconRecord, iconSend, iconStop, iconLol } from "./icons.mjs";
 import * as cloudPlace from "./cloud-place.mjs";
@@ -2138,7 +2139,51 @@ function syncBots(incoming: Bot[]): void {
 }
 
 const cloudTurns = new Map<string, { turnId?: string | undefined; computerId?: string | undefined }>();
-let cloudWatchGen = 0;
+/** Per bot: the live watchCloudTurn loop's ticket. Replacing or deleting it ends that loop (a newer send, or Stop). */
+const cloudWatchGen = new Map<string, number>();
+let cloudWatchSeq = 0;
+
+type TurnClock = { startedAt: number; lastEventAt: number; idleChecks: number; checkedAt: number };
+/** When each bot's running turn began and last showed a sign of life. Client only, keyed by bot id. */
+const turnClock = new Map<string, TurnClock>();
+/** Bots whose turn ended with no reply after the user's last message (value: that message id). */
+const turnNoReply = new Map<string, string>();
+/** Per bot: the text of a message sent while that bot was mid-turn (the server hands it in as a note). */
+const queuedWhileBusy = new Map<string, string>();
+
+/**
+ * applyChatBusy from chat-activity, plus the turn clock the working row reads.
+ * Every busy transition in this file goes through here.
+ */
+function applyChatBusy(bot: Bot, event: ChatBusyEvent): void {
+  const was = Boolean(bot.busy);
+  applyChatBusyPure(bot, event);
+  const now = Date.now();
+  if (event.type === "send") {
+    // A note sent mid-turn joins the running turn: keep its clock.
+    const c = turnClock.get(bot.id);
+    if (was && c) {
+      c.lastEventAt = now;
+      c.idleChecks = 0;
+    } else {
+      turnClock.set(bot.id, { startedAt: now, lastEventAt: now, idleChecks: 0, checkedAt: 0 });
+    }
+    turnNoReply.delete(bot.id);
+    return;
+  }
+  if (!bot.busy) queuedWhileBusy.delete(bot.id);
+  if (!bot.busy) {
+    turnClock.delete(bot.id);
+    return;
+  }
+  const c = turnClock.get(bot.id);
+  if (!c || !was) {
+    turnClock.set(bot.id, { startedAt: c && was ? c.startedAt : now, lastEventAt: now, idleChecks: 0, checkedAt: 0 });
+  } else if (event.type === "tool" || event.type === "message") {
+    c.lastEventAt = now;
+    c.idleChecks = 0;
+  }
+}
 
 async function stopTurn(): Promise<void> {
   if (isCloudPlace()) {
@@ -2151,6 +2196,8 @@ async function stopTurn(): Promise<void> {
       if ((b.computerId || b.vm?.computerId) === computerId) {
         applyChatBusy(b, { type: "stop" });
         cloudTurns.delete(b.id);
+        // End the watcher too, or its next poll sets busy right back.
+        cloudWatchGen.delete(b.id);
       }
     }
     paintChat(bot);
@@ -2342,6 +2389,7 @@ function renderTeamChannel(thread: HTMLElement, team: Team): void {
   // team's activity lands in this one log — the bot app model.
   const head = `<div class="channel-head">${escapeHtml(lead)} · ${escapeHtml(team.name)}<span class="channel-sub">You're talking to ${escapeHtml(lead)}, the team lead. @mention a teammate to reach them directly.</span></div>`;
   if (!msgs.length) {
+    threadPainted = { botId: "", html: "" };
     thread.innerHTML = head + `<div class="empty">Say hi to ${escapeHtml(lead)}. They'll bring in teammates when the work needs it.</div>`;
     return;
   }
@@ -2350,7 +2398,8 @@ function renderTeamChannel(thread: HTMLElement, team: Team): void {
   // lead's own copy, found by id.
   const leadBot = chief;
   let lastDay: number | null = null;
-  thread.innerHTML = head + msgs.slice(-100).map((m) => {
+  const body = collapseRepeats(msgs.slice(-100)).map((run) => {
+    const m = run.first;
     let sep = "";
     const k = chatDayKey(m.ts);
     if (k && k !== lastDay) { lastDay = k; sep = `<div class="chat-day">${escapeHtml(chatDayLabel(m.ts))}</div>`; }
@@ -2358,9 +2407,13 @@ function renderTeamChannel(thread: HTMLElement, team: Team): void {
       const live = (leadBot?.messages || []).find((x: Message) => x.id === m.id) || m;
       return sep + `<div class="msg asst" data-mid="${escapeHtml(m.id || "")}">${renderChoiceCard(live)}</div>`;
     }
-    return sep + namedBubble(m, m.speakerRole !== "user");
+    const notice = m.speakerRole !== "user" ? chatNoticeKind(m) : null;
+    if (notice && leadBot) return sep + noticeHtml(leadBot, run.items, run.skipped, notice);
+    // Plain repeats in a channel keep every bubble; only notices fold here.
+    return sep + run.items.map((x) => namedBubble(x, x.speakerRole !== "user")).join("");
   }).join("");
-  thread.scrollTop = thread.scrollHeight;
+  // Stick to the bottom only when the reader already was there.
+  paintThreadHtml(thread, `team:${team.id}`, head + body + (leadBot?.busy ? workingRowHtml(leadBot) : ""));
   const input = $<HTMLTextAreaElement>('textarea[name="q"]');
   if (input) input.placeholder = `Message ${lead} · @name to reach a teammate`;
 }
@@ -2407,15 +2460,17 @@ function paintChat(bot: Bot | null | undefined): void {
     state.chatFollowBot = bot.id;
     state.chatFollow = true;
     state.chatExtra = 0;
+    showJumpPill(false);
   }
   const allRows = bot.messages.filter((m) => !m.hidden && m.role !== "tool" && !isTransientChatStatus(m));
   const windowSize = chatWindowSize(state.chatExtra);
   const hidden = Math.max(0, allRows.length - windowSize);
   const rows = hidden ? allRows.slice(-windowSize) : allRows;
   if (!allRows.length && !bot.busy) {
-    thread.innerHTML = isCloudPlace() && !cloudBrainReady(bot)
+    paintThreadHtml(thread, bot.id, isCloudPlace() && !cloudBrainReady(bot)
       ? cloudBrainHtml(bot)
-      : `<div class="empty">Message ${escapeHtml(bot.name)} to put it to work.</div>`;
+      : `<div class="empty">Message ${escapeHtml(bot.name)} to put it to work.</div>`);
+    syncComposerBusy(bot);
     return;
   }
   const html: string[] = [];
@@ -2432,9 +2487,14 @@ function paintChat(bot: Bot | null | undefined): void {
       html.push(`<div class="chat-day">${escapeHtml(chatDayLabel(m.ts))}</div>`);
     }
   };
-  // Every rows[i] below sits under the i < rows.length guard of this loop.
-  for (let i = 0; i < rows.length; ) {
-    const m = rows[i]!;
+  // A routine that hits the same wall every ten minutes used to paint dozens
+  // of identical bubbles. Runs of the same notice (or the exact same reply)
+  // fold into one bubble with a count and a time range.
+  const runs = collapseRepeats(rows);
+  // Every runs[i] below sits under the i < runs.length guard of this loop.
+  for (let i = 0; i < runs.length; ) {
+    const run = runs[i]!;
+    const m = run.first;
     dayBreak(m);
     if (m.kind === "choices" || m.kind === "secret-request" || m.kind === "vault-approve") {
       if (m.pending !== false) pendingChoices.push(m);
@@ -2455,37 +2515,312 @@ function paintChat(bot: Bot | null | undefined): void {
     }
     if (m.kind === "think" || m.kind === "tool" || m.role === "activity") {
       const batch: Message[] = [];
-      while (i < rows.length && (rows[i]!.kind === "think" || rows[i]!.kind === "tool" || rows[i]!.role === "activity")) {
-        const next = rows[i]!;
+      while (i < runs.length && (runs[i]!.first.kind === "think" || runs[i]!.first.kind === "tool" || runs[i]!.first.role === "activity")) {
+        const next = runs[i]!.first;
         const gap = (Number(next.ts) || 0) - (Number(batch.at(-1)?.ts) || Number(next.ts) || 0);
         if (batch.length && (gap > 45_000 || batch.length >= 80)) break;
         batch.push(next);
         i += 1;
       }
-      const live = Boolean(bot.busy && i >= rows.length);
+      const live = Boolean(bot.busy && i >= runs.length);
       liveActivity = live;
       html.push(renderActivity(batch, live));
       continue;
     }
-    if (String(m.content || "").trim() || m.image) {
-      html.push(m.speakerName ? namedBubble(m, true) : `<div class="bubble" data-mid="${escapeHtml(m.id || "")}">${m.content ? formatChatText(m.content) : ""}${chatShotHtml(m)}</div>`);
+    const notice = chatNoticeKind(m);
+    if (notice) {
+      html.push(noticeHtml(bot, run.items, run.skipped, notice));
+    } else if (String(m.content || "").trim() || m.image) {
+      // A repeated plain reply shows the latest copy once, with the count.
+      const shown = run.last;
+      const bubble = shown.speakerName
+        ? namedBubble(shown, true)
+        : `<div class="bubble" data-mid="${escapeHtml(shown.id || "")}"${run.items.length > 1 ? ` data-mids="${escapeHtml(runIds(run.items, run.skipped))}"` : ""}>${shown.content ? chatMarkdown(shown.content) : ""}${chatShotHtml(shown)}</div>`;
+      html.push(run.items.length > 1 ? `<div class="repeat-wrap">${bubble}${repeatMetaHtml(run.items)}</div>` : bubble);
     }
     i += 1;
   }
+  const lastUser = [...rows].reverse().find((m) => m.role === "user");
+  const lastRow = rows.at(-1);
   if (bot.busy && !liveActivity) {
-    const label = liveBusyLabel({ busy: true, messages: bot.messages, liveTool: bot.liveTool }) || "Starting…";
-    html.push(
-      `<div class="working" role="status" aria-live="polite"><span class="working-dot" aria-hidden="true"></span>${escapeHtml(label)}</div>`,
-    );
+    html.push(workingRowHtml(bot));
+  } else if (!bot.busy && lastRow && lastRow.role === "user" && turnNoReply.has(bot.id)) {
+    // The turn ended (server went idle, or the watcher gave up) and nothing
+    // came back. Say so instead of leaving the question hanging.
+    html.push(`<div class="notice is-system" role="status">
+      <div class="notice-body"><b>No reply came back.</b> ${escapeHtml(bot.name)} stopped without answering.</div>
+      <div class="notice-actions"><button type="button" class="pill notice-act" data-act="retry-turn" data-id="${escapeHtml(bot.id)}">Retry</button></div>
+    </div>`);
+  }
+  if (lastUser && lastUser === lastRow && bot.busy && queuedWhileBusy.get(bot.id) === String(lastUser.content || "")) {
+    html.push(`<div class="queued-note">Delivered while ${escapeHtml(bot.name)} is working. It will fold this in.</div>`);
   }
   for (const card of pendingChoices) html.push(renderChoiceCard(card));
   const brainCard = isCloudPlace() && !cloudBrainReady(bot) ? cloudBrainHtml(bot) : "";
-  thread.innerHTML = brainCard + html.join("");
-  if (state.chatFollow) thread.scrollTop = thread.scrollHeight;
+  paintThreadHtml(thread, bot.id, brainCard + html.join(""));
+  syncComposerBusy(bot);
+}
+
+/**
+ * Composer chrome that tracks whether a turn is running: Stop next to Send,
+ * and copy that says what a message sent now does. Runs on every chat paint,
+ * so switching bots never carries bot A's Stop button onto bot B.
+ */
+function syncComposerBusy(bot: Bot): void {
+  const form = $<SendForm>("#send");
+  const busy = Boolean(bot.busy);
+  const key = `${bot.id}:${busy ? 1 : 0}:${state.channelTeamId || ""}`;
+  if (form && form.dataset.busyKey !== key) {
+    form.dataset.busyKey = key;
+    paintComposerCopy(bot);
+  } else {
+    const halt = $<HTMLButtonElement>(".composer [data-act=stop-turn]");
+    if (halt) halt.hidden = !busy;
+  }
+}
+
+function paintComposerCopy(bot: Bot): void {
+  const form = $<SendForm>("#send");
+  const input = form?.q;
+  const team = teamOf(bot);
+  const mates = teamBots(team).filter((b) => b.id !== bot.id);
+  const inChannel = Boolean(state.channelTeamId && team && team.id === state.channelTeamId);
+  const lead = teamBots(team).find((b) => b.teamRole === "chief");
+  // In the Team channel the lead is who is (or is not) working.
+  const worker = inChannel ? lead || bot : bot;
+  const busy = Boolean(worker.busy);
+  form?.classList.toggle("is-busy", busy);
+  if (input && !input.disabled) {
+    input.placeholder = busy
+      ? `Add a note for ${worker.name} while it works`
+      : inChannel
+        ? `Message ${lead?.name || "the lead"} · @name to reach a teammate`
+        : mates.length
+          ? `Message ${bot.name} · @name to ping a teammate`
+          : `Message ${bot.name}`;
+  }
+  const hint = $(".composer-hint");
+  if (hint) {
+    hint.textContent = busy
+      ? `${worker.name} is working. A message now reaches it mid-task. Stop to interrupt.`
+      : mates.length
+        ? "Enter to send · @Name talks to that Bot · Shift+Enter for a new line"
+        : "Enter to send · Shift+Enter for a new line";
+  }
   const go = $<HTMLButtonElement>(".composer-go");
   const halt = $<HTMLButtonElement>(".composer [data-act=stop-turn]");
   if (go) go.hidden = false;
-  if (halt) halt.hidden = !bot.busy;
+  if (halt) halt.hidden = !busy;
+}
+
+/**
+ * Last HTML written into #thread, keyed by bot, so an event that changes
+ * nothing visible (a tool tick on a folded run) skips the DOM rebuild. `node`
+ * is the last child we wrote: anything else that rewrites #thread replaces it,
+ * which invalidates the cache.
+ */
+let threadPainted: { botId: string; html: string; node?: Element | null; lastMid?: string } = { botId: "", html: "" };
+
+function lastMessageMid(thread: HTMLElement): string {
+  const all = thread.querySelectorAll<HTMLElement>("[data-mid]");
+  return all[all.length - 1]?.dataset.mid || "";
+}
+
+function paintThreadHtml(thread: HTMLElement, botId: string, html: string): void {
+  const same =
+    threadPainted.botId === botId && threadPainted.html === html && thread.lastElementChild === threadPainted.node && thread.childElementCount > 0;
+  if (!same) {
+    const prev = threadPainted;
+    thread.innerHTML = html;
+    const lastMid = lastMessageMid(thread);
+    threadPainted = { botId, html, node: thread.lastElementChild, lastMid };
+    // Offer the pill only for something new at the bottom: "Load earlier"
+    // grows the thread too, but above the reader.
+    if (!state.chatFollow && prev.botId === botId && lastMid && lastMid !== prev.lastMid) showJumpPill(true);
+  }
+  if (state.chatFollow) {
+    thread.scrollTop = thread.scrollHeight;
+    showJumpPill(false);
+  }
+}
+
+function showJumpPill(on: boolean): void {
+  const pill = $<HTMLButtonElement>("#jump-latest");
+  if (pill) pill.hidden = !on;
+}
+
+/** Rendered markdown per message body. Repaints rebuild the thread often; the text rarely changes. */
+const mdCache = new Map<string, string>();
+function chatMarkdown(text: string): string {
+  const hit = mdCache.get(text);
+  if (hit !== undefined) return hit;
+  const out = formatChatText(text);
+  if (mdCache.size > 800) mdCache.delete(mdCache.keys().next().value as string);
+  mdCache.set(text, out);
+  return out;
+}
+
+function runIds(items: Message[], skipped: Message[]): string {
+  return [...items, ...skipped].map((m) => m.id).filter(Boolean).join(",");
+}
+
+function clockTime(ts: unknown): string {
+  return new Date(Number(ts) || Date.now()).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+/** "10:02 AM to 2:12 PM", or with dates when the run crosses midnight. */
+function runRangeLabel(items: Message[]): string {
+  const a = items[0]?.ts;
+  const b = items.at(-1)?.ts;
+  if (!a || !b) return "";
+  if (chatDayKey(a) === chatDayKey(b)) return `${clockTime(a)} to ${clockTime(b)}`;
+  return `${chatDayLabel(a)} to ${chatDayLabel(b)}`;
+}
+
+/** The "×23 · 10:02 AM to 2:12 PM" toggle under a folded run, with every time inside. */
+function repeatMetaHtml(items: Message[]): string {
+  const key = `rep:${items[0]?.id || items[0]?.ts || ""}`;
+  const open = state.activityOpen[key] === true;
+  const times = items
+    .slice(-200)
+    .map((m) => `<li>${escapeHtml(chatDayKey(m.ts) === chatDayKey(Date.now()) ? clockTime(m.ts) : chatDayLabel(m.ts))}</li>`)
+    .join("");
+  return `<details class="repeat-more" data-fold="${escapeHtml(key)}"${open ? " open" : ""}>
+    <summary><span class="repeat-count">×${items.length}</span><span class="repeat-when">${escapeHtml(runRangeLabel(items))}</span></summary>
+    <ol class="repeat-times">${times}</ol>
+  </details>`;
+}
+
+/**
+ * An error, limit or system line, styled apart from a normal reply. A usage
+ * limit says when it resets and offers the identity switch that gets around it.
+ */
+function noticeHtml(bot: Bot, items: Message[], skipped: Message[], kind: ChatNoticeKind): string {
+  const last = items.at(-1)!;
+  const text = String(last.content || "").trim();
+  const mids = runIds(items, skipped);
+  const meta = items.length > 1 ? repeatMetaHtml(items) : "";
+  let body: string;
+  let actions = "";
+  if (kind === "limit") {
+    const info = usageLimitInfo(text);
+    const scope = info?.scope ? `${info.scope.charAt(0).toUpperCase()}${info.scope.slice(1)} usage limit reached` : "Usage limit reached";
+    const reset = info?.reset ? `Resets ${info.reset}.` : "";
+    // The server may add a line of its own under the harness's ("I paused my
+    // routines until..."); keep that, it says what happens next.
+    const extra = text.split(/\n+/).slice(1).join(" ").trim();
+    const sub = extra || `${bot.name} cannot run on this identity until then.`;
+    body = `<b>${escapeHtml(scope)}</b>${reset ? ` <span>${escapeHtml(reset)}</span>` : ""}<div class="notice-sub">${escapeHtml(sub)}</div>`;
+    actions = `<button type="button" class="pill notice-act" data-act="switch-identity" data-id="${escapeHtml(bot.id)}">Switch identity</button>`;
+  } else {
+    body = chatMarkdown(text);
+  }
+  const icon = kind === "system" ? "" : `<span class="notice-ico" aria-hidden="true">${kind === "limit" ? noticeClockSvg() : noticeAlertSvg()}</span>`;
+  return `<div class="bubble notice is-${kind}" data-mid="${escapeHtml(items[0]?.id || "")}" data-mids="${escapeHtml(mids)}" title="${escapeHtml(text)}">
+    ${icon}<div class="notice-main">
+      <div class="notice-body">${body}</div>
+      ${meta || actions ? `<div class="notice-foot">${meta}${actions ? `<div class="notice-actions">${actions}</div>` : ""}</div>` : ""}
+    </div>
+  </div>`;
+}
+
+function noticeClockSvg(): string {
+  return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>`;
+}
+
+function noticeAlertSvg(): string {
+  return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9.5 17h-19z"/><path d="M12 10v4M12 17.5h.01"/></svg>`;
+}
+
+/** The running turn's clock, created on first sight when busy was set without a send (cloud polls, a reload). */
+function turnClockOf(bot: Bot): TurnClock {
+  let c = turnClock.get(bot.id);
+  if (!c) {
+    const now = Date.now();
+    c = { startedAt: now, lastEventAt: now, idleChecks: 0, checkedAt: 0 };
+    turnClock.set(bot.id, c);
+  }
+  return c;
+}
+
+/** "Starting… 12s", then "Still starting… 0:52" with Stop and Retry once it has stalled. */
+function workingRowHtml(bot: Bot): string {
+  const label = liveBusyLabel({ busy: true, messages: bot.messages, liveTool: bot.liveTool }) || "Starting…";
+  const st = workingRowState(label, Date.now() - turnClockOf(bot).startedAt);
+  const actions = st.stalled
+    ? `<span class="working-actions">
+        <button type="button" class="pill working-act" data-act="stop-turn">Stop</button>
+        <button type="button" class="pill working-act" data-act="retry-turn" data-id="${escapeHtml(bot.id)}">Retry</button>
+      </span>`
+    : "";
+  return `<div class="working${st.stalled ? " is-stalled" : ""}" role="status" aria-live="polite" data-working-bot="${escapeHtml(bot.id)}" data-label="${escapeHtml(label)}" data-stalled="${st.stalled ? "1" : ""}"><span class="working-dot" aria-hidden="true"></span><span class="working-label">${escapeHtml(st.text)}</span><span class="working-time">${escapeHtml(st.clock)}</span>${actions}</div>`;
+}
+
+/**
+ * Once a second: move the working row's clock without repainting the thread,
+ * swap in Stop/Retry when a start stalls, and ask the server whether a turn
+ * that has gone quiet is really still running.
+ */
+function tickWorking(): void {
+  const bot = currentBot();
+  for (const id of [...turnClock.keys()]) {
+    const b = viewBots().find((x) => x.id === id) || state.bots.find((x) => x.id === id);
+    if (!b || !b.busy) turnClock.delete(id);
+  }
+  if (!bot?.busy) return;
+  const row = document.querySelector<HTMLElement>(`#thread .working[data-working-bot="${CSS.escape(bot.id)}"]`);
+  if (row) {
+    const st = workingRowState(row.dataset.label || "Starting…", Date.now() - turnClockOf(bot).startedAt);
+    if (Boolean(row.dataset.stalled) !== st.stalled) {
+      row.outerHTML = workingRowHtml(bot);
+      threadPainted = { botId: "", html: "" };
+    } else {
+      const t = row.querySelector(".working-time");
+      if (t && t.textContent !== st.clock) t.textContent = st.clock;
+    }
+  }
+  void reconcileQuietTurn(bot);
+}
+
+let reconcileBusy = false;
+
+/**
+ * A turn that errored server side, or whose end event was lost, left the
+ * spinner up forever. After 20s with no sign of life, check the server every
+ * 15s; two "idle" answers in a row end the turn here too.
+ */
+async function reconcileQuietTurn(bot: Bot): Promise<void> {
+  if (reconcileBusy || isCloudPlace()) return;
+  const c = turnClockOf(bot);
+  const now = Date.now();
+  if (now - c.lastEventAt < 20_000) return;
+  if (now - c.checkedAt < 15_000) return;
+  c.checkedAt = now;
+  reconcileBusy = true;
+  try {
+    const fresh = await api(`/api/bots/${bot.id}?tail=20`) as Bot;
+    const live = state.bots.find((b) => b.id === bot.id);
+    if (!live?.busy) return;
+    if (fresh?.busy === false) {
+      c.idleChecks += 1;
+      if (c.idleChecks >= 2) {
+        adoptBot(fresh);
+        const after = state.bots.find((b) => b.id === bot.id);
+        if (after) {
+          applyChatBusy(after, { type: "bot", busy: false });
+          const lastRow = (after.messages || []).filter((m) => !m.hidden && m.role !== "tool" && !isTransientChatStatus(m)).at(-1);
+          if (lastRow?.role === "user") turnNoReply.set(bot.id, lastRow.id || "");
+        }
+        if (state.selected === bot.id && $("#thread") && after) paintChat(after);
+      }
+    } else {
+      c.idleChecks = 0;
+    }
+  } catch {
+    /* server unreachable: the health loop shows that */
+  } finally {
+    reconcileBusy = false;
+  }
 }
 
 function activityKey(m: Message): string {
@@ -2517,7 +2852,7 @@ function bindActivityFold(thread: HTMLElement | null): void {
     "toggle",
     (e) => {
       const el = e.target;
-      if (!(el instanceof HTMLDetailsElement) || !el.classList.contains("tool-fold")) return;
+      if (!(el instanceof HTMLDetailsElement) || !(el.classList.contains("tool-fold") || el.classList.contains("repeat-more"))) return;
       const key = el.dataset.fold;
       if (key) state.activityOpen[key] = el.open;
     },
@@ -3630,6 +3965,15 @@ function renderChoiceCard(m: Message): string {
   </div>`;
 }
 
+/** True when two header lines read the same once case, spacing and end punctuation are ignored. */
+function sameBriefLine(a: string, b: string): boolean {
+  const norm = (x: string) => x.toLowerCase().replace(/\s+/g, " ").replace(/[.!\s]+$/, "").trim();
+  const na = norm(a);
+  const nb = norm(b);
+  if (!na || !nb) return false;
+  return na === nb || nb.startsWith(na) || na.startsWith(nb);
+}
+
 function botBrief(bot: Bot, team: Team | null | undefined): BotBrief {
   const role = bot.teamRole === "chief" ? "Chief" : bot.teamRole === "worker" ? "Worker" : "";
   const raw = String(bot.description || "").trim();
@@ -3656,7 +4000,9 @@ function botBrief(bot: Bot, team: Team | null | undefined): BotBrief {
     who: role && bot.name.toLowerCase() !== role.toLowerCase() ? `${bot.name} · ${role}` : bot.name,
     role,
     job,
-    mission: mission ? mission.slice(0, 180) : "",
+    // A bot whose description and instructions say the same thing ("Always-on
+    // Cloud desk" twice) shows it once.
+    mission: mission && !sameBriefLine(mission, job) ? mission.slice(0, 180) : "",
     now,
     team: team?.name || "",
   };
@@ -3795,7 +4141,7 @@ function paintChatPane(bot: Bot | null): void {
   }
   const uiKey = teamOf(bot) ? "chrome-tabs-5" : isCloudPlace() ? "cloud-chrome-1" : "chrome-tabs-5";
   const typingHere = isFieldEl(document.activeElement) && chat.contains(document.activeElement);
-  if (!typingHere && (chat.dataset.ui !== uiKey || !$("#thread") || !$<HTMLTextAreaElement>("#send textarea[name=q]") || !$(".composer-mic") || !$(".chat-head") || !$("#composer-mentions") || !$("#team-brief") || !$("#job-progress") || !$<HTMLButtonElement>("#chat [data-act=stop-turn]") || !$("#desk-wait"))) {
+  if (!typingHere && (chat.dataset.ui !== uiKey || !$("#thread") || !$<HTMLTextAreaElement>("#send textarea[name=q]") || !$(".composer-mic") || !$(".chat-head") || !$("#composer-mentions") || !$("#team-brief") || !$("#job-progress") || !$<HTMLButtonElement>("#chat [data-act=stop-turn]") || !$("#desk-wait") || !$("#jump-latest"))) {
     chat.dataset.ui = uiKey;
     chat.innerHTML = `
       <div class="chat-head">
@@ -3806,6 +4152,7 @@ function paintChatPane(bot: Bot | null): void {
         <div class="team-brief" id="team-brief" hidden></div>
       </div>
       <div class="thread" id="thread"></div>
+      <div class="jump-latest-host"><button type="button" class="jump-latest" id="jump-latest" data-act="jump-latest" hidden>Jump to latest ↓</button></div>
       <div class="composer">
         <div class="job-progress" id="job-progress" hidden></div>
         <div class="composer-mentions" id="composer-mentions"></div>
@@ -3837,38 +4184,23 @@ function paintChatPane(bot: Bot | null): void {
         () => {
           const gap = thread.scrollHeight - thread.scrollTop - thread.clientHeight;
           state.chatFollow = gap < 80;
+          if (state.chatFollow) showJumpPill(false);
         },
         { passive: true },
       );
+      // A banner or the composer growing shrinks the thread after the paint
+      // already pinned it; keep a reader who was at the bottom at the bottom.
+      if (typeof ResizeObserver !== "undefined") {
+        new ResizeObserver(() => {
+          if (state.chatFollow) thread.scrollTop = thread.scrollHeight;
+        }).observe(thread);
+      }
     }
     sizeComposer();
   } else {
-    const input = $<SendForm>("#send")?.q;
-    const team = teamOf(bot);
-    const mates = teamBots(team).filter((b) => b.id !== bot.id);
-    const inChannel = Boolean(state.channelTeamId && team && team.id === state.channelTeamId);
-    if (input) {
-      const lead = teamBots(team).find((b) => b.teamRole === "chief")?.name || "the lead";
-      input.placeholder = inChannel
-        ? `Message ${lead} · @name to reach a teammate`
-        : mates.length
-          ? `Message ${bot.name} · @name to ping a teammate`
-          : `Message ${bot.name}`;
-    }
     const hn = $(".chat-head-name");
     if (hn) hn.textContent = bot.name;
-    const hint = $(".composer-hint");
-    if (hint) {
-      hint.textContent = bot.busy
-        ? "In line — extra messages wait until this job finishes"
-        : mates.length
-          ? "Enter to send · @Name talks to that Bot · Shift+Enter for a new line"
-          : "Enter to send · Shift+Enter for a new line";
-    }
-    const go = $<HTMLButtonElement>(".composer-go");
-    const halt = $<HTMLButtonElement>(".composer [data-act=stop-turn]");
-    if (go) go.hidden = false;
-    if (halt) halt.hidden = !bot.busy;
+    paintComposerCopy(bot);
   }
   applyCloudComposerGate(bot);
   paintTeamTabs(bot);
@@ -3896,7 +4228,7 @@ function mentionChipsHtml(team: Team | null | undefined): string {
   const members = teamBots(team).filter((b) => b.teamRole !== "chief");
   if (!members.length) return "";
   return `<div class="mention-chips">${members
-    .map((b) => `<button type="button" class="mention-chip" data-act="mention" data-name="${escapeHtml(b.name)}">@${escapeHtml(b.name)}</button>`)
+    .map((b) => `<button type="button" class="mention-chip${b.busy ? " is-busy" : ""}" data-act="mention" data-name="${escapeHtml(b.name)}" title="${escapeHtml(b.busy ? `${b.name} is working. @mention to add a note.` : `Message ${b.name} directly`)}">@${escapeHtml(b.name)}</button>`)
     .join("")}</div>`;
 }
 
@@ -4527,6 +4859,7 @@ document.addEventListener("change", (e) => {
  * replaced draws nothing until the painter sees the new one. */
 function paintBotEditor(bot: Bot): void {
   paintBotEditorInner(bot);
+  syncSelectTitles($("#bot-editor"));
   refreshAvatars();
 }
 
@@ -4570,21 +4903,21 @@ function paintBotEditorInner(bot: Bot): void {
       if (cloudEdit) {
         return `
     <label class="muted">Identity</label>
-    <select class="field" id="bid">
+    <select class="field field-select" id="bid">
       ${identityOptions(identity?.id || bot.identityId, bot.harness?.provider, bot)}
     </select>
     <label class="muted">Harness</label>
-    <div class="field field-static">${escapeHtml(`${harnessDisplayName(harness.provider)} · ${harness.model}`)}</div>
+    ${harnessStaticHtml(harness.provider, harness.model)}
     <input type="hidden" id="bh" value="${escapeHtml(harness.provider)}" />
     <input type="hidden" id="bm" value="${escapeHtml(harness.model)}" />`;
       }
       return `
     <label class="muted">Identity</label>
-    <select class="field" id="bid">
+    <select class="field field-select" id="bid">
       ${identityOptions(bot.identityId, bot.harness?.provider, bot)}
     </select>
     <label class="muted">Harness</label>
-    <select class="field" id="bh">
+    <select class="field field-select" id="bh">
       ${harnessProviderOptions(bot.harness?.provider || "default")}
     </select>
     <label class="muted">Model</label>
@@ -4614,6 +4947,24 @@ function paintBotEditorInner(bot: Bot): void {
           ? "Click again to delete"
           : "Delete Bot"
     }</button>`;
+}
+
+/** Read-only harness line: the engine, then its model in muted type; the full text on hover. */
+function harnessStaticHtml(provider: string, model: string): string {
+  const name = harnessDisplayName(provider);
+  const m = String(model || "").trim();
+  const modelLabel = !m || m === "default" ? "default model" : m;
+  return `<div class="field field-static harness-static" title="${escapeHtml(`${name} · ${modelLabel}`)}">
+    <span class="harness-static-name">${escapeHtml(name)}</span>
+    <span class="harness-static-model">${escapeHtml(modelLabel)}</span>
+  </div>`;
+}
+
+/** A native select clips its label with no hint; mirror the chosen option into the tooltip. */
+function syncSelectTitles(host: ParentNode | null): void {
+  for (const sel of host?.querySelectorAll<HTMLSelectElement>("select.field-select") || []) {
+    sel.title = sel.selectedOptions[0]?.textContent?.trim() || "";
+  }
 }
 
 function paintRoutineList(bot: Bot | null | undefined): void {
@@ -5655,7 +6006,7 @@ function identityOptions(selected: string | undefined, providerFallback?: string
           effective === row.id ||
           workerCloudIdentityId(row.id) === effective ||
           row.id === localCloudIdentityId(effective, bot?.computerId);
-        const who = row.subject ? ` · ${row.subject}` : "";
+        const who = row.subject && !String(row.label || "").includes(row.subject) ? ` · ${row.subject}` : "";
         const status =
           row.status === "signed_in" ? " ✓" : row.status === "expired" ? " · expired" : row.status ? ` · ${identityStatusLabel(row.status)}` : "";
         return `<option value="${escapeHtml(row.id)}" ${on ? "selected" : ""}>${escapeHtml(`${row.label}${who}${status}`)}</option>`;
@@ -5665,7 +6016,7 @@ function identityOptions(selected: string | undefined, providerFallback?: string
   const opts = [`<option value="" ${!effective ? "selected" : ""}>App default</option>`];
   for (const row of rows) {
     const on = effective === row.id || (!effective && row.provider === providerFallback && row.runtimeRef === "host");
-    const who = row.subject ? ` · ${row.subject}` : "";
+    const who = row.subject && !String(row.label || "").includes(row.subject) ? ` · ${row.subject}` : "";
     opts.push(
       `<option value="${escapeHtml(row.id)}" ${on ? "selected" : ""}>${escapeHtml(`${row.label}${who}`)}</option>`,
     );
@@ -7934,6 +8285,33 @@ const ACTIONS: Record<string, ActHandler> = {
     stopTurn();
     return;
   },
+  "retry-turn": (e, { el }) => {
+    void retryTurn(String(el.dataset.id || ""));
+    return;
+  },
+  "switch-identity": (e) => {
+    // A usage limit is per identity: open this bot's settings at the Identity field.
+    state.botEdit = true;
+    state.showComputer = true;
+    state.modal = null;
+    if (isCloudPlace()) {
+      void loadIdentities().then(() => {
+        const bot = currentBot();
+        if (state.botEdit && bot) paintBotEditor(bot);
+        focusIdentityField();
+      });
+    }
+    render();
+    focusIdentityField();
+    return;
+  },
+  "jump-latest": (e) => {
+    const thread = $("#thread");
+    state.chatFollow = true;
+    if (thread) thread.scrollTop = thread.scrollHeight;
+    showJumpPill(false);
+    return;
+  },
   "dismiss-docker-gate": (e) => {
     paintDockerGate();
     return;
@@ -9483,6 +9861,7 @@ function bindDelegated(): void {
   document.addEventListener("change", async (e) => {
     // A change event only fires on a form control.
     const el = e.target as ValueEl;
+    if (el instanceof HTMLSelectElement && el.classList.contains("field-select")) syncSelectTitles(el.parentElement);
     if (el.id === "bid" && state.botEdit && isCloudPlace()) {
       const bot = editorBot();
       if (bot) {
@@ -10100,6 +10479,14 @@ async function onSend(e: ComposerSubmit): Promise<void> {
           state.cloudDraft = snap;
           const turnId = snap.turnId || snap.reply?.turnId;
           if (turnId) cloudTurns.set(chief.id, { turnId, computerId });
+          // The channel is the lead's thread: show the lead working, and end
+          // that the same way a 1:1 send does instead of never.
+          const liveChief = (snap.bots || []).find((b) => b.id === chief.id);
+          if (liveChief) applyChatBusy(liveChief, { type: "send" });
+          const now = currentBot();
+          if (now) paintChat(now);
+          const userMessage = snap.userMessage || snap.reply?.userMessage;
+          void watchCloudTurn(chief.id, content, userMessage?.id, { turnId, computerId });
         }
       } else {
         const toIds = mentionedMemberIds(content, teamBots(channelTeam));
@@ -10115,6 +10502,8 @@ async function onSend(e: ComposerSubmit): Promise<void> {
   const members = teamBots(team);
   const toIds = mentionedMemberIds(content, members);
   if (bot) {
+    if (bot.busy && !isCloudPlace()) queuedWhileBusy.set(bot.id, content);
+    else queuedWhileBusy.delete(bot.id);
     applyChatBusy(bot, { type: "send" });
     bot.messages!.push({
       id: `pending-${Date.now()}`,
@@ -10158,6 +10547,7 @@ async function onSend(e: ComposerSubmit): Promise<void> {
         bot.messages!.push({
           id: `err-${Date.now()}`,
           role: "assistant",
+          kind: "error",
           content: (err as CaughtError).message || "Cloud chat failed.",
           ts: Date.now(),
         });
@@ -10199,28 +10589,98 @@ async function onSend(e: ComposerSubmit): Promise<void> {
   }
 }
 
+const CLOUD_TURN_DONE = new Set(["done", "error", "aborted", "failed", "cancelled", "canceled", "stopped", "timeout", "timed_out", "expired", "not_found", "gone"]);
+
+function focusIdentityField(): void {
+  requestAnimationFrame(() => {
+    const field = $<HTMLSelectElement>("#bot-editor #bid");
+    if (!field) return;
+    field.scrollIntoView({ block: "center", behavior: "smooth" });
+    field.focus({ preventScroll: true });
+    field.classList.add("field-flash");
+    setTimeout(() => field.classList.remove("field-flash"), 1600);
+  });
+}
+
+/** Retry: stop whatever is (not) running and send the last thing the user said again. */
+async function retryTurn(botId: string): Promise<void> {
+  const bot = currentBot();
+  if (!bot || (botId && bot.id !== botId)) return;
+  const last = [...(bot.messages || [])]
+    .reverse()
+    .find((m) => m.role === "user" && !m.hidden && (!m.speakerId || m.speakerId === "user"));
+  const text = String(last?.content || "").trim();
+  if (!text) return;
+  if (bot.busy) await stopTurn();
+  turnNoReply.delete(bot.id);
+  const form = $<SendForm>("#send");
+  const input = form?.q;
+  if (!form || !input || input.disabled) return;
+  const draft = input.value;
+  input.value = text;
+  form.requestSubmit();
+  // onSend cleared the box synchronously; give back whatever they were typing.
+  if (draft && !input.value) {
+    input.value = draft;
+    sizeComposer();
+  }
+}
+
 async function watchCloudTurn(botId: string, userText: string, messageId: string | undefined, { turnId, computerId }: { turnId?: string | undefined; computerId?: string | undefined } = {}): Promise<void> {
-  const gen = ++cloudWatchGen;
+  // Per bot, so sending to bot B no longer orphans bot A's watcher (which left
+  // A spinning until the 10 minute cap).
+  const gen = ++cloudWatchSeq;
+  cloudWatchGen.set(botId, gen);
+  const live = () => isCloudPlace() && cloudWatchGen.get(botId) === gen;
   const started = Date.now();
   const wantId = String(messageId || "").trim();
   const needle = String(userText || "").trim();
-  while (Date.now() - started < 600000 && isCloudPlace() && gen === cloudWatchGen) {
+  let turnMisses = 0;
+  const finish = (bot: Bot | null | undefined, failure?: string) => {
+    cloudTurns.delete(botId);
+    if (cloudWatchGen.get(botId) === gen) cloudWatchGen.delete(botId);
+    if (!bot) return;
+    applyChatBusy(bot, { type: "bot", busy: false });
+    const msgs = bot.messages || [];
+    const lastRow = msgs.filter((m) => !m.hidden && m.role !== "tool" && !isTransientChatStatus(m)).at(-1);
+    if (lastRow?.role === "user") {
+      if (failure) {
+        msgs.push({ id: `err-${Date.now()}`, role: "assistant", kind: "error", content: failure, ts: Date.now() });
+      } else {
+        turnNoReply.set(botId, lastRow.id || "");
+      }
+    }
+  };
+  const findBot = () => (state.cloudDraft?.bots || []).find((b) => b.id === botId) || null;
+  while (Date.now() - started < 600000 && live()) {
     await new Promise((r) => setTimeout(r, 1200));
+    if (!live()) return;
     if (turnId && computerId) {
       try {
         const st = await api(
           `/api/cloud/brain/turn?computerId=${encodeURIComponent(computerId)}&id=${encodeURIComponent(turnId)}`,
-        ) as { status?: string } | null;
-        if (st?.status === "done" || st?.status === "error" || st?.status === "aborted") {
+        ) as { status?: string; error?: string } | null;
+        if (!live()) return;
+        const status = String(st?.status || "").toLowerCase();
+        turnMisses = st ? 0 : turnMisses + 1;
+        if (CLOUD_TURN_DONE.has(status) || turnMisses >= 5) {
           await loadCloudDraft().catch(() => {});
-          const bot = (state.cloudDraft?.bots || []).find((b) => b.id === botId) || currentBot();
-          if (bot) bot.busy = false;
-          cloudTurns.delete(botId);
+          if (!live()) return;
+          const failure = status && status !== "done" && st?.error ? `The turn ${status === "aborted" ? "was stopped" : "failed"}: ${st.error}` : "";
+          finish(findBot(), failure);
           render();
           return;
         }
-      } catch {
-        /* snapshot fallback below */
+      } catch (err) {
+        // A 404 means the Worker no longer knows this turn: it is over.
+        if ((err as { status?: number }).status === 404) turnMisses += 1;
+        if (turnMisses >= 3) {
+          await loadCloudDraft().catch(() => {});
+          if (!live()) return;
+          finish(findBot());
+          render();
+          return;
+        }
       }
     }
     try {
@@ -10228,32 +10688,34 @@ async function watchCloudTurn(botId: string, userText: string, messageId: string
     } catch {
       /* keep polling */
     }
-    const bot = (state.cloudDraft?.bots || []).find((b) => b.id === botId) || currentBot();
+    if (!live()) return;
+    const bot = findBot();
     if (!bot) break;
     const msgs = bot.messages || [];
     // Every index below came from msgs.map((m, i) => i), so it is in bounds.
-    const userAt = wantId
-      ? [...msgs].map((m, i) => i).reverse().find((i) => String(msgs[i]!.id || "") === wantId)
-      : [...msgs]
-          .map((m, i) => i)
-          .reverse()
-          .find((i) => msgs[i]!.role === "user" && String(msgs[i]!.content || "").trim() === needle);
-    const last = msgs.at(-1);
-    if (Number.isInteger(userAt) && last?.role === "assistant" && last.ts! >= (msgs[userAt!]!.ts || 0)) {
-      bot.busy = false;
-      cloudTurns.delete(botId);
+    // The id the POST answered can be missing from the merged thread (it was
+    // re-keyed), so fall back to the text, then to the send time.
+    const idx = [...msgs].map((m, i) => i).reverse();
+    const userAt =
+      (wantId ? idx.find((i) => String(msgs[i]!.id || "") === wantId) : undefined) ??
+      idx.find((i) => msgs[i]!.role === "user" && String(msgs[i]!.content || "").trim() === needle);
+    const since = userAt !== undefined ? Number(msgs[userAt]!.ts) || 0 : started - 60_000;
+    const replied = msgs.some((m, i) => (userAt === undefined || i > userAt) && m.role === "assistant" && !m.hidden && (Number(m.ts) || 0) >= since && m.kind !== "tool" && m.kind !== "think");
+    if (replied) {
+      finish(bot);
       render();
       return;
     }
     bot.busy = true;
-    if ($("#thread")) paintChat(bot);
+    // Repaint only the thread on screen: painting bot A while B is open used
+    // to put A's transcript and spinner in B's chat.
+    const cur = currentBot();
+    const curTeam = cur ? teamOf(cur) : null;
+    if (cur && $("#thread") && (cur.id === botId || (curTeam && curTeam.id === teamOf(bot)?.id))) paintChat(cur);
   }
-  if (gen !== cloudWatchGen) return;
-  const bot = (state.cloudDraft?.bots || []).find((b) => b.id === botId) || currentBot();
-  if (bot) {
-    bot.busy = false;
-    if ($("#thread")) paintChat(bot);
-  }
+  if (!live()) return;
+  finish(findBot(), "No reply after 10 minutes. The desk may still be working; check back or Retry.");
+  if ($("#thread")) render();
 }
 
 function mentionedMemberIds(text: string, members: Bot[] | null | undefined): string[] {
@@ -11743,6 +12205,9 @@ async function loadCloudDraft(): Promise<void> {
     // mergeCloudDraft only touches id/messages, so it types its rows by those.
     state.cloudDraft = mergeCloudDraft(state.cloudDraft, snap) as CloudDraftState;
     const bots = state.cloudDraft?.bots || [];
+    // The snapshot has no notion of a running turn; a bot with a live watcher
+    // is still working, so a background refresh must not drop its spinner.
+    for (const b of bots) if (cloudWatchGen.has(b.id)) b.busy = true;
     if (state.selectedCloud) state.selectedCloud = String(state.selectedCloud).replace(/^cloud:/, "cloud-");
     if (!state.selectedCloud || !bots.some((b) => b.id === state.selectedCloud)) {
       state.selectedCloud = bots[0]?.id || null;
@@ -13061,6 +13526,14 @@ function startLoops(): void {
     if (state.modal === "computers") loadComputerStats();
   }, 4000);
   setInterval(watchStream, 8_000);
+  // The working row's clock, the stalled-start actions, and the quiet-turn check.
+  setInterval(() => {
+    try {
+      tickWorking();
+    } catch (err) {
+      console.warn("tickWorking", err);
+    }
+  }, 1_000);
   setInterval(() => void pollVaultPending(), 6_000);
   void loadVaultCloud(); // the in-chat approve card needs to know locked vs unlocked
   setInterval(() => {

@@ -119,6 +119,7 @@ const ORDER = [
   "conversation-safety.mjs",
   "durability.mjs",
   "secret-card-copy.mjs",
+  "usage-limit.mjs",
 ];
 
 function runOne(file) {
