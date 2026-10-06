@@ -769,6 +769,8 @@ interface AppState {
     awaitingCode?: boolean | undefined;
     signInUrl?: string | undefined;
     error?: string | undefined;
+    /** The desk already holds a Claude login; offer to replace it instead of a dead "Opening..." spinner. */
+    alreadySignedIn?: boolean | undefined;
   } | null;
   harnessTests: Record<string, HarnessTest>;
   harnessBannerDismissed: Record<string, boolean>;
@@ -7601,7 +7603,13 @@ function claudeCodeHtml(): string {
         <button type="button" class="close" data-act="claude-login-cancel" title="Cancel" aria-label="Cancel">${iconClose()}</button>
         <h2>Claude sign-in</h2>
         ${
-          auth.busy && !auth.awaitingCode
+          auth.alreadySignedIn && !auth.busy && !auth.awaitingCode
+            ? `<p class="muted" style="margin-top:-8px">This desk is already signed in to Claude${auth.authMethod ? ` (${escapeHtml(auth.authMethod)})` : ""}. To use a different Claude account, sign it out and sign in again. The current login stops working on this desk.</p>
+        <div class="row" style="margin-top:12px;gap:8px;flex-wrap:wrap">
+          <button type="button" class="pill primary" data-act="claude-login-switch">Sign in with a different account</button>
+          <button type="button" class="pill" data-act="claude-login-keep">Keep current login</button>
+        </div>`
+            : auth.busy && !auth.awaitingCode
             ? `<p class="muted" style="margin-top:-8px">Opening the Claude sign-in page…</p>`
             : `<p class="muted" style="margin-top:-8px">Approve in the browser, then paste the code Claude shows you.</p>`
         }
@@ -9539,6 +9547,27 @@ const ACTIONS: Record<string, ActHandler> = {
     void claudeDeskLoginCancel();
     return;
   },
+  "claude-login-keep": () => {
+    void claudeDeskLoginCancel();
+    return;
+  },
+  "claude-login-switch": () => {
+    void (async () => {
+      const desk = settingsDeskId();
+      if (!desk) return;
+      state.claudeAuth = { busy: true, awaitingCode: false, error: "" };
+      paintModal();
+      try {
+        await api("/api/cloud/brain/claude/auth/logout", { method: "POST", body: { computerId: desk } });
+      } catch (err) {
+        state.claudeAuth = { alreadySignedIn: true, loggedIn: true, busy: false, awaitingCode: false, error: (err as CaughtError | undefined)?.message || "Could not sign this desk out." };
+        paintModal();
+        return;
+      }
+      await claudeDeskLogin();
+    })();
+    return;
+  },
   "claude-logout": () => {
     void claudeDeskLogout();
     return;
@@ -10076,10 +10105,20 @@ async function claudeDeskLogin(): Promise<void> {
       body: { computerId: desk },
     })) as { url?: string; loggedIn?: boolean } | null;
     if (started?.loggedIn) {
-      state.claudeAuth = { loggedIn: true, busy: false, awaitingCode: false };
-      restoreIdentitiesModal();
-      await loadClaudeAuth();
-      await loadIdentities();
+      // No link comes back for a desk that is already signed in, so adding a
+      // second Claude account sat on "Opening..." forever. Say so and offer to
+      // replace the login.
+      state.modal = "claude-code";
+      state.claudeAuth = {
+        loggedIn: true,
+        busy: false,
+        awaitingCode: false,
+        alreadySignedIn: true,
+        authMethod: (started as { authMethod?: string }).authMethod,
+        error: "",
+      };
+      paintModal();
+      void loadIdentities();
       return;
     }
     if (!started?.url) throw new Error("The desk did not return a sign-in link.");
@@ -10135,6 +10174,14 @@ async function claudeDeskSubmitCode(): Promise<void> {
 
 async function claudeDeskLoginCancel(): Promise<void> {
   const desk = cloudDeskIdOf(currentBot());
+  // Closing the "already signed in" card must not sign the desk out; only a
+  // parked, half-finished login is cleaned up.
+  if (state.claudeAuth?.alreadySignedIn && !state.claudeAuth.awaitingCode) {
+    state.claudeAuth = null;
+    restoreIdentitiesModal();
+    paintModal();
+    return;
+  }
   state.claudeAuth = { loggedIn: false, busy: false, awaitingCode: false, error: "" };
   restoreIdentitiesModal();
   if (desk) {

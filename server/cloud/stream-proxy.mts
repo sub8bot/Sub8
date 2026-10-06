@@ -45,10 +45,15 @@ type StreamApp = {
 };
 
 export function parseCloudStreamPath(urlPath: string | null | undefined): { computerId: string; rest: string } | null {
-  const pathOnly = String(urlPath || "").split("?")[0] || "";
+  // Older noVNC builds the socket URL as host + "/" + path ("//api/..."), newer
+  // ones resolve `path` against the page, so it comes back doubled:
+  // /api/cloud/stream/<id>/api/cloud/stream/<id>/websockify. Accept all three.
+  const pathOnly = (String(urlPath || "").split("?")[0] || "").replace(/^\/{2,}/, "/");
   const m = /^\/api\/cloud\/stream\/([^/]+)(?:\/(.*))?$/.exec(pathOnly);
   if (!m) return null;
-  const rest = String(m[2] || "").replace(/^\/+/, "");
+  let rest = String(m[2] || "").replace(/^\/+/, "");
+  const again = `api/cloud/stream/${m[1]}/`;
+  while (rest.startsWith(again)) rest = rest.slice(again.length);
   // A malformed escape (`%E0`) throws URIError, and this runs synchronously in
   // the server's 'upgrade' listener, where a throw is an uncaught exception.
   let computerId: string;
@@ -117,17 +122,108 @@ async function proxyAsset(req: StreamReq, res: StreamRes, opts: CloudStreamProxy
     res.status(401).json({ error: "Sign in." });
     return;
   }
-  const target = workerDeskAssetUrl(base, parsed.computerId, parsed.rest, { display: displayOf(String(req.url || "")) });
-  const upstream = await fetch(target, {
-    headers: { Authorization: `Bearer ${token}`, Accept: String(req.headers.accept || "*/*") },
-    signal: AbortSignal.timeout(15_000),
-  });
-  res.status(upstream.status);
+  const display = displayOf(String(req.url || ""));
+  const asset = await fetchDeskAsset(base, token, parsed.computerId, parsed.rest, display, String(req.headers.accept || "*/*"));
+  res.status(asset.status);
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
   res.setHeader("Pragma", "no-cache");
-  const ct = upstream.headers.get("content-type");
-  if (ct) res.setHeader("Content-Type", ct);
-  res.end(Buffer.from(await upstream.arrayBuffer()));
+  if (asset.type) res.setHeader("Content-Type", asset.type);
+  res.end(asset.body);
+}
+
+/**
+ * noVNC is ~90 small static files, each a round trip Mac -> Worker -> raw TCP
+ * -> droplet (2-10s apiece), loaded as an ES module waterfall. Uncached, the
+ * viewer took 20s+ to open and sat on "Connecting...". The files are the
+ * container's own noVNC and never change while it runs, so keep successful
+ * responses per desk, and when a module arrives, start fetching its imports so
+ * the waterfall happens here in parallel instead of one level at a time.
+ */
+type DeskAsset = { status: number; type: string; body: Buffer; at: number };
+const ASSET_TTL_MS = 6 * 60 * 60_000;
+const ASSET_CACHE_MAX_BYTES = 40 * 1024 * 1024;
+const assetCache = new Map<string, DeskAsset>();
+const assetInflight = new Map<string, Promise<DeskAsset>>();
+let assetCacheBytes = 0;
+
+function assetKey(computerId: string, rest: string): string {
+  return `${computerId}|${rest.split("?")[0]}`;
+}
+
+function rememberAsset(key: string, a: DeskAsset): void {
+  const old = assetCache.get(key);
+  if (old) assetCacheBytes -= old.body.length;
+  assetCache.set(key, a);
+  assetCacheBytes += a.body.length;
+  for (const [k, v] of assetCache) {
+    if (assetCacheBytes <= ASSET_CACHE_MAX_BYTES) break;
+    assetCache.delete(k);
+    assetCacheBytes -= v.body.length;
+  }
+}
+
+function moduleImports(rest: string, body: Buffer): string[] {
+  const path = rest.split("?")[0] || "";
+  if (!/\.m?js$/.test(path)) return [];
+  const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/") + 1) : "";
+  const out = new Set<string>();
+  const re = /(?:import|export)\s[^'"]*?from\s*['"](\.{1,2}\/[^'"]+)['"]|import\s*['"](\.{1,2}\/[^'"]+)['"]/g;
+  const text = body.toString("utf8");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const rel = m[1] || m[2] || "";
+    const parts = (dir + rel).split("/");
+    const stack: string[] = [];
+    for (const seg of parts) {
+      if (seg === "." || seg === "") continue;
+      if (seg === "..") stack.pop();
+      else stack.push(seg);
+    }
+    if (stack.length) out.add(stack.join("/"));
+  }
+  return [...out];
+}
+
+async function fetchDeskAsset(
+  base: string,
+  token: string,
+  computerId: string,
+  rest: string,
+  display: string,
+  accept = "*/*",
+): Promise<DeskAsset> {
+  const key = assetKey(computerId, rest);
+  const hit = assetCache.get(key);
+  if (hit && Date.now() - hit.at < ASSET_TTL_MS) return hit;
+  const running = assetInflight.get(key);
+  if (running) return running;
+  const job = (async (): Promise<DeskAsset> => {
+    const upstream = await fetch(workerDeskAssetUrl(base, computerId, rest, { display }), {
+      headers: { Authorization: `Bearer ${token}`, Accept: accept },
+      signal: AbortSignal.timeout(15_000),
+    });
+    const a: DeskAsset = {
+      status: upstream.status,
+      type: upstream.headers.get("content-type") || "",
+      body: Buffer.from(await upstream.arrayBuffer()),
+      at: Date.now(),
+    };
+    if (a.status === 200) {
+      rememberAsset(key, a);
+      for (const dep of moduleImports(rest, a.body)) {
+        if (!assetCache.has(assetKey(computerId, dep))) {
+          fetchDeskAsset(base, token, computerId, dep, display).catch(() => {});
+        }
+      }
+    }
+    return a;
+  })();
+  assetInflight.set(key, job);
+  try {
+    return await job;
+  } finally {
+    assetInflight.delete(key);
+  }
 }
 
 function wsUrl(httpUrl: string): string {

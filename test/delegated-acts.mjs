@@ -21,6 +21,8 @@ const app = readFileSync(path.join(root, "web", "app.ts"), "utf8");
 // silently dropped on the way into the table is invisible until a user clicks it,
 // so pin the set rather than trusting the diff.
 const HANDLED = [
+  "claude-login-keep",
+  "claude-login-switch",
   "request-access",
   "account-billing",
   "account-cloud-later",
@@ -293,8 +295,8 @@ assert.deepEqual(covered, expected);
 // 214 -> 215: vault-cloud-sync (Sync now when the cloud vault copy is behind).
 // 215 -> 218: retry-turn (stalled or reply-less turn), switch-identity (usage
 //             limit notice), jump-latest (the "Jump to latest" pill).
-assert.equal(HANDLED.length, 218);
-assert.equal(covered.length, 218);
+assert.equal(HANDLED.length, 220);
+assert.equal(covered.length, 220);
 
 console.log(
   "ok delegated-acts (" + keys.length + " in ACTIONS, " + new Set(chain).size +
