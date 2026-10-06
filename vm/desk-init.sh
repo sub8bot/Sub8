@@ -76,36 +76,22 @@ CHROME_PID=$!
 
 # x11vnc binds LOOPBACK-ONLY unless RFB_EXPOSE=1.
 #
-# The default is what desks do today: the in-container websockify is the only
-# thing that reaches RFB, so nothing on the network can. RFB_EXPOSE=1 is set
-# only when the authenticated Worker stream proxy is active
-# (cloud/src/desk-stream.ts, gated by STREAM_VIA_WORKER), which needs `docker -p`
-# to publish 5900 so the Worker's raw-TCP tunnel can reach it. The Worker's
-# egress is not in any IP range a firewall can name, so that port is open to
-# the internet and the VNC password below is what guards it.
-#
-# Unset, this changes nothing. See docs/authenticated-desk-stream.md.
+# RFB_EXPOSE=1 is set when the hosted stream relay is in use; it publishes the
+# RFB port so the relay can reach it, and the display then requires the
+# per-desk VNC credential below. Unset, this changes nothing.
 RFB_LOCALHOST="-localhost"
 if [ "${RFB_EXPOSE:-0}" = "1" ]; then RFB_LOCALHOST=""; fi
 
-# SECURITY (2026-09-05): never run a passwordless screen the network can reach.
-# Dedicated droplets publish websockify with `docker -p 3000:3000` (0.0.0.0 on
-# the host). Those runs set NOVNC_LOOPBACK=1 so a passwordless screen stays on
-# container loopback. Local and packed desks already bind the *host* publish to
-# 127.0.0.1; Docker DNAT then hits the container's eth0, not 127.0.0.1, so
-# websockify must listen on 0.0.0.0 inside or the desktop never becomes
-# reachable. Dedicated and packed desks that the Worker relays (RFB_EXPOSE=1)
-# carry a per-desk VNC password instead.
+# Websockify binding. NOVNC_LOOPBACK=1 keeps it on container loopback. Local
+# and packed desks publish on the host's 127.0.0.1; Docker forwards to the
+# container's eth0, so websockify listens on 0.0.0.0 inside the container.
 #
-# The password, in order: VNC_PASSWORD; else derived from the desk token
-# (DESK_TOKEN_FILE, default /run/sub8/desk-token) the same way the Worker
-# derives it (cloud/src/desk.ts deskVncPassword); else the rfbauth file a
-# previous start wrote, which lives in the container layer (not /config, so a
-# volume moved to another desk never carries it). desk-display reads the same
-# file for :2..:8. Never echo the password or the token.
+# VNC credential, in order: VNC_PASSWORD; else one derived from the desk
+# token (DESK_TOKEN_FILE, default /run/sub8/desk-token); else the rfbauth file
+# a previous start wrote (container layer, not /config). desk-display reads the
+# same file for :2..:8. Never echo the credential or the token.
 #
-# Fail closed: RFB_EXPOSE=1 with no password keeps x11vnc AND websockify on
-# loopback, so the relay simply cannot reach a passwordless screen.
+# RFB_EXPOSE=1 without a credential keeps x11vnc and websockify on loopback.
 VNC_PASSFILE="${VNC_PASSFILE:-/tmp/.vncpass}"
 vnc_password_from_token() {
   local f="${DESK_TOKEN_FILE:-/run/sub8/desk-token}"

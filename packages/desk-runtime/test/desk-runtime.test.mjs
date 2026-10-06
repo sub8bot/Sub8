@@ -109,7 +109,7 @@ test("host publish: public :3000 fail-closes in-container via NOVNC_LOOPBACK", (
   assert.ok(!ports.some((p) => p.includes("5900")), "no RFB unless asked");
   assert.ok(
     args.includes("NOVNC_LOOPBACK=1"),
-    "dedicated public -p 3000:3000 must not expose a passwordless screen",
+    "dedicated host publish keeps websockify on loopback without the relay",
   );
 });
 
