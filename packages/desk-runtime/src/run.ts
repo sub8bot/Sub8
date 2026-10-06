@@ -79,9 +79,13 @@ export function deskRunArgs(spec: DeskRunSpec): string[] {
     args.push("-p", `127.0.0.1:${p}-${p + DISPLAY_SLOTS - 1}:3000-${3000 + DISPLAY_SLOTS - 1}`);
     args.push("-p", `127.0.0.1:${spec.publish.harnessPort}:${HARNESS_PORT}`);
   } else {
-    // Public -p 3000:3000. desk-init.sh binds websockify to loopback unless a
-    // VNC_PASSWORD is set, so a passwordless screen is not on the droplet IP.
-    args.push("-e", "NOVNC_LOOPBACK=1");
+    // Public -p 3000:3000. Without the Worker relay, desk-init.sh binds
+    // websockify to loopback unless a VNC_PASSWORD is set, so a passwordless
+    // screen is not on the droplet IP. With the relay (rfbExpose) the Worker
+    // fetches noVNC's assets through this port, so it must stay on eth0; the
+    // per-desk VNC password is what guards it (and desk-init fails closed to
+    // loopback without one).
+    if (!spec.publish.rfbExpose) args.push("-e", "NOVNC_LOOPBACK=1");
     args.push(...hostWebPorts());
     if (spec.publish.rfbExpose) {
       args.push(

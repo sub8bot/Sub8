@@ -20,6 +20,7 @@ interface WsSock {
   close: () => void;
   on: (ev: string, fn: (...args: unknown[]) => void) => void;
   once: (ev: string, fn: (...args: unknown[]) => void) => void;
+  off: (ev: string, fn: (...args: unknown[]) => void) => void;
 }
 
 interface WsServer {
@@ -146,6 +147,16 @@ const assetCache = new Map<string, DeskAsset>();
 const assetInflight = new Map<string, Promise<DeskAsset>>();
 let assetCacheBytes = 0;
 
+/**
+ * vnc.html is the one file never kept: the Worker writes the desk's VNC
+ * password into it (desk-stream.ts injectVncPassword), so it is fetched fresh,
+ * held only for the response, and never logged or written anywhere.
+ */
+export function isCacheableAsset(rest: string): boolean {
+  const path = (rest.split("?")[0] || "").replace(/^\/+/, "");
+  return path !== "" && path !== "vnc.html" && path !== "index.html";
+}
+
 function assetKey(computerId: string, rest: string): string {
   return `${computerId}|${rest.split("?")[0]}`;
 }
@@ -193,7 +204,8 @@ async function fetchDeskAsset(
   accept = "*/*",
 ): Promise<DeskAsset> {
   const key = assetKey(computerId, rest);
-  const hit = assetCache.get(key);
+  const cacheable = isCacheableAsset(rest);
+  const hit = cacheable ? assetCache.get(key) : undefined;
   if (hit && Date.now() - hit.at < ASSET_TTL_MS) return hit;
   const running = assetInflight.get(key);
   if (running) return running;
@@ -209,7 +221,7 @@ async function fetchDeskAsset(
       at: Date.now(),
     };
     if (a.status === 200) {
-      rememberAsset(key, a);
+      if (cacheable) rememberAsset(key, a);
       for (const dep of moduleImports(rest, a.body)) {
         if (!assetCache.has(assetKey(computerId, dep))) {
           fetchDeskAsset(base, token, computerId, dep, display).catch(() => {});
@@ -309,6 +321,14 @@ export function attachCloudStreamProxy(app: StreamApp, httpServer: HttpServer, o
       const target = wsUrl(workerDeskAssetUrl(base, parsed.computerId, "websockify", { display: displayOf(url) }));
       wss.handleUpgrade(req, socket, head, (client: WsSock) => {
         const upstream = new WsClient(target, { headers: { Authorization: `Bearer ${token}` } });
+        // Hold whatever the client sends before the upstream is open, in order,
+        // instead of dropping it (RFB has the server speak first, but nothing
+        // here should depend on that).
+        const early: Array<[unknown, boolean]> = [];
+        const hold = (...args: unknown[]) => {
+          early.push([args[0], Boolean(args[1])]);
+        };
+        client.on("message", hold);
         // pipeSockets only listens once the upstream opens. Until then a
         // client error was an unhandled 'error', and a client that left
         // stranded the upstream connection.
@@ -321,7 +341,11 @@ export function attachCloudStreamProxy(app: StreamApp, httpServer: HttpServer, o
         };
         client.on("error", dropUpstream);
         client.on("close", dropUpstream);
-        const open = () => pipeSockets(client, upstream);
+        const open = () => {
+          client.off("message", hold);
+          for (const [data, binary] of early.splice(0)) upstream.send(data, { binary });
+          pipeSockets(client, upstream);
+        };
         if (upstream.readyState === WsClient.OPEN) open();
         else upstream.once("open", open);
         upstream.on("error", () => {

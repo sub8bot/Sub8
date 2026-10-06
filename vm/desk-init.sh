@@ -80,11 +80,11 @@ CHROME_PID=$!
 # thing that reaches RFB, so nothing on the network can. RFB_EXPOSE=1 is set
 # only when the authenticated Worker stream proxy is active
 # (cloud/src/desk-stream.ts, gated by STREAM_VIA_WORKER), which needs `docker -p`
-# to publish 5900 so the Worker's raw-TCP tunnel can reach it -- and the droplet
-# firewall restricts that port to Cloudflare ranges.
+# to publish 5900 so the Worker's raw-TCP tunnel can reach it. The Worker's
+# egress is not in any IP range a firewall can name, so that port is open to
+# the internet and the VNC password below is what guards it.
 #
-# Unset, this changes nothing. Ported from an unfinished worktree; see
-# docs/authenticated-desk-stream.md for the design it belongs to.
+# Unset, this changes nothing. See docs/authenticated-desk-stream.md.
 RFB_LOCALHOST="-localhost"
 if [ "${RFB_EXPOSE:-0}" = "1" ]; then RFB_LOCALHOST=""; fi
 
@@ -94,15 +94,44 @@ if [ "${RFB_EXPOSE:-0}" = "1" ]; then RFB_LOCALHOST=""; fi
 # container loopback. Local and packed desks already bind the *host* publish to
 # 127.0.0.1; Docker DNAT then hits the container's eth0, not 127.0.0.1, so
 # websockify must listen on 0.0.0.0 inside or the desktop never becomes
-# reachable. Missing VNC_PASSWORD must not clobber RFB_EXPOSE — packed hosts
-# need x11vnc off loopback for the Worker RFB relay.
+# reachable. Dedicated and packed desks that the Worker relays (RFB_EXPOSE=1)
+# carry a per-desk VNC password instead.
+#
+# The password, in order: VNC_PASSWORD; else derived from the desk token
+# (DESK_TOKEN_FILE, default /run/sub8/desk-token) the same way the Worker
+# derives it (cloud/src/desk.ts deskVncPassword); else the rfbauth file a
+# previous start wrote, which lives in the container layer (not /config, so a
+# volume moved to another desk never carries it). desk-display reads the same
+# file for :2..:8. Never echo the password or the token.
+#
+# Fail closed: RFB_EXPOSE=1 with no password keeps x11vnc AND websockify on
+# loopback, so the relay simply cannot reach a passwordless screen.
+VNC_PASSFILE="${VNC_PASSFILE:-/tmp/.vncpass}"
+vnc_password_from_token() {
+  local f="${DESK_TOKEN_FILE:-/run/sub8/desk-token}"
+  [ -r "$f" ] || return 0
+  python3 -c 'import base64,hashlib,sys
+t=sys.stdin.read().strip()
+if t: print(base64.urlsafe_b64encode(hashlib.sha256(("sub8-vnc:"+t).encode()).digest()).decode()[:8])' <"$f" 2>/dev/null || true
+}
+if [ -z "${VNC_PASSWORD:-}" ]; then VNC_PASSWORD="$(vnc_password_from_token)"; fi
+if [ -n "${VNC_PASSWORD:-}" ]; then
+  (umask 077 && x11vnc -storepasswd "$VNC_PASSWORD" "$VNC_PASSFILE" >/dev/null 2>&1) || true
+fi
+# The harness started below has no use for it.
+unset VNC_PASSWORD
+
 VNC_AUTH="-nopw"
 WS_HOST="0.0.0.0:"
-if [ -n "${VNC_PASSWORD:-}" ]; then
-  x11vnc -storepasswd "$VNC_PASSWORD" /tmp/.vncpass >/dev/null 2>&1
-  VNC_AUTH="-rfbauth /tmp/.vncpass"
-elif [ "${NOVNC_LOOPBACK:-0}" = "1" ]; then
-  WS_HOST="127.0.0.1:"
+if [ -s "$VNC_PASSFILE" ]; then
+  VNC_AUTH="-rfbauth $VNC_PASSFILE"
+else
+  if [ "${RFB_EXPOSE:-0}" = "1" ]; then
+    echo "desk-init: RFB_EXPOSE=1 but no VNC password; keeping the screen on loopback" >&2
+    RFB_LOCALHOST="-localhost"
+    WS_HOST="127.0.0.1:"
+  fi
+  if [ "${NOVNC_LOOPBACK:-0}" = "1" ]; then WS_HOST="127.0.0.1:"; fi
 fi
 
 x11vnc -display :1 -forever -shared $VNC_AUTH -xkb -repeat \

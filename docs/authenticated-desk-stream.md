@@ -1,6 +1,27 @@
 # Authenticated Cloud desk stream
 
-**Status: half-landed, not active.** Recovered from an unfinished agent worktree
+**Status as of 2026-10-06: live.** `STREAM_VIA_WORKER=1`; every Cloud desk streams
+through the Worker relay, verified end to end on live desks (all displays).
+
+- A Worker's `connect()` egress is not in Cloudflare's published IP ranges (seen
+  from 104.28.x), so the desk firewall cannot admit only the Worker. The RFB
+  (5900-5907) and websockify (3000, 3002-3008) ports are open to the internet.
+- What guards them is a per-desk VNC password: the first 8 characters of
+  base64url(SHA-256("sub8-vnc:" + desk token)). The droplet derives it from
+  `/var/lib/sub8/desk-token` at boot and passes it to the container as
+  `VNC_PASSWORD`; the Worker derives it from the desk secret. x11vnc on every
+  display offers VNC auth only. `vm/desk-init.sh` and `vm/desk-display.sh` keep a
+  relayed desk (`RFB_EXPOSE=1`) on loopback when they have no password.
+- The Worker hands the password to noVNC inside the session-gated `vnc.html`
+  (appended to the URL fragment, which never leaves the browser) and at
+  `GET /api/desk/:id/vnc-auth`. The desktop's local proxy never caches `vnc.html`.
+- The relay forwards each client message's bytes; binary messages arrive as a
+  Blob, which `new Uint8Array()` silently reads as empty. That was the "banner,
+  then nothing" stall.
+
+The history below is kept for context.
+
+**Status (2026-08-26): half-landed, not active.** Recovered from an unfinished agent worktree
 (`.claude/worktrees/agent-a96f8da1c07c89bfa`) where it sat uncommitted and would
 have been lost to a `git worktree prune`.
 

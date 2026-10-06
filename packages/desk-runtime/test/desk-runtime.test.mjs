@@ -112,3 +112,22 @@ test("host publish: public :3000 fail-closes in-container via NOVNC_LOOPBACK", (
     "dedicated public -p 3000:3000 must not expose a passwordless screen",
   );
 });
+
+test("host publish with the Worker relay keeps websockify on eth0", () => {
+  const args = deskRunArgs({
+    name: "sub8-desk",
+    volume: "sub8-config-cmp_abc",
+    image: "sub8-desk:trixie",
+    platform: "linux/amd64",
+    hostname: "computer",
+    limits: limitsFromRamMb(4096),
+    publish: { kind: "host", rfbExpose: true },
+    env: ["TITLE=Sub8", "TZ=UTC", "RFB_EXPOSE=1", "VNC_PASSWORD"],
+  });
+  const ports = args.filter((_, i) => args[i - 1] === "-p");
+  assert.ok(ports.includes("3000:3000") && ports.includes("5900:5900"));
+  assert.ok(
+    !args.includes("NOVNC_LOOPBACK=1"),
+    "the relay fetches noVNC through :3000; the VNC password guards it",
+  );
+});

@@ -56,11 +56,34 @@ fi
 
 port_up() { (echo >/dev/tcp/127.0.0.1/"$1") >/dev/null 2>&1; }
 
-if ! port_up "$VNC"; then
-  # See desk-init.sh: loopback-only unless the Worker stream proxy is active.
-  RFB_LOCALHOST="-localhost"
+# Same password and fail-closed rule as desk-init.sh: VNC_PASSWORD, else the
+# desk token, else the rfbauth file desk-init wrote. No password with
+# RFB_EXPOSE=1 keeps this display on loopback. Never echo either secret.
+VNC_PASSFILE="${VNC_PASSFILE:-/tmp/.vncpass}"
+if [ -z "${VNC_PASSWORD:-}" ] && [ -r "${DESK_TOKEN_FILE:-/run/sub8/desk-token}" ]; then
+  VNC_PASSWORD="$(python3 -c 'import base64,hashlib,sys
+t=sys.stdin.read().strip()
+if t: print(base64.urlsafe_b64encode(hashlib.sha256(("sub8-vnc:"+t).encode()).digest()).decode()[:8])' <"${DESK_TOKEN_FILE:-/run/sub8/desk-token}" 2>/dev/null || true)"
+fi
+if [ -n "${VNC_PASSWORD:-}" ] && [ ! -s "$VNC_PASSFILE" ]; then
+  (umask 077 && x11vnc -storepasswd "$VNC_PASSWORD" "$VNC_PASSFILE" >/dev/null 2>&1) || true
+fi
+unset VNC_PASSWORD
+VNC_AUTH="-nopw"
+RFB_LOCALHOST="-localhost"
+WS_LOOPBACK="${NOVNC_LOOPBACK:-0}"
+if [ -s "$VNC_PASSFILE" ]; then
+  VNC_AUTH="-rfbauth $VNC_PASSFILE"
+  WS_LOOPBACK=0
+  # See desk-init.sh: off loopback only when the Worker stream relay is active.
   if [ "${RFB_EXPOSE:-0}" = "1" ]; then RFB_LOCALHOST=""; fi
-  x11vnc -display ":$N" -forever -shared -nopw -xkb -repeat \
+elif [ "${RFB_EXPOSE:-0}" = "1" ]; then
+  echo "desk-display: RFB_EXPOSE=1 but no VNC password; keeping :$N on loopback" >&2
+  WS_LOOPBACK=1
+fi
+
+if ! port_up "$VNC"; then
+  x11vnc -display ":$N" -forever -shared $VNC_AUTH -xkb -repeat \
     -rfbport "$VNC" $RFB_LOCALHOST -noxdamage -wait 10 -defer 10 \
     -o /tmp/x11vnc-"$N".log >/dev/null 2>&1 &
   for _ in $(seq 1 50); do
@@ -75,7 +98,7 @@ if [ -f "$WEBROOT/vnc.html" ] && [ ! -e "$WEBROOT/index.html" ]; then
 fi
 if ! port_up "$WEB"; then
   WS_BIND="$WEB"
-  if [ "${NOVNC_LOOPBACK:-0}" = "1" ]; then WS_BIND="127.0.0.1:$WEB"; fi
+  if [ "$WS_LOOPBACK" = "1" ]; then WS_BIND="127.0.0.1:$WEB"; fi
   websockify --web="$WEBROOT" "$WS_BIND" "127.0.0.1:$VNC" >/tmp/websockify-"$N".log 2>&1 &
 fi
 
