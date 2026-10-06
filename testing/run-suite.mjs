@@ -120,6 +120,7 @@ const ORDER = [
   "durability.mjs",
   "secret-card-copy.mjs",
   "usage-limit.mjs",
+  "interrupted.mjs",
 ];
 
 function runOne(file) {

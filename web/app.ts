@@ -137,6 +137,8 @@ interface Message extends CodeAgentSession {
   session?: CodeAgentSession;
   attachments?: MessageAttachment[];
   widgets?: MessageAttachment[];
+  /** A "Sub8 restarted while this was running" notice; `retry` while its Retry still applies. */
+  interrupted?: { source?: string; retry?: boolean };
 }
 
 interface RoutineRun {
@@ -2720,6 +2722,11 @@ function noticeHtml(bot: Bot, items: Message[], skipped: Message[], kind: ChatNo
     actions = `<button type="button" class="pill notice-act" data-act="switch-identity" data-id="${escapeHtml(bot.id)}">Switch identity</button><button type="button" class="pill notice-act" data-act="add-login-open" data-place="${isCloudPlace() ? "cloud" : "local"}">Add identity</button>`;
   } else {
     body = chatMarkdown(text);
+    // A turn the last run never finished: Retry runs that exact turn again
+    // on the server (a routine, a woken task, or what the user asked).
+    if (last.interrupted?.retry && !isCloudPlace()) {
+      actions = `<button type="button" class="pill notice-act" data-act="retry-interrupted" data-id="${escapeHtml(bot.id)}" data-mid="${escapeHtml(last.id || "")}">Retry</button>`;
+    }
   }
   const icon = kind === "system" ? "" : `<span class="notice-ico" aria-hidden="true">${kind === "limit" ? noticeClockSvg() : noticeAlertSvg()}</span>`;
   return `<div class="bubble notice is-${kind}" data-mid="${escapeHtml(items[0]?.id || "")}" data-mids="${escapeHtml(mids)}" title="${escapeHtml(text)}">
@@ -8305,6 +8312,10 @@ const ACTIONS: Record<string, ActHandler> = {
     void retryTurn(String(el.dataset.id || ""));
     return;
   },
+  "retry-interrupted": (e, { el }) => {
+    void retryInterrupted(String(el.dataset.id || ""), String(el.dataset.mid || ""), el);
+    return;
+  },
   "switch-identity": (e) => {
     // A usage limit is per identity: open this bot's settings at the Identity field.
     state.botEdit = true;
@@ -10666,6 +10677,26 @@ function focusIdentityField(): void {
     field.classList.add("field-flash");
     setTimeout(() => field.classList.remove("field-flash"), 1600);
   });
+}
+
+/**
+ * Retry on a "Sub8 restarted while this was running" notice. The server keeps
+ * what that turn was (a routine, a woken task, a user message) and runs it
+ * again. If it no longer has it (already retried), fall back to resending the
+ * last thing the user said, which is what Retry means everywhere else.
+ */
+async function retryInterrupted(botId: string, noticeId: string, el: HTMLElement): Promise<void> {
+  if (!botId || !noticeId) return;
+  if (el instanceof HTMLButtonElement) el.disabled = true;
+  const bot = state.bots.find((b) => b.id === botId);
+  const row = bot?.messages?.find((m) => m.id === noticeId);
+  if (row?.interrupted) row.interrupted = { ...row.interrupted, retry: false };
+  try {
+    await api(`/api/bots/${encodeURIComponent(botId)}/interrupted/${encodeURIComponent(noticeId)}/retry`, { method: "POST" });
+  } catch {
+    if (row?.interrupted?.source === "user") await retryTurn(botId);
+  }
+  if (bot && state.selected === botId) paintChat(bot);
 }
 
 /** Retry: stop whatever is (not) running and send the last thing the user said again. */

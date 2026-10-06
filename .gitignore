@@ -94,6 +94,7 @@ plan/
 /server/host-cli.mjs
 /server/identities.mjs
 /server/index.mjs
+/server/interrupted.mjs
 /server/isolation.mjs
 /server/local-llm.mjs
 /server/mcp-desk.mjs

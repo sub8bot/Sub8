@@ -43,6 +43,7 @@ import {
   requeueWake,
 } from "@sub8/wakes";
 import * as memory from "./memory.mjs";
+import * as interrupted from "./interrupted.mjs";
 import * as account from "./account.mjs";
 import * as cloudDraft from "./cloud/draft.mjs";
 import { attachCloudStreamProxy } from "./cloud/stream-proxy.mjs";
@@ -192,6 +193,16 @@ interface TurnOptions {
    * team channel only for user turns — the user already sees the worker's
    * reply, so a report turn speaks only via send_message. */
   source?: "user" | "report" | undefined;
+  /** For the in-flight marker (server/interrupted.mts): who started the turn.
+   * Defaults to "routine" for a hidden turn and "user" otherwise. */
+  origin?: interrupted.TurnOrigin | undefined;
+  /** The user message ids this turn answers. Defaults to the last user row. */
+  messageIds?: string[] | undefined;
+  routineNames?: string[] | undefined;
+  /** The durable wake this turn consumed, so a Retry can put it back. */
+  wake?: unknown;
+  /** Set on the automatic re-run of an interrupted turn. */
+  autoRetries?: number | undefined;
 }
 
 /**
@@ -2598,7 +2609,7 @@ app.post("/api/teams/:id/messages", async (req, res) => {
     broadcast("message", { botId: id, ...posted });
     // `appendMessage` answers a stored row, whose `content` sits under
     // @sub8/store's index signature; this route wrote it as a string one call up.
-    enqueueTurn(id, () => runUserTurn(id, posted.content as string, false, images, { persistUser: false, source: "user" }));
+    enqueueTurn(id, () => runUserTurn(id, posted.content as string, false, images, { persistUser: false, source: "user", messageIds: [String(posted.id)] }));
   }
   res.json({ ok: true, message: posted, toIds: deliver });
 });
@@ -3175,7 +3186,7 @@ function scheduleLeadTurn(botId: string, msg: PendingChannelMsg): void {
         batch.length === 1
           ? String(batch[0]!.posted.content || "")
           : `The user sent ${batch.length} messages in the team channel. Handle all of them:\n${batch.map((m, i) => `${i + 1}. ${String(m.posted.content || "")}`).join("\n")}`;
-      return runUserTurn(botId, text, false, images, { persistUser: false, source: "user" });
+      return runUserTurn(botId, text, false, images, { persistUser: false, source: "user", messageIds: batch.map((m) => String(m.posted.id)) });
     },
     () => leadTurnQueued.delete(botId),
   );
@@ -3662,6 +3673,8 @@ function stopTurn(botId: string): void {
   busyIds.delete(botId);
   inflightTurns.delete(botId);
   releaseTurnLock(botId);
+  // A stopped turn is not an interrupted one: no "did not finish" on restart.
+  interrupted.clearTurn(botId).catch(() => {});
   // Aborting the host loop only stops us reading; the desk keeps running the
   // work (a `sleep 300` outlived a stop that answered {ok:true,stopped:true}).
   store
@@ -3669,6 +3682,99 @@ function stopTurn(botId: string): void {
     .then((b) => (b?.vm?.container ? vm.stopDeskWork(b as vm.DeskBot, { token: internalToken }) : null))
     .catch(() => {});
 }
+
+/**
+ * Can boot re-run an interrupted user turn right now? The bot must still be
+ * here, nobody may be driving its desk, it must not be parked on a usage
+ * limit, and its desk container must exist with Docker answering. Anything
+ * less gets the notice with Retry instead of a re-run that would only fail.
+ */
+async function deskReadyForRetry(botId: string): Promise<boolean> {
+  if (deletedIds.has(botId) || isHumanControl(botId)) return false;
+  const bot = (await store.getBot(botId)) as IndexBot | null;
+  if (!bot) return false;
+  if (activeBotLimit(bot, Date.now())) return false;
+  if (bot.vm?.status === "error" || bot.vm?.detached) return false;
+  const name = bot.vm?.container;
+  if (!name) return false;
+  const list = await vm.listLocalbotStates();
+  if (!list.ok) return false;
+  return Boolean(list.states.get(name)?.exists);
+}
+
+async function appendInterruptedNotice(botId: string, row: interrupted.NoticeRow): Promise<void> {
+  const live = await store.patchBot(botId, (b) => {
+    b.messages = b.messages || [];
+    b.messages.push(row as unknown as store.Message);
+  });
+  if (!live) return;
+  broadcast("message", { botId, ...row });
+  broadcast("bot", toClient(live as IndexBot));
+}
+
+/** Run an interrupted turn again: boot's one automatic re-run, or a Retry press. */
+function rerunInterrupted(marker: interrupted.InflightMarker): void {
+  enqueueTurn(marker.botId, () =>
+    runUserTurn(marker.botId, marker.text, marker.hidden, [], {
+      persistUser: false,
+      replyTo: marker.replyTo || null,
+      source: marker.turnSource,
+      origin: marker.source,
+      messageIds: marker.messageIds,
+      routineNames: marker.routineNames,
+      autoRetries: marker.autoRetries,
+    }),
+  );
+}
+
+/** Boot: settle the turns and background Tasks the last run left unfinished. */
+async function recoverInterruptedWork(): Promise<void> {
+  const deps = {
+    getBot: async (id: string) => (deletedIds.has(id) ? null : ((await store.getBot(id)) as interrupted.TranscriptRow & { id: string; name?: string; messages?: interrupted.TranscriptRow[] } | null)),
+    deskReady: deskReadyForRetry,
+    appendNotice: appendInterruptedNotice,
+    rerun: rerunInterrupted,
+  };
+  const turns = await interrupted.recoverInterrupted(deps);
+  for (const r of turns) console.log("interrupted turn", r.botId, r.action);
+  const tasks = await interrupted.recoverInterruptedTasks(path.join(dataDir, "tasks.json"), deps);
+  for (const r of tasks) console.log("interrupted task", r.botId, r.action);
+}
+
+app.post("/api/bots/:id/interrupted/:mid/retry", async (req, res) => {
+  const bot = (await store.getBot(req.params.id)) as IndexBot | null;
+  if (!bot) return res.status(404).json({ error: "not found" });
+  const entry = await interrupted.takeInterrupted(req.params.mid, bot.id);
+  // The button is gone either way: a second press, or one after a restart that
+  // dropped the entry, must not run it twice.
+  const live = await store.patchBot(bot.id, (b) => {
+    const row = (b.messages || []).find((m) => m.id === req.params.mid) as { interrupted?: { retry?: boolean } } | undefined;
+    if (row?.interrupted) row.interrupted = { ...row.interrupted, retry: false };
+  });
+  if (live) broadcast("bot", toClient(live as IndexBot));
+  if (!entry) return res.status(404).json({ error: "This was already retried." });
+  if (entry.kind === "subagent") {
+    const row = await subagents.spawn({
+      botId: bot.id,
+      type: entry.type,
+      prompt: entry.prompt,
+      display: bot.vm?.display,
+      computerId: bot.vm?.computerId,
+      container: bot.vm?.container,
+      harnessUrl: `http://127.0.0.1:${bot.vm?.harnessPort || ""}`,
+      harnessToken: internalToken,
+    });
+    return res.json({ ok: true, task: row.id });
+  }
+  if (entry.source === "wake" && entry.wake) {
+    // Put the wake back; drainLeftoverWakes fires it once the bot is idle.
+    requeueTakenWake(entry.wake as Wake);
+    if (!busyIds.has(bot.id)) drainLeftoverWakes().catch(() => {});
+    return res.json({ ok: true });
+  }
+  rerunInterrupted({ ...entry, botId: bot.id });
+  res.json({ ok: true });
+});
 
 app.post("/api/bots/:id/control", async (req, res) => {
   const bot = await store.getBot(req.params.id) as IndexBot | null;
@@ -3774,7 +3880,7 @@ app.post("/api/bots/:id/messages", async (req, res) => {
     return;
   }
   res.json({ ok: true, queued: false });
-  enqueueTurn(bot.id, () => runUserTurn(bot.id, userMsg.content, false, images, { persistUser: false }));
+  enqueueTurn(bot.id, () => runUserTurn(bot.id, userMsg.content, false, images, { persistUser: false, messageIds: [userMsg.id] }));
 });
 
 app.post("/api/bots/:id/choice", async (req, res) => {
@@ -3912,7 +4018,7 @@ app.post("/api/bots/:id/choice", async (req, res) => {
       shown.nextTurn,
       false,
       [],
-      { persistUser: false },
+      { persistUser: false, messageIds: [userMsg.id] },
     ),
   );
   res.json({ ok: true, queued: busyIds.has(bot.id) });
@@ -4077,7 +4183,7 @@ app.post("/api/bots/:id/routines/:rid/run", async (req, res) => {
     r.runs = [...(Array.isArray(r.runs) ? r.runs : []), { ts: now, kind: "test" }].slice(-24);
   });
   const prompt = `Standing routine "${routine.name || "Routine"}" was started with Test run. Do this work now, then stop if nothing changed:\n${routine.instruction || ""}`;
-  enqueueTurn(bot.id, () => runUserTurn(bot.id, prompt, true));
+  enqueueTurn(bot.id, () => runUserTurn(bot.id, prompt, true, [], { origin: "routine", routineNames: [String(routine.name || "Routine")] }));
   // `getBot` cannot miss here: the 404 four lines up already loaded this id,
   // and nothing between deletes a bot.
   broadcast("bot", toClient(await store.getBot(bot.id) as IndexBot));
@@ -4107,8 +4213,33 @@ async function talkWhileWorking(botId: string, text: string): Promise<void> {
   broadcast("message", { botId, ...out });
 }
 
+/** The in-flight marker for a turn that is starting (see server/interrupted.mts). */
+function inflightMarker(bot: IndexBot, turnId: string, startedAt: number, text: string, hidden: boolean, opts: TurnOptions): interrupted.InflightMarker {
+  const origin: interrupted.TurnOrigin = opts.origin || (opts.wake || opts.replyTo || opts.source === "report" ? "wake" : hidden ? "routine" : "user");
+  let messageIds = opts.messageIds;
+  if (!messageIds) {
+    const last = hidden ? null : [...(bot.messages || [])].reverse().find((m) => m.role === "user");
+    messageIds = last?.id ? [String(last.id)] : [];
+  }
+  return {
+    botId: bot.id,
+    turnId,
+    messageIds,
+    startedAt,
+    source: origin,
+    text,
+    hidden,
+    replyTo: opts.replyTo || null,
+    turnSource: opts.source,
+    routineNames: opts.routineNames,
+    wake: opts.wake,
+    autoRetries: Number(opts.autoRetries || 0),
+  };
+}
+
 async function runUserTurn(botId: string, text: string, hidden: boolean, images: string[] = [], opts: TurnOptions = {}): Promise<void> {
   const turnStart = Date.now();
+  const turnId = `t${turnStart}${Math.random().toString(36).slice(2, 7)}`;
   const ac = new AbortController();
   turnAbort.set(botId, ac);
   busyIds.add(botId);
@@ -4129,6 +4260,7 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
     if (inflightTurns.get(botId) === bag) inflightTurns.delete(botId);
     busyIds.delete(botId);
     releaseTurnLock(botId);
+    interrupted.clearTurn(botId, turnId).catch(() => {});
     const note = {
       id: `wd${Date.now()}`,
       role: "assistant",
@@ -4151,6 +4283,11 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
   try {
     let bot = await store.getBot(botId) as IndexBot | null;
     if (!bot) return;
+    // Cleared in the `finally` below (and by Stop and the watchdog), exactly
+    // where busy is. One still on disk at boot was cut off by a quit or a crash.
+    interrupted
+      .markTurnStart(inflightMarker(bot, turnId, turnStart, text, hidden, opts))
+      .catch((err) => console.error("inflight marker", botId, (err as Error)?.message || err));
     const mapped = bot.vm?.container ? (vm.cachedMappedPort(bot.vm.container) || (await vm.detectMappedPort(bot.vm.container))) : null;
     const port = resolveStreamPort(bot.vm?.novncPort, mapped);
     if (port && bot.vm && bot.vm.novncPort !== port) {
@@ -4339,6 +4476,7 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
     // the stale key, suppressed the forced step-ping, and the chief waited
     // indefinitely for a report that would never come.
     clearTimeout(watchdog);
+    interrupted.clearTurn(botId, turnId).catch(() => {});
     notifiedThisTurn.delete(notifyKey(botId, opts.replyTo));
     const leftover = bag.nudges.splice(0);
     // Only this turn's own state. After a Stop (or the watchdog) a newer turn
@@ -4519,7 +4657,8 @@ async function tickRoutines() {
         continue;
       }
       spendGuard.noteFire(now);
-      enqueueTurn(bot.id, () => runUserTurn(bot.id, prompt, true));
+      const routineNames = accepted.map((r) => String(r.name || "Routine"));
+      enqueueTurn(bot.id, () => runUserTurn(bot.id, prompt, true, [], { origin: "routine", routineNames }));
     }
   }
 }
@@ -4679,7 +4818,7 @@ function fireDurableWake(wake: Wake | null | undefined): void {
   if (!wake?.botId) return;
   enqueueTurn(
     wake.botId,
-    () => runUserTurn(wake.botId, turnPromptForWake(wake), true),
+    () => runUserTurn(wake.botId, turnPromptForWake(wake), true, [], { origin: "wake", wake }),
     // takeWakeOfType/takeWakeById splice the wake out of wakes.json and persist
     // BEFORE the turn exists, so a turn the epoch guard then discards took the
     // message with it -- and nothing retried, because the ledger no longer had
@@ -4715,7 +4854,7 @@ subagents.subscribeWakes((wake) => {
   const taken = takeWakeOfType(parentId, "subagent-complete");
   enqueueTurn(
     parentId,
-    () => runUserTurn(parentId, turnPromptForWake({ type: "subagent-complete", payload: { id: wake.id, result: wake.result } }), true),
+    () => runUserTurn(parentId, turnPromptForWake({ type: "subagent-complete", payload: { id: wake.id, result: wake.result } }), true, [], { origin: "wake", wake: taken }),
     // The same ledger race fireDurableWake documents, which these two
     // listeners never got: the take above spliced the wake out of wakes.json
     // and persisted it BEFORE this turn existed, so a turn the epoch guard
@@ -4734,7 +4873,7 @@ codeAgent.subscribeWakes((wake) => {
   enqueueTurn(
     parentId,
     () =>
-      runUserTurn(parentId, turnPromptForWake({ type: "code-agent-complete", payload: { id: wake.id, prUrl: wake.prUrl } as WakePayload }), true),
+      runUserTurn(parentId, turnPromptForWake({ type: "code-agent-complete", payload: { id: wake.id, prUrl: wake.prUrl } as WakePayload }), true, [], { origin: "wake", wake: taken }),
     () => requeueTakenWake(taken),
   );
 });
@@ -4900,6 +5039,13 @@ async function ensureDesktops() {
     if (name && (st === "running" || st === "starting") && liveBox && !liveBox.running && !liveBox.paused && liveBox.exists) {
       provision(bot.id).catch((err) => console.error("ensure desktop", bot.id, err));
       continue;
+    }
+    if (st === "running" && name && liveBox?.running && bot.vm?.novncPort) {
+      vm.healLocalNovnc(name, bot.vm.novncPort)
+        .then((fixed) => {
+          if (fixed) console.log(`repaired the screen stream of ${name}`);
+        })
+        .catch(() => {});
     }
     if (st === "starting" || (bot.vm?.setup && bot.vm.setup.ready === false)) {
       if (name && (await vm.chromeReady(name))) {
@@ -5098,6 +5244,10 @@ const httpServer = app.listen(PORT, "127.0.0.1", async () => {
     if (gone.length) console.log("swept orphan computers", gone.join(", "));
     const n = await resumePausedByQuit();
     if (n) console.log(`resumed ${n} computer${n === 1 ? "" : "s"} paused on last quit`);
+    // After take-control is re-armed and paused desks are back, before the
+    // first wake drain: a turn the last run never finished either gets one
+    // automatic re-run (a recent user turn) or a notice with Retry.
+    await recoverInterruptedWork().catch((err) => console.error("interrupted turns", err));
     const live = await store.loadBots() as IndexBot[];
     for (const b of live) {
       if (!b?.vm?.container) continue;

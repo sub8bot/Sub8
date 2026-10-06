@@ -202,6 +202,7 @@ const HANDLED = [
   "stop-teach",
   "stop-turn",
   "retry-turn",
+  "retry-interrupted",
   "switch-identity",
   "jump-latest",
   "take-control",
@@ -295,8 +296,10 @@ assert.deepEqual(covered, expected);
 // 214 -> 215: vault-cloud-sync (Sync now when the cloud vault copy is behind).
 // 215 -> 218: retry-turn (stalled or reply-less turn), switch-identity (usage
 //             limit notice), jump-latest (the "Jump to latest" pill).
-assert.equal(HANDLED.length, 220);
-assert.equal(covered.length, 220);
+// 220 -> 221: retry-interrupted (Retry on a "Sub8 restarted while this was
+//             running" notice).
+assert.equal(HANDLED.length, 221);
+assert.equal(covered.length, 221);
 
 console.log(
   "ok delegated-acts (" + keys.length + " in ACTIONS, " + new Set(chain).size +

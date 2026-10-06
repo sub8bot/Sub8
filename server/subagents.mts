@@ -5,6 +5,7 @@ function dataRoot(): string {
   return process.env.SUB8BOT_DATA || process.env.OCTOBOT_DATA || path.join(process.cwd(), "data");
 }
 import { enqueueWake } from "@sub8/wakes";
+import { writeJsonAtomic } from "@sub8/store";
 
 /** `runDeskTurn` from ./desk-client.mjs — the /turn driver, injectable in tests. */
 export type DeskTurnDriver = typeof import("./desk-client.mjs").runDeskTurn;
@@ -186,7 +187,9 @@ function persistIndex(): Promise<void> {
     .then(async () => {
       await fs.mkdir(dataRoot(), { recursive: true });
       const rows = [...sessions.values()].map(publicView);
-      await fs.writeFile(tasksPath(), JSON.stringify(rows, null, 2));
+      // Atomic: boot reads this to find Tasks a restart cut off
+      // (server/interrupted.mts), and a torn file would hide every one of them.
+      await writeJsonAtomic(tasksPath(), rows);
     })
     .catch(() => {});
   return persistChain;
