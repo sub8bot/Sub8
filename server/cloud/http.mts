@@ -56,6 +56,8 @@ export interface CloudApiOptions extends CloudOptions {
   token?: string | undefined;
   method?: string | undefined;
   body?: unknown;
+  /** Abort after this long. A desk that never answers otherwise hangs the UI forever. */
+  timeoutMs?: number | undefined;
 }
 
 function apiError(res: Response, json: CloudBody, fallback: string): CloudError {
@@ -150,16 +152,27 @@ export async function waitX(state?: string | null, { baseUrl }: CloudOptions = {
   return json;
 }
 
-export async function cloudApi(path: string, { baseUrl, token, method = "GET", body }: CloudApiOptions = {}): Promise<CloudBody> {
+export async function cloudApi(path: string, { baseUrl, token, method = "GET", body, timeoutMs = 90_000 }: CloudApiOptions = {}): Promise<CloudBody> {
   const base = String(baseUrl || "").replace(/\/+$/, "");
   const headers: Record<string, string> = { Accept: "application/json" };
   if (token) headers.Authorization = `Bearer ${token}`;
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  const res = await fetch(`${base}${path}`, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  } as RequestInit);
+  let res: Response;
+  try {
+    res = await fetch(`${base}${path}`, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(timeoutMs),
+    } as RequestInit);
+  } catch (err) {
+    if ((err as Error)?.name === "TimeoutError" || (err as Error)?.name === "AbortError") {
+      const e = new Error("Sub8 Cloud did not answer in time. The desk may be busy or unreachable; try again.") as CloudError;
+      e.code = "CLOUD_TIMEOUT";
+      throw e;
+    }
+    throw err;
+  }
   const json = await readJson(res);
   if (!res.ok) throw apiError(res, json, `Cloud ${res.status}`);
   return json;

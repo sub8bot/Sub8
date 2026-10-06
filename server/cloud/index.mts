@@ -229,6 +229,7 @@ export async function liveBrainClaudeAuthStart({ token, computerId }: ClaudeAuth
     token,
     method: "POST",
     body: { computerId },
+    timeoutMs: 45_000,
   });
 }
 
