@@ -4157,3 +4157,39 @@ echo $k`;
   const r = await docker(["exec", container, "sh", "-c", script]);
   return { ok: r.ok, killed: Number(String(r.out || "").trim()) || 0 };
 }
+
+/**
+ * Desks started by an older desk-init bound websockify to 127.0.0.1 inside
+ * the container whenever no VNC_PASSWORD was set. Docker's -p forwards to the
+ * container's eth0, so those screens never load (a broken image in the
+ * viewer) until the desk is recreated. Local desks publish only on the Mac's
+ * own 127.0.0.1, so rebinding inside the container exposes nothing new.
+ * Checked at most every few minutes per desk; returns true when it repaired.
+ */
+const novncHealAt = new Map<string, number>();
+const NOVNC_HEAL_EVERY_MS = 3 * 60_000;
+
+export async function healLocalNovnc(name: string | null | undefined, novncPort: number | null | undefined): Promise<boolean> {
+  if (!name || !novncPort) return false;
+  const last = novncHealAt.get(name) || 0;
+  if (Date.now() - last < NOVNC_HEAL_EVERY_MS) return false;
+  novncHealAt.set(name, Date.now());
+  const answers = async () => {
+    try {
+      const r = await fetch(`http://127.0.0.1:${novncPort}/vnc.html`, { signal: AbortSignal.timeout(2000) });
+      return r.status < 500;
+    } catch {
+      return false;
+    }
+  };
+  if (await answers()) return false;
+  const script = [
+    "for p in $(pgrep -f 'websockify --web=/usr/share/novnc 127.0.0.1:3000'); do kill $p; done",
+    "sleep 1",
+    "pgrep -f 'websockify --web=/usr/share/novnc 3000' >/dev/null || pgrep -f 'websockify --web=/usr/share/novnc 0.0.0.0:3000' >/dev/null || (setsid nohup websockify --web=/usr/share/novnc 3000 127.0.0.1:5900 >/tmp/websockify.log 2>&1 &)",
+  ].join("\n");
+  const r = await docker(["exec", name, "sh", "-c", script], { timeout: 15_000 }).catch(() => null);
+  if (!r) return false;
+  await new Promise((res) => setTimeout(res, 1500));
+  return answers();
+}
