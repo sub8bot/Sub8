@@ -2709,9 +2709,13 @@ function noticeHtml(bot: Bot, items: Message[], skipped: Message[], kind: ChatNo
     // The server may add a line of its own under the harness's ("I paused my
     // routines until..."); keep that, it says what happens next.
     const extra = text.split(/\n+/).slice(1).join(" ").trim();
-    const sub = extra || `${bot.name} cannot run on this identity until then.`;
+    const sub =
+      extra ||
+      (info?.reset
+        ? `${bot.name} cannot run on this identity until then.`
+        : `${bot.name} cannot run on this identity. Switch to another one or add a new login.`);
     body = `<b>${escapeHtml(scope)}</b>${reset ? ` <span>${escapeHtml(reset)}</span>` : ""}<div class="notice-sub">${escapeHtml(sub)}</div>`;
-    actions = `<button type="button" class="pill notice-act" data-act="switch-identity" data-id="${escapeHtml(bot.id)}">Switch identity</button>`;
+    actions = `<button type="button" class="pill notice-act" data-act="switch-identity" data-id="${escapeHtml(bot.id)}">Switch identity</button><button type="button" class="pill notice-act" data-act="add-login-open" data-place="${isCloudPlace() ? "cloud" : "local"}">Add identity</button>`;
   } else {
     body = chatMarkdown(text);
   }
@@ -5991,6 +5995,10 @@ function editorHarnessFromIdentity(bot?: Bot): { provider: string; model: string
   return { ...harness, identityId: picked?.id || "" };
 }
 
+/** Last entry of every Identity select: opens the add-login picker instead of selecting. */
+const ADD_IDENTITY_VALUE = "__add_identity__";
+const ADD_IDENTITY_OPTION = `<option value="${ADD_IDENTITY_VALUE}">+ Add new identity…</option>`;
+
 function identityOptions(selected: string | undefined, providerFallback?: string, bot?: Bot): string {
   const cloud = isCloudPlace();
   const rows = cloud ? cloudIdentityRows() : (state.identities || []).filter((row) => row.place !== "cloud");
@@ -5998,7 +6006,7 @@ function identityOptions(selected: string | undefined, providerFallback?: string
   const effective = selected || resolved?.id || "";
   if (cloud) {
     if (!rows.length) {
-      return `<option value="" selected>No cloud identities — sign in under Settings → Harnesses</option>`;
+      return `<option value="" selected>No cloud identities yet</option>${ADD_IDENTITY_OPTION}`;
     }
     return rows
       .map((row) => {
@@ -6011,7 +6019,7 @@ function identityOptions(selected: string | undefined, providerFallback?: string
           row.status === "signed_in" ? " ✓" : row.status === "expired" ? " · expired" : row.status ? ` · ${identityStatusLabel(row.status)}` : "";
         return `<option value="${escapeHtml(row.id)}" ${on ? "selected" : ""}>${escapeHtml(`${row.label}${who}${status}`)}</option>`;
       })
-      .join("");
+      .join("") + ADD_IDENTITY_OPTION;
   }
   const opts = [`<option value="" ${!effective ? "selected" : ""}>App default</option>`];
   for (const row of rows) {
@@ -6021,7 +6029,7 @@ function identityOptions(selected: string | undefined, providerFallback?: string
       `<option value="${escapeHtml(row.id)}" ${on ? "selected" : ""}>${escapeHtml(`${row.label}${who}`)}</option>`,
     );
   }
-  return opts.join("");
+  return opts.join("") + ADD_IDENTITY_OPTION;
 }
 
 function harnessProviderOptions(selected: string | undefined): string {
@@ -9862,6 +9870,17 @@ function bindDelegated(): void {
     // A change event only fires on a form control.
     const el = e.target as ValueEl;
     if (el instanceof HTMLSelectElement && el.classList.contains("field-select")) syncSelectTitles(el.parentElement);
+    if (el.id === "bid" && el.value === ADD_IDENTITY_VALUE) {
+      // Not a real identity: put the select back and open the add-login picker
+      // under it, the same one Settings > Harnesses uses.
+      const prev = editorBot()?.identityId || "";
+      const sel = el as HTMLSelectElement;
+      sel.value = Array.from(sel.options).some((o) => o.value === prev) ? prev : sel.options[0]?.value || "";
+      const r = sel.getBoundingClientRect();
+      state.ctx = { type: "add-login", sub: isCloudPlace() ? "cloud" : "local", x: Math.max(8, r.right - 296), y: r.bottom + 6 };
+      paintCtxMenu();
+      return;
+    }
     if (el.id === "bid" && state.botEdit && isCloudPlace()) {
       const bot = editorBot();
       if (bot) {
