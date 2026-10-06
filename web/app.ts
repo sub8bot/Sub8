@@ -2,7 +2,7 @@ import { tagSentryVersion } from "./sentry.js";
 import { animList, bodyList, defaultAvatar, faceList, inferMood, isSleepingMood, randomCreateFace, randomWakeMood, syncAvatars } from "./avatar.js";
 import { AVATAR_COLORS } from "./palette.js";
 import { applyHealthPort, CONNECTING_AFTER_MS, cloudFrameKey, frameKey, healthIframeIsCurrent, novncAutoconnectUrl, shouldKickCloudFrame, shouldMountCloudFrame, shouldShowConnecting, stillCoversLive } from "./stream-bind.mjs";
-import { listModelsForProvider, modelFieldKind, pickListedModel } from "./harness-models.mjs";
+import { listModelsForProvider, modelFieldKind, modelOptionLabel, pickListedModel } from "./harness-models.mjs";
 import { formatChatText } from "./markdown.js";
 import { HARNESS_INSTALL, apiPreset, brainSetupHtml, harnessSetupBannerHtml, needsBrainSetup } from "./brain-setup.mjs";
 import { mergeCloudMessages, mergeCloudDraft, isTransientChatStatus } from "./chat-merge.mjs";
@@ -5383,7 +5383,7 @@ function cloudModelSelectHtml(row: { id: string; provider?: string; model?: stri
   const list = [...new Set([current, ...listModelsForProvider(provider, {})].filter(Boolean))];
   if (!list.length) return `<span class="muted">${escapeHtml(current || "—")}</span>`;
   return `<select class="field" data-role="cloud-model" data-identity="${escapeHtml(row.id)}" style="max-width:240px">${list
-    .map((m) => `<option value="${escapeHtml(m)}" ${m === current ? "selected" : ""}>${escapeHtml(m)}</option>`)
+    .map((m) => `<option value="${escapeHtml(m)}" ${m === current ? "selected" : ""}>${escapeHtml(modelOptionLabel(provider, m))}</option>`)
     .join("")}</select>`;
 }
 
@@ -6087,8 +6087,8 @@ function modelPickerHtml(provider: string, selected: string, { id = "cm" }: { id
               : provider === "grok-build"
                 ? "Grok Build"
                 : provider;
-    return `<select class="field" id="${id}">${models
-      .map((m) => `<option value="${escapeHtml(m)}" ${value === m ? "selected" : ""}>${escapeHtml(m)}</option>`)
+    return `<select class="field" id="${id}">${(value && !models.includes(value) ? [value, ...models] : models)
+      .map((m) => `<option value="${escapeHtml(m)}" ${value === m ? "selected" : ""}>${escapeHtml(modelOptionLabel(provider, m))}</option>`)
       .join("")}</select>
       <div class="muted">${escapeHtml(label)} · ${models.length} available</div>`;
   }

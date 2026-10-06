@@ -39,7 +39,6 @@ import {
   parseClaudeStream,
   claudeBin,
   claudeModelArgs,
-  CLAUDE_SAFE_SONNET,
   DESK_DISALLOWED_TOOLS,
   resolveClaudeCliModel,
   mcpServerSpec,
@@ -1181,9 +1180,12 @@ export async function runTurn(body: TurnBody, emit: EmitTurnEvent, opts: RunTurn
     // the desk (~/.claude). A stray XAI key must not leak into its env.
     delete env.XAI_API_KEY;
     delete env.XAI_BASE_URL;
+    // No pick: leave the model to the CLI's own (latest) default, and drop any
+    // inherited pin so the droplet environment cannot override that.
     const claudeModel = resolveClaudeCliModel(t.model);
-    env.ANTHROPIC_MODEL = claudeModel;
-    env.ANTHROPIC_DEFAULT_SONNET_MODEL = CLAUDE_SAFE_SONNET;
+    if (claudeModel) env.ANTHROPIC_MODEL = claudeModel;
+    else delete env.ANTHROPIC_MODEL;
+    delete env.ANTHROPIC_DEFAULT_SONNET_MODEL;
     if (t.apiKey) env.ANTHROPIC_API_KEY = t.apiKey;
     if (t.baseUrl && /anthropic/i.test(t.baseUrl)) env.ANTHROPIC_BASE_URL = t.baseUrl;
   } else {

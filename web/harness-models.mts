@@ -1,7 +1,17 @@
 export const HERMES_FALLBACK_MODELS = ["qwen3.8-27b", "qwen3.6-27b-mlx"];
 export const GROK_FALLBACK_MODELS = ["grok-4.6", "grok-4.5", "grok-4.3", "grok-build-0.1"];
-/** Claude ids the CLI accepts. Fable 5.1 / Opus 5 / Sonnet 5 / Haiku 4.5; whether a login may use each is up to the account. */
-export const CLAUDE_FALLBACK_MODELS = ["claude-sonnet-5", "claude-opus-5", "claude-fable-5-1", "claude-haiku-4-5-20251001"];
+/**
+ * Claude picker. "default" runs Claude Code with no --model, so the CLI's own
+ * default (the latest model) is used; the rest are explicit pins. Whether a
+ * login may use each is up to the account.
+ */
+export const CLAUDE_FALLBACK_MODELS = ["default", "claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5"];
+
+/** How a model id reads in a picker. Claude's "default" names what it means. */
+export function modelOptionLabel(provider: string, id: string): string {
+  if ((provider === "claude" || provider === "claude-oauth") && (!id || id === "default")) return "Claude Code · latest (default)";
+  return id;
+}
 export const CODEX_FALLBACK_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.2"];
 export const CURSOR_FALLBACK_MODELS = ["cursor-grok-4.6-low", "cursor-grok-4.6-low-fast", "auto", "composer-2.5"];
 
@@ -80,6 +90,9 @@ export function pickListedModel(provider: string, selected: string | undefined, 
     if (provider === "cursor") {
       return list.includes("cursor-grok-4.6-low") ? "cursor-grok-4.6-low" : (list[0] ?? "");
     }
+    // Claude: an explicit pick that is not in the list stays the pick; never
+    // rewrite it to the first entry. No pick is "default".
+    if (provider === "claude") return selected || (list.includes("default") ? "default" : (list[0] ?? ""));
     return list[0] ?? "";
   }
   if (provider === "grok-build" || provider === "spacexai") return "grok-4.6";

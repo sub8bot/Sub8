@@ -71,6 +71,7 @@ import { runCloudTurn as cloudRunTurn, appendCloudUser as cloudAppendUser, liveB
  */
 import type { CloudError } from "./cloud/http.mjs";
 import { desktopCloudStreamUrl } from "../web/stream-bind.mjs";
+import { cloudClaudeModel } from "./identities.mjs";
 
 export {
   accountEnabled,
@@ -801,7 +802,8 @@ function harnessForCloudIdentity(
     return {
       provider: "claude",
       // The login's chosen model (Settings → Harnesses → Cloud), not a constant.
-      model: String(brain?.claudeModel || (/^claude/i.test(String(brain?.model || "")) ? brain?.model : "") || "claude-sonnet-5"),
+      // No pick = "default": the CLI's own latest model (no --model).
+      model: cloudClaudeModel(brain),
       signedIn: Boolean(brain?.claudeCredentials),
       apiKeySet: Boolean(brain?.apiKeySet),
     };

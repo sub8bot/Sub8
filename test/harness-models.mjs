@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { listModelsForProvider, modelFieldKind, pickListedModel } from "../web/harness-models.mjs";
+import { listModelsForProvider, modelFieldKind, modelOptionLabel, pickListedModel } from "../web/harness-models.mjs";
 
 const hermes = listModelsForProvider("hermes", {
   hermesCurrent: "qwen3.6-27b",
@@ -37,5 +37,15 @@ assert.equal(modelFieldKind("cursor", []), "cli");
 const hermesEmptyCatalog = listModelsForProvider("hermes", {});
 assert.ok(hermesEmptyCatalog.length > 0, "Hermes always has fallback models");
 assert.equal(modelFieldKind("hermes", hermesEmptyCatalog), "select");
+
+// Claude: Default (latest) first, then the current pins; an explicit pick is kept.
+const claude = listModelsForProvider("claude", {});
+assert.deepEqual(claude, ["default", "claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5"]);
+assert.equal(pickListedModel("claude", "", claude), "default");
+assert.equal(pickListedModel("claude", "claude-fable-5-1", claude), "claude-fable-5-1");
+assert.equal(pickListedModel("claude", "claude-sonnet-5", claude), "claude-sonnet-5", "never rewrite an explicit pick");
+assert.equal(modelOptionLabel("claude", "default"), "Claude Code · latest (default)");
+assert.equal(modelOptionLabel("claude", "claude-opus-5-5"), "claude-opus-5-5");
+assert.equal(modelOptionLabel("grok-build", "default"), "default");
 
 console.log("ok harness-models");

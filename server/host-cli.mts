@@ -161,12 +161,6 @@ export function claudeBin(): string {
 }
 
 /**
- * Desk Claude id. Sonnet 5 verified working in -p mode on this login
- * (2026-09-02: claude-sonnet-5/4-6/4-5 all answer; the earlier
- * model_not_found 404s no longer reproduce). Haiku was a stopgap and is not
- * good enough for team coordination — double-delegations, skipped summaries.
- */
-/**
  * Claude Code built-ins a desk turn must never reach: peer messaging (a
  * worker once sent its answer to the developer's terminal), and Claude Code's
  * own scheduling/notification tools — "remind me in 2 minutes" created a
@@ -177,31 +171,27 @@ export function claudeBin(): string {
 // approval). The desk's shell/memory/computer are the mcp__sub8__* tools.
 export const DESK_DISALLOWED_TOOLS = ["SendMessage", "ListAgents", "RemoteTrigger", "CronCreate", "CronDelete", "CronList", "ScheduleWakeup", "Monitor", "PushNotification", "Bash", "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Glob", "Grep"];
 
-export const CLAUDE_SAFE_SONNET = "claude-sonnet-5";
-export const CLAUDE_FALLBACK = "claude-sonnet-4-5";
-
-/** Map UI/API aliases onto a Claude Code CLI id this login can run. */
+/**
+ * Claude Code model selection. No pick means no --model at all: the installed
+ * `claude` CLI then runs its own default, which tracks the latest model. An
+ * explicit pick is passed through untouched (ids and the CLI's aliases such as
+ * `sonnet`, `opus`, `fable`, `haiku`). Only ids that cannot run fall back to
+ * the default: retired claude-2/3 ids, and another harness's model string (a
+ * Grok or Cursor id left on a bot whose identity was switched to Claude).
+ */
 export function resolveClaudeCliModel(model: unknown): string {
   const m = String(model || "").trim();
-  if (!m || m === "default" || m === "auto" || m === "sonnet") return CLAUDE_SAFE_SONNET;
-  if (/^claude-sonnet-5($|-|\[)/i.test(m) || m === "sonnet-5") return CLAUDE_SAFE_SONNET;
-  if (/^claude-sonnet-4-6/i.test(m) || m === "sonnet-4-6" || m === "sonnet-4.6") return CLAUDE_SAFE_SONNET;
-  if (/^claude-sonnet-4-5/i.test(m) || m === "sonnet-4-5" || m === "sonnet-4.5") return CLAUDE_SAFE_SONNET;
-  // The CLI's own aliases are valid ids: `fable`, `opus`, `haiku` (sonnet is pinned above).
-  if (/^(fable|opus|haiku)$/i.test(m)) return m.toLowerCase();
-  // Any Claude model id passes through so new releases (opus-5, haiku-4-5, …)
-  // keep working with no code change. A model that is NOT Claude's — a Grok,
-  // Cursor, or other harness's model string left on a bot whose identity was
-  // switched to Claude — must never reach the Claude CLI as --model; fall back
-  // to the safe default instead of passing a guaranteed-invalid model through.
-  if (/^claude-/i.test(m) || /^(opus|haiku)/i.test(m)) return m;
-  return CLAUDE_SAFE_SONNET;
+  if (!m || m === "default" || m === "auto") return "";
+  if (/^claude-(2|3|instant)/i.test(m)) return "";
+  if (/^(sonnet|opus|haiku|fable)$/i.test(m)) return m.toLowerCase();
+  if (/^claude-/i.test(m) || /^(sonnet|opus|haiku|fable)/i.test(m)) return m;
+  return "";
 }
 
-/** Claude Code flags. Always pin --model so 2.1.197 cannot default to Sonnet 5. */
+/** Claude Code flags: `--model <pick>` only when the user picked one. */
 export function claudeModelArgs(model: unknown): string[] {
   const m = resolveClaudeCliModel(model);
-  return ["--model", m, "--fallback-model", m === CLAUDE_FALLBACK ? "haiku" : CLAUDE_FALLBACK];
+  return m ? ["--model", m] : [];
 }
 
 export function codexBin(): string {

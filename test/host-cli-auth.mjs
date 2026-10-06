@@ -39,13 +39,20 @@ assert.equal(JSON.parse(await fs.readFile(src, "utf8")).tokens.refresh_token, "v
 
 await fs.rm(dir, { recursive: true, force: true });
 
-assert.deepEqual(claudeModelArgs(""), ["--model", "claude-sonnet-5", "--fallback-model", "claude-sonnet-4-5"]);
-assert.deepEqual(claudeModelArgs("default"), ["--model", "claude-sonnet-5", "--fallback-model", "claude-sonnet-4-5"]);
-assert.deepEqual(claudeModelArgs("auto"), ["--model", "claude-sonnet-5", "--fallback-model", "claude-sonnet-4-5"]);
-assert.deepEqual(claudeModelArgs("sonnet"), ["--model", "claude-sonnet-5", "--fallback-model", "claude-sonnet-4-5"]);
-assert.deepEqual(claudeModelArgs("claude-sonnet-5"), ["--model", "claude-sonnet-5", "--fallback-model", "claude-sonnet-4-5"]);
-assert.deepEqual(claudeModelArgs("claude-sonnet-4-5"), ["--model", "claude-sonnet-5", "--fallback-model", "claude-sonnet-4-5"]);
-assert.deepEqual(claudeModelArgs("fable"), ["--model", "fable", "--fallback-model", "claude-sonnet-4-5"]);
+// No pick: no --model, so the installed claude CLI runs its own (latest) default.
+assert.deepEqual(claudeModelArgs(""), []);
+assert.deepEqual(claudeModelArgs("default"), []);
+assert.deepEqual(claudeModelArgs("auto"), []);
+// Another harness's model string or a retired id never reaches --model.
+assert.deepEqual(claudeModelArgs("grok-4.6"), []);
+assert.deepEqual(claudeModelArgs("cursor-grok-4.6-low"), []);
+assert.deepEqual(claudeModelArgs("claude-3-5-sonnet-20241022"), []);
+// An explicit pick is passed through untouched, never rewritten.
+assert.deepEqual(claudeModelArgs("sonnet"), ["--model", "sonnet"]);
+assert.deepEqual(claudeModelArgs("fable"), ["--model", "fable"]);
+assert.deepEqual(claudeModelArgs("claude-sonnet-5"), ["--model", "claude-sonnet-5"]);
+assert.deepEqual(claudeModelArgs("claude-sonnet-4-5"), ["--model", "claude-sonnet-4-5"]);
+assert.deepEqual(claudeModelArgs("claude-opus-5-5"), ["--model", "claude-opus-5-5"]);
 
 assert.match(MCP_DRIVE_TOOLS, /\btask\b/);
 assert.match(MCP_DRIVE_TOOLS, /\bread\b/);
@@ -149,3 +156,14 @@ assert.equal(cliSessionId({ grokSessionId: "b", id: "c" }), "b");
 assert.equal(cliSessionId({ id: "c" }), "c");
 
 console.log("ok host-cli-auth");
+
+// A Cloud Claude identity with no pick shows and runs "default" (the CLI's latest).
+{
+  const { cloudClaudeModel } = await import("../server/identities.mjs");
+  assert.equal(cloudClaudeModel({}), "default");
+  assert.equal(cloudClaudeModel({ model: "grok-4.6" }), "default");
+  assert.equal(cloudClaudeModel({ model: "claude-sonnet-4-5" }), "default", "the Worker's old automatic default is not a pick");
+  assert.equal(cloudClaudeModel({ claudeModel: "claude-fable-5-1", model: "grok-4.6" }), "claude-fable-5-1");
+  assert.equal(cloudClaudeModel({ model: "claude-opus-5-5" }), "claude-opus-5-5");
+  console.log("ok host-cli-auth (cloud claude default)");
+}

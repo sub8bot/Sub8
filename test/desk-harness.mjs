@@ -405,7 +405,8 @@ async function pollHealth(port, want, ms = 20000) {
   assert.equal(args[args.indexOf("--session-id") + 1], "s1");
   assert.equal(args[args.indexOf("--append-system-prompt") + 1], "RULES");
   assert.equal(args[args.indexOf("--model") + 1], "haiku");
-  assert.equal(args[args.indexOf("--fallback-model") + 1], "claude-sonnet-4-5");
+  assert.ok(!args.includes("--fallback-model"), "no pinned fallback model");
+  assert.ok(!claudeArgs({ prompt: "hi", model: "default", sessionId: "s3", mcpFile: "/tmp/m.json" }).includes("--model"), "default runs the CLI's own latest model");
   assert.ok(!claudeArgs({ prompt: "hi", sessionId: "s2", mcpFile: "/tmp/m.json" }).includes("--append-system-prompt"));
 
   // Claude stream-json folds into the same {tool,delta,done} the Worker reads.
@@ -444,6 +445,8 @@ async function pollHealth(port, want, ms = 20000) {
   );
   delete process.env.XAI_API_KEY;
   assert.match(String(captured.bin || ""), /claude/, "must spawn the claude CLI");
+  assert.equal(captured.env.ANTHROPIC_MODEL, "claude-sonnet-4-5", "an explicit pick is kept as is");
+  assert.equal(captured.env.ANTHROPIC_DEFAULT_SONNET_MODEL, undefined, "no pinned sonnet");
   assert.equal(captured.env.ANTHROPIC_API_KEY, "sk-ant-test");
   assert.equal(captured.env.XAI_API_KEY, undefined, "an XAI key must never reach Claude");
   assert.ok(captured.args.includes("--mcp-config"), "sub8 tools must be wired");

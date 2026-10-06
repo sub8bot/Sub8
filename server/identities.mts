@@ -19,6 +19,21 @@ export interface IdentityProbe {
   harnesses?: Record<string, HarnessRow> | undefined;
 }
 
+/** Sub8's old automatic Claude default on the Worker (never a user's pick). */
+const LEGACY_AUTO_CLAUDE_MODELS = ["claude-sonnet-4-5"];
+
+/**
+ * The model a Cloud Claude identity shows and runs: the login's pick, or
+ * "default" (no --model: the desk CLI's own latest model) when there is none.
+ */
+export function cloudClaudeModel(brain: { claudeModel?: string | undefined; model?: string | undefined } | null | undefined): string {
+  const picked = String(brain?.claudeModel || "").trim();
+  if (picked) return picked;
+  const m = String(brain?.model || "").trim();
+  if (/^claude/i.test(m) && !LEGACY_AUTO_CLAUDE_MODELS.includes(m)) return m;
+  return "default";
+}
+
 export function identityRuntimeDir(identity: Pick<Identity, "id" | "runtimeRef" | "provider">): string {
   if (identity.runtimeRef === "host" || !identity.runtimeRef) {
     return "";
@@ -164,7 +179,8 @@ export async function ensureCloudIdentities(input: CloudIdentityInput = {}): Pro
       subject,
       // The login's chosen model (Worker brain.claudeModel), never a constant — the
       // card repaints from this row, so a constant here snapped the picker back.
-      model: String((brain as { claudeModel?: string }).claudeModel || (/^claude/i.test(String(brain.model || "")) ? brain.model : "") || "claude-sonnet-5"),
+      // No pick = "default": the CLI's own latest model (no --model).
+      model: cloudClaudeModel(brain as { claudeModel?: string; model?: string }),
       runtimeRef: "account",
       kind: "cli-oauth",
       createdAt: prev?.createdAt || now,
