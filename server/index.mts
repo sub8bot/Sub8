@@ -4436,15 +4436,31 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
       }
     }
     // Don't let a long turn resurrect routines/vm state deleted while it ran.
-    const latest = await store.getBot(botId) as IndexBot | null;
-    if (latest) {
-      bot.routines = latest.routines || [];
-      bot.vm = latest.vm;
-    } else if (!Array.isArray(bot.routines)) {
-      bot.routines = [];
+    // Messages are merged, not replaced: `bot` is the copy loaded when the turn
+    // started, so writing it whole erased everything posted meanwhile (the
+    // user's own mid-turn message, side replies, notices).
+    let saved: IndexBot | null = null;
+    saved = await store.patchBot(botId, (row) => {
+      const live = row as IndexBot;
+      const ours = new Map((bot.messages || []).filter((m) => m?.id).map((m) => [m.id, m]));
+      const merged = (live.messages || []).map((m) => (m?.id && ours.has(m.id) ? ours.get(m.id)! : m));
+      const have = new Set(merged.map((m) => m?.id));
+      // A message the turn knows but the row does not was either written by the
+      // turn (keep it) or deleted by the user while the turn ran (leave it gone).
+      for (const m of bot.messages || []) {
+        if (m?.id && !have.has(m.id) && Number(m.ts || 0) >= turnStart) merged.push(m);
+      }
+      merged.sort((a, b) => Number(a?.ts || 0) - Number(b?.ts || 0));
+      const routines = live.routines || [];
+      const vm = live.vm;
+      Object.assign(live, bot, { messages: merged, routines, vm });
+    }) as IndexBot | null;
+    if (!saved) {
+      if (!Array.isArray(bot.routines)) bot.routines = [];
+      await store.upsertBot(bot);
+      saved = bot;
     }
-    await store.upsertBot(bot);
-    broadcast("bot", toClient(bot));
+    broadcast("bot", toClient(saved));
   } catch (err) {
     const aborted = ac.signal.aborted || /abort|stopped/i.test((err as Error).message || "");
     if (!aborted) {

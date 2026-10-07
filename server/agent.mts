@@ -773,6 +773,39 @@ ${await vault.promptBlock(bot.id)}
 `;
 }
 
+/** Most step rows the window keeps; older steps of a long task are folded away. */
+const TAIL_ACTIVITY_CAP = 150;
+
+/**
+ * The last `limit` real messages (user, assistant, notices) plus the step rows
+ * between them. Counting step rows too let a long task (hundreds of tool steps)
+ * push the user's own mid-task message out of the window, so it looked erased.
+ * Only the newest TAIL_ACTIVITY_CAP step rows are kept; real messages always are.
+ */
+export function conversationTail<T extends { role?: unknown }>(all: T[], limit: number): T[] {
+  if (limit <= 0) return [];
+  let seen = 0;
+  let start = all.length;
+  for (let i = all.length - 1; i >= 0; i--) {
+    if (all[i]?.role !== "activity") {
+      if (seen === limit) break;
+      seen += 1;
+    }
+    start = i;
+  }
+  const win = all.slice(start);
+  let steps = win.filter((m) => m?.role === "activity").length;
+  if (steps <= TAIL_ACTIVITY_CAP) return win;
+  return win.filter((m) => {
+    if (m?.role !== "activity") return true;
+    if (steps > TAIL_ACTIVITY_CAP) {
+      steps -= 1;
+      return false;
+    }
+    return true;
+  });
+}
+
 export function publicBot(
   bot: AgentBot,
   { tail }: { tail?: number | undefined } = {},
@@ -780,7 +813,7 @@ export function publicBot(
   const all = bot.messages || [];
   // `!`: Number.isFinite is not a type guard, but it just proved this is a number.
   const limit = Number.isFinite(tail) ? Math.max(0, tail!) : 24;
-  const messages = all.length > limit ? all.slice(-limit) : all;
+  const messages = conversationTail(all, limit);
   return {
     ...bot,
     messages: messages.map((m) => ({ ...m, imagePath: undefined, imageB64: undefined })),
