@@ -886,15 +886,40 @@ export async function resetHeavyChromeTabs(
     }
   }
   lastTabResetAt.set(container, now);
+  // Reopening first left the new same-site tab in the SAME renderer process,
+  // which kept its grown heap: the reset logged success and freed nothing. So:
+  // hold the window open with a blank tab, close the heavy page(s), wait for
+  // that renderer to exit (end it if it lingers: it no longer hosts a page),
+  // then reopen the URL(s) in a fresh process and drop the placeholder.
+  const curl = (url: string, put = false) =>
+    docker(["exec", container, "curl", "-sf", "--max-time", "5", ...(put ? ["-X", "PUT"] : []), url], { timeout: 15_000 });
+  const placeholder = await curl(`${base}/json/new?about:blank`, true);
+  let placeholderId = "";
+  try {
+    placeholderId = String((JSON.parse(String(placeholder.out || "{}")) as { id?: string }).id || "");
+  } catch {
+    placeholderId = "";
+  }
+  if (!placeholderId) return { reset: false, reason: "could not open a placeholder tab" };
+  for (const page of pages) await curl(`${base}/json/close/${encodeURIComponent(page.id)}`);
+  const pid = String(decision.pid);
+  let gone = false;
+  for (let i = 0; i < 12 && !gone; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    const alive = await docker(["exec", container, "sh", "-c", `kill -0 ${pid} 2>/dev/null && echo alive || echo gone`], { timeout: 5_000 });
+    gone = String(alive.out || "").trim() === "gone";
+  }
+  if (!gone) {
+    await docker(["exec", container, "sh", "-c", `ps -o args= -p ${pid} | grep -q -- '--type=renderer' && kill -TERM ${pid}`], { timeout: 5_000 });
+  }
   const urls: string[] = [];
   for (const page of pages) {
-    const opened = await docker(["exec", container, "curl", "-sf", "--max-time", "5", "-X", "PUT", `${base}/json/new?${encodeURIComponent(page.url!)}`], { timeout: 15_000 });
-    if (!opened.ok) continue;
-    await docker(["exec", container, "curl", "-sf", "--max-time", "4", `${base}/json/close/${encodeURIComponent(page.id)}`], { timeout: 10_000 });
-    urls.push(page.url!);
+    const opened = await curl(`${base}/json/new?${encodeURIComponent(page.url!)}`, true);
+    if (opened.ok) urls.push(page.url!);
   }
+  if (urls.length) await curl(`${base}/json/close/${encodeURIComponent(placeholderId)}`);
   if (!urls.length) return { reset: false, reason: "reopen failed" };
-  const line = `tab reset: ${container} port ${decision.port} renderer ${decision.rssMb} MB (${decision.reason}; desk ${memUsedMb}/${memMaxMb} MiB) reopened ${urls.join(", ")}`;
+  const line = `tab reset: ${container} port ${decision.port} renderer ${decision.rssMb} MB (${decision.reason}; desk ${memUsedMb}/${memMaxMb} MiB) reopened ${urls.join(", ")} in a new process${gone ? "" : " (old renderer ended)"}`;
   if (onLog) onLog(line);
   else console.log(line);
   return { reset: true, reason: decision.reason, rssMb: decision.rssMb, port: decision.port, urls };
