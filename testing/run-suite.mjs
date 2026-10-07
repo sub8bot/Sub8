@@ -122,6 +122,7 @@ const ORDER = [
   "secret-card-copy.mjs",
   "conversation-tail.mjs", "usage-limit.mjs", "steering.mjs",
   "interrupted.mjs",
+  "desk-limits.mjs",
 ];
 
 function runOne(file) {

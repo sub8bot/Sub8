@@ -3950,12 +3950,16 @@ app.post("/api/bots/:id/choice", async (req, res) => {
       note = r.ok ? `Done — this computer now allows ${r.pids} processes.` : `Couldn't raise it: ${r.error}`;
     } else if (selectedId === "increase" && ctx?.container && ctx.ramMb) {
       const r = await vm.raiseDeskResources(ctx.container, ctx.ramMb);
-      note = r.ok ? `Done — this computer now has ${r.memory} memory and a ${r.pids}-process limit.` : `Couldn't raise it: ${r.error}`;
+      note = !r.ok
+        ? `Couldn't raise it: ${r.error}`
+        : r.clamped
+        ? `Raised as far as fits: this computer now has ${r.memory} memory (${r.cpus} CPU) and a ${r.pids}-process limit. ${r.requested} does not fit next to the other computers in ${vm.deskRuntimeName()}.`
+        : `Done. This computer now has ${r.memory} memory (${r.cpus} CPU) and a ${r.pids}-process limit.`;
       await store.patchBot(bot.id, (b) => {
         if (b.vm && ctx.ramMb) (b.vm as { ramMb?: number }).ramMb = ctx.ramMb;
       });
     } else if (ctx?.action === "ack") {
-      note = "Waiting on the Docker Desktop memory raise.";
+      note = "Okay. I'll keep resetting oversized tabs and rebalancing memory across computers automatically.";
     }
     await store.patchBot(bot.id, (b) => {
       b.awaitingUserSelection = false;
@@ -4543,6 +4547,8 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
     if (current) busyIds.delete(botId);
     const live = await store.getBot(botId) as IndexBot | null;
     if (live) broadcast("bot", toClient(live));
+    // Turn boundary: the best moment to reset a tab that has grown too large.
+    if (current && live?.vm?.container && live.vm.status === "running") deskTabCheck(live.vm.container).catch(() => {});
     if (leftover.length && !ac.signal.aborted) runLeftover(botId, leftover);
     else if (leftover.length) {
       noteDelivery(botId, leftover.map((n) => n.messageId).filter((x): x is string => Boolean(x)), "stopped");
@@ -4761,9 +4767,10 @@ store.loadSettings().then((s0) => applyDeskMemorySetting(s0 as { deskMemory?: un
  * failure surfaced as nonsense ("I can't install screenshot tools") — nothing
  * knew the ceiling existed. Every minute: for each running local desk, read its
  * cgroup usage; near a limit, offer the user an upgrade as a choice card from
- * that desk's lead. When Docker Desktop's VM itself is the ceiling (7.7 GB of a
- * 128 GB Mac), say exactly that and where to raise it — that one is a human
- * action. One card per container per hour; acting on it is the intent handler.
+ * that desk's lead. When the Docker VM itself (Colima or Docker Desktop) is the
+ * ceiling, say so and that Sub8 handles it: oversized tabs are reset and caps
+ * rebalanced automatically (deskUpkeep). One card per container per hour;
+ * acting on it is the intent handler.
  */
 const deskPressureCardAt = new Map<string, number>();
 setInterval(async () => {
@@ -4782,12 +4789,13 @@ setInterval(async () => {
       const owner = mates.find((b) => b.teamRole === "chief") || mates[0]!;
       if (owner.awaitingUserSelection) continue;
       deskPressureCardAt.set(container, Date.now());
+      if (st.pressure === "memory") deskTabCheck(container, mates).catch(() => {});
       const nextRamMb = Math.min(16384, Math.max(4096, (st.memMaxMb || 2048) * 2));
       const nextPids = Math.min(8192, Math.max(1024, (st.pidsMax || 768) * 2));
-      const vmCeiling = st.vmTotalMb > 0 && nextRamMb > st.vmTotalMb * 0.8;
+      const vmCeiling = st.budgetMb > 0 && nextRamMb > st.budgetMb * 0.8;
       const facts = `memory ${st.memUsedMb}/${st.memMaxMb || "∞"} MiB, processes ${st.pids}/${st.pidsMax || "∞"}`;
       // Pids pressure is cheap to fix (raise the process limit, live, no VM
-      // impact). Only MEMORY pressure can hit the Docker Desktop VM ceiling.
+      // impact). Only MEMORY pressure can hit the Docker VM ceiling.
       const card = st.pressure === "pids"
         ? {
             id: `dr${Date.now()}`,
@@ -4810,8 +4818,8 @@ setInterval(async () => {
             id: `dr${Date.now()}`,
             role: "assistant",
             kind: "choices",
-            content: `My computer is near its limits (${facts}) — and the real ceiling is Docker Desktop itself: it only gives Docker ${(st.vmTotalMb / 1024).toFixed(1)} GB of this Mac's ${(st.hostTotalMb / 1024).toFixed(0)} GB.`,
-            hint: "Raise it in Docker Desktop → Settings → Resources → Memory (16 GB is comfortable), then Apply & Restart. I can't change that setting myself.",
+            content: `My computer is near its limits (${facts}). The ceiling is ${st.runtime} itself: it gives Docker ${(st.vmTotalMb / 1024).toFixed(1)} GB of this Mac's ${(st.hostTotalMb / 1024).toFixed(0)} GB, shared by every computer.`,
+            hint: "Nothing to do: I reset tabs that have grown too large and rebalance memory across computers automatically, live, without restarting anything.",
             choices: [{ id: "ack", label: "Got it" }],
             pending: true,
             context: { intent: "desk-resources", container, action: "ack" },
@@ -4824,7 +4832,7 @@ setInterval(async () => {
             role: "assistant",
             kind: "choices",
             content: `My computer is near its limits (${facts}). Give it more room?`,
-            hint: `Raises this computer to ${(nextRamMb / 1024).toFixed(0)} GB memory and a matching process limit, live — nothing restarts.`,
+            hint: `Raises this computer to ${(nextRamMb / 1024).toFixed(0)} GB memory (as much as fits next to the other computers) with matching CPU and process limits, live. Nothing restarts.`,
             choices: [
               { id: "increase", label: `Increase to ${(nextRamMb / 1024).toFixed(0)} GB` },
               { id: "keep", label: "Keep as is" },
@@ -5009,6 +5017,7 @@ async function provision(id: string): Promise<void> {
         }
       } else {
         broadcast("bot", toClient(live));
+        vm.rebalanceDeskCaps().catch(() => {});
       }
       vm.screenshotContainer(info.container, vm.computerPreviewPath(row!.id)).catch(() => {});
     }
@@ -5077,11 +5086,50 @@ async function resumePausedByQuit() {
   return n;
 }
 
+/**
+ * Check one desk for a Chrome tab that has grown too large and reset it
+ * (vm.resetHeavyChromeTabs). Chromes of bots under Take control are never
+ * touched. Idle bots' Chromes are reset at the normal thresholds (the turn
+ * boundary); a mid-turn bot's Chrome only as a backstop near an OOM kill,
+ * which is worse for the turn than a reloaded tab.
+ */
+async function deskTabCheck(container: string, mates?: readonly IndexBot[]): Promise<void> {
+  const all = mates || ((await store.loadBots()) as IndexBot[]).filter((b) => b.vm?.container === container);
+  const onDesk = all.filter((b) => b.vm?.container === container);
+  const portOf = (b: IndexBot) => vm.debugPortFor(vm.displayNum(b as vm.Bot));
+  const human = onDesk.filter((b) => isHumanControl(b.id)).map(portOf);
+  const busy = onDesk.filter((b) => busyIds.has(b.id)).map(portOf);
+  let r = await vm.resetHeavyChromeTabs(container, { mode: "turn-end", skipPorts: [...human, ...busy] });
+  if (!r.reset && busy.length) r = await vm.resetHeavyChromeTabs(container, { mode: "backstop", skipPorts: human });
+  if (!r.reset) return;
+  const owner = onDesk.find((b) => portOf(b) === r.port) || onDesk.find((b) => b.teamRole === "chief") || onDesk[0];
+  if (owner) broadcast("log", { botId: owner.id, m: `Reset a Chrome tab that had grown to ${r.rssMb} MB` });
+}
+
+const DESK_UPKEEP_MS = 5 * 60 * 1000;
+let deskUpkeepAt = 0;
+let deskUpkeepRunning = false;
+
+/** Low-cadence desk upkeep from ensureDesktops: fit every cap in the VM, then reset any tab near an OOM kill. */
+async function deskUpkeep(bots: readonly IndexBot[]): Promise<void> {
+  if (deskUpkeepRunning || Date.now() - deskUpkeepAt < DESK_UPKEEP_MS) return;
+  deskUpkeepRunning = true;
+  deskUpkeepAt = Date.now();
+  try {
+    await vm.rebalanceDeskCaps().catch((err) => console.error("rebalanceDeskCaps", err));
+    const containers = new Set(bots.filter((b) => b.vm?.container && b.vm.status === "running").map((b) => b.vm!.container as string));
+    for (const c of containers) await deskTabCheck(c, bots).catch(() => {});
+  } finally {
+    deskUpkeepRunning = false;
+  }
+}
+
 async function ensureDesktops() {
   const dock = await vm.dockerStatus();
   if (!dock.ok) return dock;
   const [bots, list] = await Promise.all([store.loadBots() as Promise<IndexBot[]>, vm.listLocalbotStates()]);
   if (list.stuck) return dock;
+  deskUpkeep(bots).catch(() => {});
   for (const bot of bots) {
     if (deletedIds.has(bot.id) || isHumanControl(bot.id) || provisioning.has(bot.id)) continue;
     if (!bot.vm?.computerId) {

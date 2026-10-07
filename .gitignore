@@ -116,4 +116,5 @@ plan/
 /server/vault.mjs
 /server/vault-sync.mjs
 /server/vm.mjs
+/server/desk-limits.mjs
 agent-test-suite/

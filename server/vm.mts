@@ -21,6 +21,22 @@ import {
   streamPortForDisplay,
 } from "@sub8/desk-ports";
 import { deskRunArgs, limitsFromRamMb } from "@sub8/desk-runtime";
+import {
+  allocateDeskCaps,
+  budgetFromMemTotal,
+  CAP_STEP_MB,
+  cpusForMemory,
+  decideTabReset,
+  DESK_FLOOR_MB,
+  dockerRuntimeName,
+  memoryUpdateArgs,
+  memString,
+  parseChromeRenderers,
+  parseMemMb,
+  resettablePages,
+  TAB_RESET_INTERVAL_MS,
+} from "./desk-limits.mjs";
+import type { DeskSizing, DevtoolsTarget } from "./desk-limits.mjs";
 
 import type { ChildProcess, SpawnOptions, StdioNull, StdioOptions, StdioPipe } from "node:child_process";
 import type { Server } from "node:net";
@@ -528,13 +544,48 @@ export interface DeskResourceStatus {
   memMaxMb: number;
   pids: number;
   pidsMax: number;
-  /** Docker Desktop's whole VM — the real ceiling for ALL desks combined. */
+  /** The Docker VM's whole memory (Colima or Docker Desktop): the real ceiling for ALL desks combined. */
   vmTotalMb: number;
+  /** What desks may share: vmTotalMb minus VM_RESERVE_MB. */
+  budgetMb: number;
   hostTotalMb: number;
+  /** "Colima" or "Docker Desktop", for user-facing text. */
+  runtime: string;
   pressure: "" | "pids" | "memory";
 }
 
-let vmTotalMbCache = 0;
+/** "Colima" when the docker CLI Sub8 uses points at Colima, else "Docker Desktop". */
+export function deskRuntimeName(): string {
+  let context = process.env.DOCKER_CONTEXT || "";
+  if (!context) {
+    try {
+      const home = process.env.HOME || os.homedir() || "";
+      const cfg = JSON.parse(fsSync.readFileSync(path.join(home, ".docker", "config.json"), "utf8")) as { currentContext?: string };
+      context = String(cfg.currentContext || "");
+    } catch {
+      /* no config: the host decides */
+    }
+  }
+  return dockerRuntimeName({ dockerHost: resolveDockerHost() || process.env.DOCKER_HOST || "", context });
+}
+
+const VM_MEM_CACHE_MS = 60_000;
+let vmMemCache = { at: 0, totalMb: 0 };
+
+/** Docker VM MemTotal in MiB, cached briefly (0 when docker info fails). */
+export async function dockerVmTotalMb({ force = false }: { force?: boolean } = {}): Promise<number> {
+  if (!force && vmMemCache.totalMb && Date.now() - vmMemCache.at < VM_MEM_CACHE_MS) return vmMemCache.totalMb;
+  const info = await docker(["info", "--format", "{{.MemTotal}}"], { timeout: 15_000 });
+  const totalMb = Math.floor(Number(String(info.out || "").trim()) / 1048576) || 0;
+  if (totalMb) vmMemCache = { at: Date.now(), totalMb };
+  return totalMb || vmMemCache.totalMb;
+}
+
+/** What all desks may share: VM memory minus the VM's own reserve. 0 when unknown. */
+export async function deskMemoryBudgetMb(): Promise<number> {
+  const total = await dockerVmTotalMb();
+  return total ? budgetFromMemTotal(total * 1048576) : 0;
+}
 
 export async function deskResourceStatus(container: string): Promise<DeskResourceStatus | null> {
   const read = await docker([
@@ -543,10 +594,7 @@ export async function deskResourceStatus(container: string): Promise<DeskResourc
   ]);
   if (read.code !== 0) return null;
   const [memCur = "0", memMax = "max", pidsCur = "0", pidsMax = "max"] = String(read.out || "").trim().split(/\s+/);
-  if (!vmTotalMbCache) {
-    const info = await docker(["info", "--format", "{{.MemTotal}}"]);
-    vmTotalMbCache = Math.round(Number(String(info.out || "").trim()) / 1048576) || 0;
-  }
+  const vmTotalMb = await dockerVmTotalMb().catch(() => 0);
   const memUsedMb = Math.round(Number(memCur) / 1048576) || 0;
   const memMaxMb = memMax === "max" ? 0 : Math.round(Number(memMax) / 1048576) || 0;
   const pids = Number(pidsCur) || 0;
@@ -559,26 +607,297 @@ export async function deskResourceStatus(container: string): Promise<DeskResourc
     memMaxMb,
     pids,
     pidsMax: pidsMaxN,
-    vmTotalMb: vmTotalMbCache,
+    vmTotalMb,
+    budgetMb: vmTotalMb ? budgetFromMemTotal(vmTotalMb * 1048576) : 0,
     hostTotalMb: Math.round(os.totalmem() / 1048576),
+    runtime: deskRuntimeName(),
     pressure,
   };
 }
 
-/** Live raise (no restart): docker update the memory + pids rung. */
-export async function raiseDeskResources(container: string, ramMb: number): Promise<{ ok: boolean; memory: string; pids: number; error?: string }> {
+/**
+ * What each desk would like, by container. Membership sets the member size
+ * (deskMemory(n)); a manual raise sets a floor on top of it, so adding or
+ * removing a teammate never undoes a raise the user asked for.
+ */
+const deskMemberWantMb = new Map<string, number>();
+const deskRaisedWantMb = new Map<string, number>();
+
+function deskWantMb(name: string): number {
+  return Math.max(deskMemberWantMb.get(name) || parseMemMb(deskMemory()) || 2048, deskRaisedWantMb.get(name) || 0);
+}
+
+interface RunningDesk {
+  name: string;
+  capMb: number;
+  usedMb: number | null;
+  paused: boolean;
+}
+
+/** Every running localbot-* desk (all installs share the one VM), with cap and memory.current. */
+export async function readRunningDesks(): Promise<RunningDesk[]> {
+  const ps = await docker(["ps", "--filter", "name=^localbot-", "--format", "{{.Names}}"], { timeout: 15_000 });
+  if (!ps.ok) return [];
+  const names = String(ps.out || "").split(/\s+/).filter((n) => /^localbot-[A-Za-z0-9_.-]+$/.test(n));
+  if (!names.length) return [];
+  const insp = await docker(["inspect", "--format", "{{.Name}} {{.HostConfig.Memory}} {{.State.Paused}}", ...names], { timeout: 15_000 });
+  const out: RunningDesk[] = [];
+  for (const line of String(insp.out || "").split("\n")) {
+    const [rawName = "", mem = "0", paused = "false"] = line.trim().split(/\s+/);
+    const name = rawName.replace(/^\//, "");
+    if (!names.includes(name)) continue;
+    out.push({ name, capMb: Math.round(Number(mem) / 1048576) || 0, usedMb: null, paused: paused === "true" });
+  }
+  for (const d of out) {
+    if (d.paused) continue;
+    const r = await docker(["exec", d.name, "cat", "/sys/fs/cgroup/memory.current"], { timeout: 10_000 });
+    const bytes = Number(String(r.out || "").trim());
+    if (r.ok && Number.isFinite(bytes) && bytes > 0) d.usedMb = Math.round(bytes / 1048576);
+  }
+  return out;
+}
+
+export interface DeskCapChange {
+  name: string;
+  fromMb: number;
+  toMb: number;
+  ok: boolean;
+  error?: string;
+}
+
+export interface RebalanceResult {
+  budgetMb: number;
+  totalMb: number;
+  overBudget: boolean;
+  caps: Record<string, number>;
+  changes: DeskCapChange[];
+}
+
+/** Apply a plan live: shrink first, then grow, so the sum never passes the budget mid-way. */
+async function applyDeskCaps(desks: readonly RunningDesk[], caps: ReadonlyMap<string, number>): Promise<DeskCapChange[]> {
+  const moves = desks
+    .map((d) => ({ d, to: caps.get(d.name) || 0 }))
+    .filter(({ d, to }) => to > 0 && Math.abs(to - d.capMb) >= CAP_STEP_MB)
+    .sort((a, b) => (a.to - a.d.capMb) - (b.to - b.d.capMb));
+  const changes: DeskCapChange[] = [];
+  for (const { d, to } of moves) {
+    const r = await docker(memoryUpdateArgs(d.name, to), { timeout: 15_000 });
+    changes.push({ name: d.name, fromMb: d.capMb, toMb: to, ok: r.code === 0, ...(r.code === 0 ? {} : { error: String(r.out || "docker update failed").slice(0, 200) }) });
+  }
+  return changes;
+}
+
+/**
+ * Give every running desk a memory cap (and matching CPU) so the caps add up
+ * to no more than the Docker VM can hold. The busiest desk is sized first;
+ * idle desks keep their usage plus headroom (1 GiB floor). Applied live with
+ * docker update, never a restart. `priority` sizes one desk first (a raise),
+ * with `wantMb` overriding what it would otherwise get.
+ */
+export async function rebalanceDeskCaps({
+  priority,
+  wantMb,
+  dryRun = false,
+  onLog,
+}: {
+  priority?: string | undefined;
+  wantMb?: number | undefined;
+  dryRun?: boolean | undefined;
+  onLog?: ((m: string) => void) | undefined;
+} = {}): Promise<RebalanceResult | null> {
+  const budgetMb = await deskMemoryBudgetMb();
+  if (!budgetMb) return null;
+  const desks = await readRunningDesks();
+  if (!desks.length) return { budgetMb, totalMb: 0, overBudget: false, caps: {}, changes: [] };
+  const sizing: DeskSizing[] = desks.map((d) => ({
+    name: d.name,
+    usedMb: d.usedMb,
+    capMb: d.capMb,
+    wantMb: d.name === priority && wantMb ? wantMb : deskWantMb(d.name),
+    priority: d.name === priority,
+  }));
+  const plan = allocateDeskCaps(sizing, budgetMb);
+  const changes = dryRun ? [] : await applyDeskCaps(desks, plan.caps);
+  for (const c of changes) {
+    const line = `desk caps: ${c.name} ${memString(c.fromMb)} -> ${memString(c.toMb)} (cpus ${cpusForMemory(c.toMb)})${c.ok ? "" : ` failed: ${c.error}`}`;
+    if (onLog) onLog(line);
+    else console.log(line);
+  }
+  if (plan.overBudget) {
+    const line = `desk caps: ${plan.totalMb} MiB across desks is over the ${budgetMb} MiB the VM allows; nothing raised`;
+    if (onLog) onLog(line);
+    else console.log(line);
+  }
+  return { budgetMb, totalMb: plan.totalMb, overBudget: plan.overBudget, caps: Object.fromEntries(plan.caps), changes };
+}
+
+/**
+ * The memory a NEW desk may start with: its wanted size, clamped to what the
+ * running desks leave in the budget (1 GiB floor). Other desks are not
+ * touched here; rebalanceDeskCaps after the create evens things out.
+ */
+export async function deskCreateMemoryMb(wantMb: number = parseMemMb(deskMemory()) || 2048): Promise<number> {
+  const budgetMb = await deskMemoryBudgetMb().catch(() => 0);
+  if (!budgetMb) return wantMb;
+  const desks = await readRunningDesks().catch(() => []);
+  const plan = allocateDeskCaps(
+    [...desks.map((d) => ({ name: d.name, usedMb: d.usedMb, capMb: d.capMb, wantMb: deskWantMb(d.name) })), { name: "\0new", usedMb: 0, capMb: 0, wantMb }],
+    budgetMb,
+  );
+  return Math.min(wantMb, plan.caps.get("\0new") || DESK_FLOOR_MB);
+}
+
+/**
+ * Live raise (no restart): memory, CPU and pids from the requested rung,
+ * clamped so every desk still fits in the Docker VM. When the full raise does
+ * not fit, it raises as far as fits and says so (`clamped`).
+ */
+export async function raiseDeskResources(
+  container: string,
+  ramMb: number,
+): Promise<{ ok: boolean; memory: string; cpus: string; pids: number; clamped: boolean; requested: string; error?: string }> {
   const l = limitsFromRamMb(ramMb);
-  const r = await docker(["update", "--memory", l.memory, "--memory-swap", l.memorySwap, "--pids-limit", String(l.pids), container]);
-  return { ok: r.code === 0, memory: l.memory, pids: l.pids, ...(r.code === 0 ? {} : { error: String(r.out || "docker update failed").slice(0, 200) }) };
+  const requestedMb = parseMemMb(l.memory);
+  deskRaisedWantMb.set(container, Math.max(deskRaisedWantMb.get(container) || 0, requestedMb));
+  let gotMb = requestedMb;
+  let error = "";
+  const plan = await rebalanceDeskCaps({ priority: container, wantMb: requestedMb }).catch((err) => {
+    error = String(err?.message || err);
+    return null;
+  });
+  if (plan) {
+    gotMb = plan.caps[container] || requestedMb;
+    const mine = plan.changes.find((c) => c.name === container);
+    if (mine && !mine.ok) error = mine.error || "docker update failed";
+  } else {
+    // Budget unknown (docker info failed): the plain rung, CPU included.
+    const r = await docker(memoryUpdateArgs(container, requestedMb), { timeout: 15_000 });
+    if (r.code !== 0) error = String(r.out || "docker update failed").slice(0, 200);
+  }
+  const pidsR = await docker(["update", "--pids-limit", String(l.pids), container], { timeout: 15_000 });
+  if (!error && pidsR.code !== 0) error = String(pidsR.out || "docker update failed").slice(0, 200);
+  return {
+    ok: !error,
+    memory: memString(gotMb),
+    cpus: cpusForMemory(gotMb),
+    pids: l.pids,
+    clamped: gotMb < requestedMb,
+    requested: l.memory,
+    ...(error ? { error } : {}),
+  };
 }
 
 /** Raise ONLY the process (pids) limit, live — the cheap fix for pids pressure.
  * Unlike raiseDeskResources this does not touch memory, so it never runs into
- * the Docker Desktop VM ceiling. */
+ * the Docker VM ceiling. */
 export async function raiseDeskPids(container: string, pids: number): Promise<{ ok: boolean; pids: number; error?: string }> {
   const n = Math.max(256, Math.min(8192, Math.round(pids)));
   const r = await docker(["update", "--pids-limit", String(n), container]);
   return { ok: r.code === 0, pids: n, ...(r.code === 0 ? {} : { error: String(r.out || "docker update failed").slice(0, 200) }) };
+}
+
+const lastTabResetAt = new Map<string, number>();
+
+export interface TabResetResult {
+  reset: boolean;
+  reason: string;
+  rssMb?: number;
+  port?: number;
+  urls?: string[];
+}
+
+/** Python run inside the desk: JS heap per page, to pick the heavy tab when one Chrome has several. */
+const HEAP_PROBE_PY = [
+  "import importlib.machinery, importlib.util, json, sys",
+  "spec = importlib.util.spec_from_loader('one', importlib.machinery.SourceFileLoader('one', '/usr/local/bin/chrome-one-tab'))",
+  "one = importlib.util.module_from_spec(spec); spec.loader.exec_module(one)",
+  "out = {}",
+  "for tid in sys.argv[2:]:",
+  "    try:",
+  "        r = one.cdp_call('ws://127.0.0.1:%s/devtools/page/%s' % (sys.argv[1], tid), 'Runtime.getHeapUsage', timeout=4) or {}",
+  "        out[tid] = int(r.get('usedSize') or 0)",
+  "    except Exception:",
+  "        out[tid] = -1",
+  "print(json.dumps(out))",
+].join("\n");
+
+/**
+ * Reset a Chrome tab that has grown too large (a long-lived X timeline grows
+ * ~1.3 GB/hour), before the kernel OOM-kills it. Reads renderer RSS inside the
+ * desk; over threshold (decideTabReset), it reopens the heavy page on the same
+ * URL through the DevTools HTTP endpoint (new first, then close the old one,
+ * so the Chrome never runs out of windows). Logins live in the profile, so the
+ * page comes back signed in. Never kills Chrome, never touches the Chromes on
+ * `skipPorts` (Take control), at most once per desk per TAB_RESET_INTERVAL_MS.
+ */
+export async function resetHeavyChromeTabs(
+  container: string,
+  {
+    mode = "turn-end",
+    skipPorts = [],
+    onLog,
+  }: {
+    mode?: "turn-end" | "backstop" | undefined;
+    skipPorts?: readonly number[] | undefined;
+    onLog?: ((m: string) => void) | undefined;
+  } = {},
+): Promise<TabResetResult> {
+  if (!container) return { reset: false, reason: "no desk" };
+  const now = Date.now();
+  const last = lastTabResetAt.get(container);
+  if (last && now - last < TAB_RESET_INTERVAL_MS) return { reset: false, reason: "reset recently" };
+  const read = await docker([
+    "exec", container, "sh", "-c",
+    "cat /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max 2>/dev/null; echo ---; ps -eo pid=,ppid=,rss=,args= 2>/dev/null",
+  ], { timeout: 15_000 });
+  if (read.code !== 0) return { reset: false, reason: "desk unreadable" };
+  const [head = "", psOut = ""] = String(read.out || "").split(/^---$/m);
+  const [memCur = "0", memMax = "max"] = head.trim().split(/\s+/);
+  const memUsedMb = Math.round(Number(memCur) / 1048576) || 0;
+  const memMaxMb = memMax === "max" ? 0 : Math.round(Number(memMax) / 1048576) || 0;
+  const decision = decideTabReset({
+    renderers: parseChromeRenderers(psOut),
+    memUsedMb,
+    memMaxMb,
+    mode,
+    now,
+    lastResetAt: last,
+    skipPorts,
+  });
+  if (!decision.reset) return { reset: false, reason: decision.reason };
+  const base = `http://127.0.0.1:${decision.port}`;
+  const listed = await docker(["exec", container, "curl", "-sf", "--max-time", "4", `${base}/json/list`], { timeout: 10_000 });
+  let targets: DevtoolsTarget[] = [];
+  try {
+    targets = JSON.parse(String(listed.out || "[]")) as DevtoolsTarget[];
+  } catch {
+    targets = [];
+  }
+  let pages = resettablePages(targets);
+  if (!pages.length) return { reset: false, reason: "no page to reset" };
+  if (pages.length > 1) {
+    const probe = await docker(["exec", container, "python3", "-c", HEAP_PROBE_PY, String(decision.port), ...pages.map((p) => p.id)], { timeout: 30_000 });
+    try {
+      const heap = JSON.parse(String(probe.out || "").trim().split("\n").pop() || "{}") as Record<string, number>;
+      const best = [...pages].sort((a, b) => (heap[b.id] ?? -1) - (heap[a.id] ?? -1))[0];
+      if (best && (heap[best.id] ?? -1) > 0) pages = [best];
+    } catch {
+      /* no heap reading: reset every page of this Chrome */
+    }
+  }
+  lastTabResetAt.set(container, now);
+  const urls: string[] = [];
+  for (const page of pages) {
+    const opened = await docker(["exec", container, "curl", "-sf", "--max-time", "5", "-X", "PUT", `${base}/json/new?${encodeURIComponent(page.url!)}`], { timeout: 15_000 });
+    if (!opened.ok) continue;
+    await docker(["exec", container, "curl", "-sf", "--max-time", "4", `${base}/json/close/${encodeURIComponent(page.id)}`], { timeout: 10_000 });
+    urls.push(page.url!);
+  }
+  if (!urls.length) return { reset: false, reason: "reopen failed" };
+  const line = `tab reset: ${container} port ${decision.port} renderer ${decision.rssMb} MB (${decision.reason}; desk ${memUsedMb}/${memMaxMb} MiB) reopened ${urls.join(", ")}`;
+  if (onLog) onLog(line);
+  else console.log(line);
+  return { reset: true, reason: decision.reason, rssMb: decision.rssMb, port: decision.port, urls };
 }
 
 export function deskShm(): string {
@@ -598,6 +917,7 @@ export function deskCreateArgs({
   port,
   image,
   harnessPort,
+  memory,
 }: {
   // `name` and `port` are required in practice — they are optional only because
   // the whole argument is, so a bare deskCreateArgs() cannot throw. The two
@@ -607,20 +927,21 @@ export function deskCreateArgs({
   port?: number | undefined;
   image?: string | undefined;
   harnessPort?: number | null | undefined;
+  /** Start cap (deskCreateMemoryMb: clamped to the VM budget); defaults to deskMemory(). */
+  memory?: string | undefined;
 } = {}): string[] {
   const img = image || resolvedImage || SLIM_IMAGE;
-  const mem = deskMemory();
-  // Map known deskMemory() strings onto rungs; unknown LOCALBOT_MEMORY overlays
-  // memory/memorySwap onto the 2 GB rung (no second memory parser).
-  const ramMb =
-    mem === "1g" ? 1024 :
-    mem === "2g" ? 2048 :
-    mem === "3g" ? 3072 :
-    mem === "4g" ? 4096 :
-    mem === "5g" ? 5120 :
-    mem === "6g" ? 6144 :
-    2048;
-  const limits = { ...limitsFromRamMb(ramMb), memory: mem, memorySwap: mem, shm: deskShm() };
+  const mem = memory || deskMemory();
+  // pids come from the size the desk is meant to have (a start clamped by the
+  // VM budget must not also starve it of processes); CPU follows the memory it
+  // actually gets, the rung at or below it.
+  const limits = {
+    ...limitsFromRamMb(parseMemMb(deskMemory()) || 2048),
+    memory: mem,
+    memorySwap: mem,
+    cpus: cpusForMemory(mem),
+    shm: deskShm(),
+  };
   // Callers pass a real port; harnessHostPort(port) is null only when port is missing.
   const hport = (harnessPort || harnessHostPort(port))!;
   return deskRunArgs({
@@ -2366,7 +2687,12 @@ export async function startVm(
   const port = await allocatePort();
   const hport = await allocateHarnessPort(harnessHostPort(port));
   onLog(`Starting computer on port ${port}…`);
-  const runr = await docker(deskCreateArgs({ name, volume, port, image: resolvedImage, harnessPort: hport }), { timeout: 60_000 });
+  // Start within what the Docker VM has left; rebalanceDeskCaps (after the
+  // desk is up) evens the caps out across every desk.
+  const startMb = await deskCreateMemoryMb().catch(() => 0);
+  const startMem = startMb ? memString(startMb) : undefined;
+  if (startMb && startMb < (parseMemMb(deskMemory()) || 0)) onLog(`Starting with ${startMem} memory, what the Docker VM has room for.`);
+  const runr = await docker(deskCreateArgs({ name, volume, port, image: resolvedImage, harnessPort: hport, memory: startMem }), { timeout: 60_000 });
   if (!runr.ok) {
     if (isContainerNameConflict(runr.out)) {
       invalidateDockerCache();
@@ -3832,10 +4158,16 @@ export async function bindDisplayStreams(
   return bots;
 }
 
+/**
+ * Size a desk for its member count. This only records what the desk wants;
+ * rebalanceDeskCaps sets the actual cap (and CPU), so a manual raise and the
+ * VM budget both still hold, and a desk is never shrunk below what the
+ * rebalance gave it just because a teammate joined or left.
+ */
 export async function scaleDeskMemory(container: string | null | undefined, memberCount?: unknown): Promise<void> {
   if (!container) return;
-  const mem = deskMemory(memberCount);
-  await docker(["update", "--memory", mem, "--memory-swap", mem, container], { timeout: 15_000 });
+  deskMemberWantMb.set(container, parseMemMb(deskMemory(memberCount)) || 2048);
+  await rebalanceDeskCaps();
 }
 
 export async function pageAgent(

@@ -16,7 +16,7 @@ const data = path.join(tmp, "data");
 
 fs.mkdirSync(path.join(asar, "server"), { recursive: true });
 fs.mkdirSync(path.join(unpacked, "server"), { recursive: true });
-for (const f of ["mcp-sub8", "channel-desk", "vm", "vault", "paths", "isolation", "context", "teams", "memory", "code-agent", "update-state", "read-file", "subagents", "teammate"]) {
+for (const f of ["mcp-sub8", "channel-desk", "vm", "desk-limits", "vault", "paths", "isolation", "context", "teams", "memory", "code-agent", "update-state", "read-file", "subagents", "teammate"]) {
   fs.copyFileSync(path.join(root, "server", `${f}.mjs`), path.join(asar, "server", `${f}.mjs`));
 }
 // The bundle ships packages/<name>/{dist,package.json}, never node_modules — so
