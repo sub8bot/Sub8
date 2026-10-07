@@ -119,7 +119,7 @@ const ORDER = [
   "conversation-safety.mjs",
   "durability.mjs",
   "secret-card-copy.mjs",
-  "conversation-tail.mjs", "usage-limit.mjs",
+  "conversation-tail.mjs", "usage-limit.mjs", "steering.mjs",
   "interrupted.mjs",
 ];
 

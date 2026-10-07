@@ -118,6 +118,8 @@ interface Message extends CodeAgentSession {
   ts?: number;
   hidden?: boolean;
   pending?: boolean;
+  /** A line sent while the bot worked: did the running task get it (server/steer.mts)? */
+  delivery?: "delivered" | "queued" | "stopped" | null;
   choices?: Choice[];
   selected?: Choice | null;
   allowCustom?: boolean;
@@ -2514,6 +2516,7 @@ function paintChat(bot: Bot | null | undefined): void {
     if (m.role === "user") {
       const fromMate = m.speakerId && m.speakerId !== "user" && m.speakerName;
       html.push(fromMate ? namedBubble(m, false) : `<div class="bubble user" data-mid="${escapeHtml(m.id || "")}">${escapeHtml(m.content)}</div>`);
+      if (!fromMate) html.push(deliveryNoteHtml(bot, m));
       i += 1;
       continue;
     }
@@ -2544,7 +2547,6 @@ function paintChat(bot: Bot | null | undefined): void {
     }
     i += 1;
   }
-  const lastUser = [...rows].reverse().find((m) => m.role === "user");
   const lastRow = rows.at(-1);
   if (bot.busy && !liveActivity) {
     html.push(workingRowHtml(bot));
@@ -2556,13 +2558,26 @@ function paintChat(bot: Bot | null | undefined): void {
       <div class="notice-actions"><button type="button" class="pill notice-act" data-act="retry-turn" data-id="${escapeHtml(bot.id)}">Retry</button></div>
     </div>`);
   }
-  if (lastUser && lastUser === lastRow && bot.busy && queuedWhileBusy.get(bot.id) === String(lastUser.content || "")) {
-    html.push(`<div class="queued-note">Delivered while ${escapeHtml(bot.name)} is working. It will fold this in.</div>`);
-  }
   for (const card of pendingChoices) html.push(renderChoiceCard(card));
   const brainCard = isCloudPlace() && !cloudBrainReady(bot) ? cloudBrainHtml(bot) : "";
   paintThreadHtml(thread, bot.id, brainCard + html.join(""));
   syncComposerBusy(bot);
+}
+
+/**
+ * The small line under a message sent while the bot was working: whether the
+ * running task has it, or whether it waits for the task to end.
+ */
+function deliveryNoteHtml(bot: Bot, m: Message): string {
+  const name = escapeHtml(bot.name || "the bot");
+  const note = (text: string, cls = "") => `<div class="queued-note${cls}" role="status">${text}</div>`;
+  if (m.delivery === "delivered") return note(`Delivered to ${name} mid-task`);
+  if (m.delivery === "queued") return note(`Queued: ${name} will read it when the current task ends`);
+  if (m.delivery === "stopped") return note("Not delivered: the task was stopped. Send it again if it still matters.", " is-warn");
+  if (bot.busy && !isCloudPlace() && queuedWhileBusy.get(bot.id) === String(m.content || "")) {
+    return note(`Sending to ${name} mid-task…`);
+  }
+  return "";
 }
 
 /**
@@ -2596,7 +2611,7 @@ function paintComposerCopy(bot: Bot): void {
   form?.classList.toggle("is-busy", busy);
   if (input && !input.disabled) {
     input.placeholder = busy
-      ? `Add a note for ${worker.name} while it works`
+      ? `Steer ${worker.name} while it works`
       : inChannel
         ? `Message ${lead?.name || "the lead"} · @name to reach a teammate`
         : mates.length
@@ -2606,7 +2621,7 @@ function paintComposerCopy(bot: Bot): void {
   const hint = $(".composer-hint");
   if (hint) {
     hint.textContent = busy
-      ? `${worker.name} is working. A message now reaches it mid-task. Stop to interrupt.`
+      ? `${worker.name} is working. A message now steers the running task. Stop to interrupt.`
       : mates.length
         ? "Enter to send · @Name talks to that Bot · Shift+Enter for a new line"
         : "Enter to send · Shift+Enter for a new line";
@@ -13409,6 +13424,20 @@ function listen(): void {
       if (botId === state.selected && $("#thread")) {
         paintChat(bot);
       } else render();
+    }));
+    es.addEventListener("message-delivery", safe((e: MessageEvent<string>) => {
+      const { botId, ids, state: st } = JSON.parse(e.data) as { botId: string; ids: string[]; state: Message["delivery"] };
+      const bot = state.bots.find((b) => b.id === botId);
+      if (!bot || !Array.isArray(ids)) return;
+      const want = new Set(ids);
+      for (const m of bot.messages || []) {
+        if (m.id && want.has(m.id)) {
+          if (st) m.delivery = st;
+          else delete m.delivery;
+        }
+      }
+      if (isCloudPlace()) return;
+      if (botId === state.selected && $("#thread")) paintChat(bot);
     }));
     es.addEventListener("log", safe((e: MessageEvent<string>) => {
       const { botId, m } = JSON.parse(e.data);

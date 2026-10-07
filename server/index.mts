@@ -49,6 +49,7 @@ import * as cloudDraft from "./cloud/draft.mjs";
 import { attachCloudStreamProxy } from "./cloud/stream-proxy.mjs";
 import { resolveChoice, visibleChoiceReply, applyInternalEmit } from "@sub8/choice";
 import * as spendGuard from "./spend-guard.mjs";
+import { TurnInbox, type DeliveryState, type Nudge } from "./steer.mjs";
 import { activeBotLimit, parseUsageLimit, routinePausedNotice, type BotUsageLimit } from "./usage-limit.mjs";
 import * as mcpRemote from "@sub8/web-fetch/mcp-remote";
 
@@ -3136,7 +3137,27 @@ const turnLocks = new Map<string, Promise<unknown>>();
 const turnEpoch = new Map<string, number>();
 const turnAbort = new Map<string, AbortController>();
 /** Chat lines that arrived while a turn was already running, per bot. */
-const inflightTurns = new Map<string, { nudges: string[] }>();
+const inflightTurns = new Map<string, TurnInbox>();
+
+/**
+ * Show under a user's chat line whether the running task got it ("delivered"),
+ * whether it waits for the task to end ("queued"), or that a Stop dropped it
+ * ("stopped"). null clears the note.
+ */
+function noteDelivery(botId: string, messageIds: string[], state: DeliveryState | "stopped"): void {
+  if (!messageIds.length) return;
+  const want = new Set(messageIds);
+  store
+    .patchBot(botId, (b) => {
+      for (const m of b.messages || []) {
+        if (!m?.id || !want.has(String(m.id))) continue;
+        if (state) (m as { delivery?: string }).delivery = state;
+        else delete (m as { delivery?: string }).delivery;
+      }
+    })
+    .then(() => broadcast("message-delivery", { botId, ids: messageIds, state }))
+    .catch((err) => console.error("note delivery", botId, (err as Error)?.message || err));
+}
 
 /**
  * Team-channel messages waiting for the lead. A message is posted to the
@@ -3454,7 +3475,7 @@ function dispatchToTeammate(toId: string, content: unknown, from: DispatchFrom |
     const prompt = teammate.wrapWorkerDispatch({ who, role, text });
     const inflight = inflightTurns.get(toId);
     if (inflight && followUp) {
-      inflight.nudges.push(prompt);
+      inflight.push({ text: prompt });
       return;
     }
     return runUserTurn(toId, prompt, false, [], { persistUser: false, replyTo: from?.id || null });
@@ -3564,7 +3585,7 @@ async function deliverTeammateReply(toId: string | null | undefined, from: Dispa
   }
   const runReport = (llm: string) => {
     const live = inflightTurns.get(toId);
-    if (live) live.nudges.push(llm);
+    if (live) live.push({ text: llm });
     else enqueueTurn(toId, () => runUserTurn(toId, llm, false, [], { persistUser: false, source: "report" }));
   };
   if (to?.teamRole !== "chief") {
@@ -3874,9 +3895,9 @@ app.post("/api/bots/:id/messages", async (req, res) => {
   const live = inflightTurns.get(bot.id);
   const busy = busyIds.has(bot.id) && live;
   if (busy) {
-    live.nudges.push(userMsg.content);
+    live.push({ text: userMsg.content, messageId: userMsg.id });
     talkWhileWorking(bot.id, userMsg.content).catch(() => {});
-    res.json({ ok: true, queued: true });
+    res.json({ ok: true, queued: true, id: userMsg.id });
     return;
   }
   res.json({ ok: true, queued: false });
@@ -4190,6 +4211,16 @@ app.post("/api/bots/:id/routines/:rid/run", async (req, res) => {
   res.json({ ok: true });
 });
 
+/** Lines that arrived during a turn and were not delivered into it: the next turn. */
+function runLeftover(botId: string, leftover: Nudge[]): void {
+  const ids = leftover.map((n) => n.messageId).filter((x): x is string => Boolean(x));
+  noteDelivery(botId, ids, "queued");
+  enqueueTurn(botId, () => {
+    noteDelivery(botId, ids, null);
+    return runUserTurn(botId, leftover.map((n) => n.text).join("\n"), false, [], { persistUser: false, ...(ids.length ? { messageIds: ids } : {}) });
+  });
+}
+
 async function talkWhileWorking(botId: string, text: string): Promise<void> {
   const bot = await store.getBot(botId) as IndexBot | null;
   const settings = await store.loadSettings();
@@ -4243,7 +4274,9 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
   const ac = new AbortController();
   turnAbort.set(botId, ac);
   busyIds.add(botId);
-  const bag = { nudges: [] as string[] };
+  // Lines the user sends while this turn runs (server/steer.mts): steered into
+  // the live session where the harness allows, otherwise run right after.
+  const bag = new TurnInbox({ onDelivery: (ids, state) => noteDelivery(botId, ids, state) });
   inflightTurns.set(botId, bag);
   // Backstop for a turn that never settles: end it, free the bot, and run
   // whatever the user said meanwhile instead of leaving it in a dead turn.
@@ -4256,7 +4289,7 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
       /* ignore */
     }
     turnAbort.delete(botId);
-    const leftover = bag.nudges.splice(0);
+    const leftover = bag.drain();
     if (inflightTurns.get(botId) === bag) inflightTurns.delete(botId);
     busyIds.delete(botId);
     releaseTurnLock(botId);
@@ -4277,7 +4310,7 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
         if (b) broadcast("bot", toClient(b as IndexBot));
       })
       .catch(() => {});
-    if (leftover.length) enqueueTurn(botId, () => runUserTurn(botId, leftover.join("\n"), false, [], { persistUser: false }));
+    if (leftover.length) runLeftover(botId, leftover);
   }, TURN_WATCHDOG_MS);
   watchdog.unref?.();
   try {
@@ -4386,7 +4419,8 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
       images,
       persistUser: opts.persistUser !== false,
       signal: ac.signal,
-      pullNudges: () => bag.nudges.splice(0),
+      pullNudges: () => bag.pull(),
+      steering: bag.hooks,
       emit: (event, data) => {
         broadcast(event, { botId, ...(data as Record<string, unknown>) });
         if (event === "harness-auth") {
@@ -4494,7 +4528,7 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
     clearTimeout(watchdog);
     interrupted.clearTurn(botId, turnId).catch(() => {});
     notifiedThisTurn.delete(notifyKey(botId, opts.replyTo));
-    const leftover = bag.nudges.splice(0);
+    const leftover = bag.drain();
     // Only this turn's own state. After a Stop (or the watchdog) a newer turn
     // may already own the bot; clearing ITS busy flag and nudge bag here made
     // the UI show idle mid-turn and dropped what the user typed into it.
@@ -4504,8 +4538,9 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
     if (current) busyIds.delete(botId);
     const live = await store.getBot(botId) as IndexBot | null;
     if (live) broadcast("bot", toClient(live));
-    if (leftover.length && !ac.signal.aborted) {
-      enqueueTurn(botId, () => runUserTurn(botId, leftover.join("\n"), false, [], { persistUser: false }));
+    if (leftover.length && !ac.signal.aborted) runLeftover(botId, leftover);
+    else if (leftover.length) {
+      noteDelivery(botId, leftover.map((n) => n.messageId).filter((x): x is string => Boolean(x)), "stopped");
     }
   }
 }

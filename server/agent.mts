@@ -30,6 +30,7 @@ import { ensureLocalHarness } from "./desk-harness/local.mjs";
 import * as bgShell from "@sub8/shell-exec";
 import { enqueueWake } from "@sub8/wakes";
 import { sendToAgent, sendToAgentContent } from "./teammate.mjs";
+import type { SteeringHooks } from "./steer.mjs";
 
 bgShell.setOnCompleteWake((w) => {
   try {
@@ -489,6 +490,8 @@ export interface RunTurnOptions {
   signal?: AbortSignal | undefined;
   /** Chat lines the user sent while this turn was already running. */
   pullNudges?: (() => string[]) | undefined;
+  /** Mid-turn steering for CLI harnesses (server/steer.mts). */
+  steering?: SteeringHooks | undefined;
   persistUser?: boolean | undefined;
 }
 
@@ -835,7 +838,7 @@ const AUTO_SHOT = new Set([
 
 // The destructuring pattern stays on one line: tsc reprints it verbatim, and a
 // wrapped one would emit a trailing comma the original never had.
-async function tryDeskBrain({ bot, settings, userText, emit, signal }: {
+async function tryDeskBrain({ bot, settings, userText, emit, signal, steering }: {
   bot: AgentBot;
   settings?: AgentSettings | undefined;
   userText: string;
@@ -843,6 +846,7 @@ async function tryDeskBrain({ bot, settings, userText, emit, signal }: {
   signal?: AbortSignal | undefined;
   /** Passed by `runTurn` and read by nobody: the desk harness builds its own prompt. */
   hidden?: boolean | undefined;
+  steering?: SteeringHooks | undefined;
 }): Promise<AgentBot | null> {
   const token = settings?.__internalToken || "";
   const wantEnsure = String(process.env.DESK_HARNESS || "") === "1" || Boolean(bot?.vm?.hostHarnessPort);
@@ -886,6 +890,9 @@ async function tryDeskBrain({ bot, settings, userText, emit, signal }: {
   if (bot.vm && ep.port && ep.via === "desk") bot.vm.harnessPort = ep.port;
   if (bot.vm && ep.port && ep.via === "host") bot.vm.hostHarnessPort = ep.port;
   if (ep.via === "desk" && !(await deskClient.harnessCanTurn(ep.url))) return null;
+  // The in-desk harness takes one request per turn: a line sent meanwhile runs
+  // as the next turn.
+  steering?.unsupported();
   try {
     const events: deskClient.DeskEvent[] = [];
     const result = await deskClient.runDeskTurn({
@@ -930,7 +937,7 @@ function withUserRequest(job: string, userText: string | undefined): string {
   return `${job}\n\nThe user's exact request (keep every detail — do not summarize it away):\n"${asked.slice(0, 4000)}"`;
 }
 
-export async function runTurn({ bot, settings, userText, emit, hidden = false, images = [], signal, pullNudges, persistUser = true }: RunTurnOptions = {} as RunTurnOptions): Promise<AgentBot> {
+export async function runTurn({ bot, settings, userText, emit, hidden = false, images = [], signal, pullNudges, steering, persistUser = true }: RunTurnOptions = {} as RunTurnOptions): Promise<AgentBot> {
   if (!Array.isArray(bot.routines)) bot.routines = [];
   await memory.ensureLayout(bot).catch(() => {});
   if (
@@ -1047,7 +1054,7 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
   // nothing (and spent the wrong quota). Only a grok-build bot goes through it.
   const viaDesk =
     harness.provider === "grok-build"
-      ? await tryDeskBrain({ bot, settings, userText: savedLogin?.did ? `${userText}\n\n${savedLogin.brief}` : userText, emit, signal, hidden })
+      ? await tryDeskBrain({ bot, settings, userText: savedLogin?.did ? `${userText}\n\n${savedLogin.brief}` : userText, emit, signal, hidden, steering })
       : null;
   if (viaDesk) return viaDesk;
 
@@ -1075,6 +1082,7 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
       emit,
       internalToken: settings.__internalToken,
       port: settings.__port,
+      steering,
     });
     if (signal?.aborted) return bot; // the stop handler already said "Stopped."
     const msg = { id: `a${Date.now()}`, role: "assistant", content: text, ts: Date.now() };

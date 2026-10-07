@@ -3799,6 +3799,7 @@ select:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 55%, 
   color: var(--muted);
   margin-top: -4px;
 }
+.queued-note.is-warn { color: #b45309; }
 
 /* "Jump to latest" floats over the bottom of the thread when the reader has scrolled up. */
 .jump-latest-host { position: relative; height: 0; display: flex; justify-content: center; z-index: 3; }

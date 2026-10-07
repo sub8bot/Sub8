@@ -108,6 +108,7 @@ plan/
 /server/teammate.mjs
 /server/teams.mjs
 /server/spend-guard.mjs
+/server/steer.mjs
 /server/tools-catalog.mjs
 /server/update-state.mjs
 /server/update.mjs

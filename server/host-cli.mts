@@ -10,6 +10,8 @@ import * as ctx from "./context.mjs";
 import * as memory from "./memory.mjs";
 import { rewriteHarnessOutput } from "@sub8/harness-auth";
 import * as identities from "./identities.mjs";
+import { randomUUID } from "node:crypto";
+import { steerPrompt, type SteeringHooks } from "./steer.mjs";
 
 import type { ContextBot, ContextSettings } from "./context.mjs";
 
@@ -115,6 +117,8 @@ export interface RunHostCliOptions {
   emit?: ((event: string, payload?: unknown) => void) | undefined;
   internalToken?: string | undefined;
   port?: number | string | undefined;
+  /** Mid-turn chat lines (server/steer.mts). Absent: nothing steers this run. */
+  steering?: SteeringHooks | undefined;
 }
 
 /** What a harness "reply PONG" probe resolves to. agent.mjs spreads this. */
@@ -991,7 +995,7 @@ export function withHostPluginsBlock(system: string): string {
   return block ? `${system}\n\n${block}` : system;
 }
 
-export async function runHostCli({ provider, model, userText, signal, bot, settings, hidden = false, emit, internalToken, port }: RunHostCliOptions): Promise<string> {
+export async function runHostCli({ provider, model, userText, signal, bot, settings, hidden = false, emit, internalToken, port, steering }: RunHostCliOptions): Promise<string> {
   const box = bot?.vm?.container;
   if (!box) return "This harness only runs after the Bot computer is up.";
   const attach = await identities.attachForBot(bot as import("@sub8/identities").AttachBot).catch(() => null);
@@ -1077,9 +1081,14 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
   if (provider === "claude") {
     if (isolatedHome) spawnEnv.CLAUDE_CONFIG_DIR = isolatedHome;
     bin = claudeBin();
+    // The prompt goes in on stdin as a stream-json user message, and stdin
+    // stays open for the turn: a chat line the user sends while Claude works
+    // is written as another user message, which Claude Code folds into the
+    // running turn at its next tool boundary (see claudeUserLine).
     args = [
       "-p",
-      prompt,
+      "--input-format",
+      "stream-json",
       "--output-format",
       "stream-json",
       "--verbose",
@@ -1130,6 +1139,7 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
     if (!fresh && grokSessionExists(home, sessionId)) args.push("--resume", sessionId);
     else args.push("--session-id", sessionId);
   } else if (provider === "hermes") {
+    steering?.unsupported();
     const { hermesAcpPrompt } = await import("./hermes-acp.mjs");
     const home = await writeHermesHome(hermesHomeDir(), mcpEnv);
     spawnEnv.HERMES_HOME = home;
@@ -1198,17 +1208,137 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
     args.push(prompt);
   }
 
-  return new Promise<string>((resolve) => {
-    const child = spawn(bin, args, {
+  if (provider === "claude") {
+    return driveCli({
+      provider,
+      bin,
+      args,
       env: spawnEnv,
       cwd: work,
-      stdio: ["ignore", "pipe", "pipe"],
+      signal,
+      steering,
+      firstInput: claudeUserLine(prompt),
     });
-    const acc: StreamAcc = { reply: "" };
+  }
+  if (provider === "grok-build") {
+    const grokHome = String(spawnEnv.GROK_HOME || "");
+    return driveCli({
+      provider,
+      bin,
+      args,
+      env: spawnEnv,
+      cwd: work,
+      signal,
+      steering,
+      // Interrupt + `--resume` needs the session on disk; a turn that has not
+      // written one yet (or a fresh rotation) queues the line instead.
+      canResume: () => Boolean(grokHome) && grokSessionExists(grokHome, sessionId),
+      resumeArgs: (texts) => grokResumeArgs(args, sessionId, steerPrompt(texts)),
+    });
+  }
+  // Codex runs --ephemeral (no session to resume), Cursor is not resumed
+  // here: a line sent mid-turn waits for the turn to end.
+  steering?.unsupported();
+  return driveCli({ provider, bin, args, env: spawnEnv, cwd: work, signal });
+}
+
+/** One stream-json user message for `claude -p --input-format stream-json`. */
+export function claudeUserLine(text: string, uuid?: string): string {
+  return `${JSON.stringify({
+    type: "user",
+    message: { role: "user", content: [{ type: "text", text }] },
+    parent_tool_use_id: null,
+    session_id: "",
+    ...(uuid ? { uuid } : {}),
+  })}\n`;
+}
+
+/**
+ * The argv for continuing a Grok Build session after an interrupt: the same
+ * flags, the new prompt in place of the old one, and `--resume` in place of
+ * `--session-id`.
+ */
+export function grokResumeArgs(args: readonly string[], sessionId: string, prompt: string): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!;
+    if (a === "-p") {
+      out.push("-p", prompt);
+      i++;
+      continue;
+    }
+    if (a === "--session-id" || a === "--resume") {
+      i++;
+      continue;
+    }
+    out.push(a);
+  }
+  out.push("--resume", sessionId);
+  return out;
+}
+
+/** The slice of a spawned child driveCli uses (structural so a test can fake it). */
+export interface CliChild {
+  stdin: NodeJS.WritableStream | null;
+  stdout: NodeJS.ReadableStream;
+  stderr: NodeJS.ReadableStream;
+  killed: boolean;
+  kill(sig?: NodeJS.Signals): boolean;
+  on(ev: "error", fn: (e: Error) => void): unknown;
+  on(ev: "close", fn: (code: number | null) => void): unknown;
+}
+
+export interface DriveCliOptions {
+  provider: string;
+  bin: string;
+  args: string[];
+  env?: NodeJS.ProcessEnv | undefined;
+  cwd?: string | undefined;
+  signal?: AbortSignal | undefined;
+  steering?: SteeringHooks | undefined;
+  /** Claude: the first stream-json line; stdin stays open for steering. */
+  firstInput?: string | undefined;
+  /** Interrupt + resume harnesses (Grok Build): may the session be resumed now? */
+  canResume?: (() => boolean) | undefined;
+  resumeArgs?: ((texts: string[]) => string[]) | undefined;
+  spawnFn?: ((bin: string, args: string[], opts: { env?: NodeJS.ProcessEnv | undefined; cwd?: string | undefined; stdio: ["pipe" | "ignore", "pipe", "pipe"] }) => CliChild) | undefined;
+  idleMs?: number | undefined;
+  hardMs?: number | undefined;
+  /** How long an interrupted child gets to exit before SIGTERM. */
+  interruptGraceMs?: number | undefined;
+}
+
+/**
+ * Run one CLI turn and resolve its visible reply. With `steering`:
+ * - `firstInput` (Claude Code): new chat lines are written to the live stdin as
+ *   more user messages; stdin is closed once a `result` arrives with nothing
+ *   still queued, which ends the process.
+ * - `canResume` + `resumeArgs` (Grok Build): the child is interrupted (SIGINT)
+ *   and the same session continues with a prompt carrying the new lines. If
+ *   that continuation fails without a reply, the lines go back to the inbox so
+ *   they still run after the turn.
+ */
+export function driveCli(o: DriveCliOptions): Promise<string> {
+  const { provider, signal, steering } = o;
+  const spawnFn = o.spawnFn || ((bin, args, opts) => spawn(bin, args, opts) as unknown as CliChild);
+  const IDLE_MS = o.idleMs ?? 180_000;
+  const HARD_MS = o.hardMs ?? 20 * 60_000;
+  const live = typeof o.firstInput === "string";
+  return new Promise<string>((resolve) => {
+    let acc: StreamAcc = { reply: "" };
     let buf = "";
     let done = false;
-    const IDLE_MS = 180_000;
-    const HARD_MS = 20 * 60_000;
+    let child: CliChild;
+    // Claude live-input bookkeeping.
+    let stdinOpen = live;
+    let lifecycleSeen = false;
+    const waiting = new Set<string>();
+    // Grok interrupt + resume bookkeeping.
+    let restartTexts: string[] = [];
+    let restarting = false;
+    let resumedTexts: string[] = [];
+    let priorReply = "";
+    let graceTimer: NodeJS.Timeout | null = null;
     let idleTimer: NodeJS.Timeout | null = null;
     const bumpIdle = () => {
       if (idleTimer) clearTimeout(idleTimer);
@@ -1216,18 +1346,32 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
         () => finish(`${provider} went silent for 3 minutes. Send another message to continue.`),
         IDLE_MS,
       );
+      idleTimer.unref?.();
     };
     const hardTimer = setTimeout(
       () => finish(`${provider} hit the 20 minute limit. Send another message to continue.`),
       HARD_MS,
     );
+    hardTimer.unref?.();
+    const closeInput = () => {
+      if (!stdinOpen) return;
+      stdinOpen = false;
+      steering?.detach();
+      try {
+        child.stdin?.end();
+      } catch {
+        /* ignore */
+      }
+    };
     // `failed` gates the auth rewrite below. It defaults to true because every
     // other caller of finish() IS a failure (idle timeout, hard timeout, abort,
     // spawn error); only the close handler can report success.
     const finish = async (text: unknown, { failed = true }: { failed?: boolean | undefined } = {}): Promise<void> => {
       if (done) return;
       done = true;
+      steering?.detach();
       if (idleTimer) clearTimeout(idleTimer);
+      if (graceTimer) clearTimeout(graceTimer);
       clearTimeout(hardTimer);
       try {
         if (!child.killed) child.kill("SIGTERM");
@@ -1253,45 +1397,154 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
         /* ignore */
       }
       try {
-        if (provider === "codex") await harvestAuthFile(hostCodexAuthPath(), path.join(work, "codex-home", "auth.json"));
+        if (provider === "codex") await harvestAuthFile(hostCodexAuthPath(), path.join(String(o.cwd || ""), "codex-home", "auth.json"));
         if (provider === "hermes") await harvestAuthFile(hostHermesAuthPath(), path.join(hermesHomeDir(), "auth.json"));
       } catch {
         /* ignore */
       }
       resolve(out);
     };
-    const onChunk = (chunk: Buffer): void => {
+    const parseLine = (line: string): void => {
+      if (provider === "claude") parseClaudeStream(line, acc);
+      else if (provider === "cursor") parseCursorStream(line, acc);
+      else if (provider === "codex") parseCodexStream(line, acc);
+      else if (provider === "grok-build") parseGrokStream(line, acc);
+      else acc.reply += (acc.reply ? "\n" : "") + line;
+    };
+    const watchLiveInput = (line: string): void => {
+      if (!live || line[0] !== "{") return;
+      let evt: { type?: string; state?: string; command_uuid?: string };
+      try {
+        evt = JSON.parse(line);
+      } catch {
+        return;
+      }
+      if (evt.type === "command_lifecycle" && evt.command_uuid) {
+        lifecycleSeen = true;
+        if (evt.state === "queued") waiting.add(evt.command_uuid);
+        else waiting.delete(evt.command_uuid);
+      }
+      // The turn ended. Lines still waiting in Claude's queue start a follow-up
+      // turn in this same process; otherwise closing stdin lets it exit.
+      if (evt.type !== "result") return;
+      if (!waiting.size) closeInput();
+      else if (!lifecycleSeen) {
+        // A line written just before this result, on a CLI that has not
+        // reported its queue yet: give it a moment to show up, then let go.
+        setTimeout(() => {
+          if (!lifecycleSeen) closeInput();
+        }, 2000).unref?.();
+      }
+    };
+    const onChunk = (chunk: Buffer | string): void => {
       bumpIdle();
       buf += chunk.toString();
       const lines = buf.split(/\r?\n/);
       buf = lines.pop() || "";
       for (const line of lines) {
-        if (provider === "claude") parseClaudeStream(line, acc);
-        else if (provider === "cursor") parseCursorStream(line, acc);
-        else if (provider === "codex") parseCodexStream(line, acc);
-        else if (provider === "grok-build") parseGrokStream(line, acc);
-        else acc.reply += (acc.reply ? "\n" : "") + line;
+        parseLine(line);
+        watchLiveInput(line);
+      }
+    };
+    const launch = (args: string[]): void => {
+      buf = "";
+      child = spawnFn(o.bin, args, { env: o.env, cwd: o.cwd, stdio: [live ? "pipe" : "ignore", "pipe", "pipe"] });
+      const me = child;
+      me.stdout.on("data", (d: Buffer) => {
+        if (me === child) onChunk(d);
+      });
+      me.stderr.on("data", (d: Buffer) => {
+        if (me !== child) return;
+        bumpIdle();
+        const s = d.toString();
+        if (/error|fail|not found|ENOENT/i.test(s)) acc.reply += (acc.reply ? "\n" : "") + s.trim();
+      });
+      me.on("error", (e: Error) => {
+        if (me === child) finish(`${provider} failed: ${e.message}. Is it installed and signed in on this machine?`);
+      });
+      me.on("close", (code: number | null) => {
+        if (me !== child || done) return;
+        if (buf.trim()) parseLine(buf);
+        buf = "";
+        if (restarting) {
+          if (graceTimer) clearTimeout(graceTimer);
+          graceTimer = null;
+          restarting = false;
+          const texts = restartTexts.splice(0);
+          resumedTexts = texts;
+          priorReply = acc.reply || priorReply;
+          acc = { reply: "" };
+          try {
+            launch(o.resumeArgs!(texts));
+          } catch (err) {
+            steering?.requeue(texts);
+            finish(priorReply || `${provider} failed: ${(err as Error).message}`);
+          }
+          return;
+        }
+        const reply = acc.reply;
+        if (resumedTexts.length && hostCliTurnFailed(code, reply)) {
+          // The continuation did not run: the lines go back to the inbox and
+          // run as the next turn. The turn keeps what it said before them.
+          steering?.requeue(resumedTexts);
+          resumedTexts = [];
+          finish(priorReply || reply, { failed: !priorReply });
+          return;
+        }
+        finish(reply, { failed: hostCliTurnFailed(code, reply) });
+      });
+      if (live && o.firstInput) {
+        try {
+          me.stdin?.write(o.firstInput);
+        } catch {
+          /* the close handler reports it */
+        }
       }
     };
     bumpIdle();
     signal?.addEventListener("abort", () => finish("Stopped."));
-    child.stdout.on("data", onChunk);
-    child.stderr.on("data", (d: Buffer) => {
-      bumpIdle();
-      const s = d.toString();
-      if (/error|fail|not found|ENOENT/i.test(s)) acc.reply += (acc.reply ? "\n" : "") + s.trim();
-    });
-    child.on("error", (e) => finish(`${provider} failed: ${e.message}. Is it installed and signed in on this machine?`));
-    child.on("close", (code) => {
-      if (buf.trim()) {
-        if (provider === "claude") parseClaudeStream(buf, acc);
-        else if (provider === "cursor") parseCursorStream(buf, acc);
-        else if (provider === "codex") parseCodexStream(buf, acc);
-        else if (provider === "grok-build") parseGrokStream(buf, acc);
-        else if (buf.trim()) acc.reply += (acc.reply ? "\n" : "") + buf.trim();
-      }
-      finish(acc.reply, { failed: hostCliTurnFailed(code, acc.reply) });
-    });
+    launch(o.args);
+    if (!steering) return;
+    if (live) {
+      steering.attach((texts) => {
+        if (done || !stdinOpen || !child.stdin) return false;
+        const uuid = randomUUID();
+        try {
+          child.stdin.write(claudeUserLine(steerPrompt(texts), uuid));
+        } catch {
+          return false;
+        }
+        waiting.add(uuid);
+        return true;
+      });
+    } else if (o.canResume && o.resumeArgs) {
+      steering.attach((texts) => {
+        if (done) return false;
+        if (restarting) {
+          restartTexts.push(...texts);
+          return true;
+        }
+        if (!o.canResume!()) return false;
+        restarting = true;
+        restartTexts.push(...texts);
+        try {
+          child.kill("SIGINT");
+        } catch {
+          /* the grace timer below escalates */
+        }
+        graceTimer = setTimeout(() => {
+          try {
+            if (!child.killed) child.kill("SIGTERM");
+          } catch {
+            /* ignore */
+          }
+        }, o.interruptGraceMs ?? 5000);
+        graceTimer.unref?.();
+        return true;
+      });
+    } else {
+      steering.unsupported();
+    }
   });
 }
 
