@@ -89,6 +89,7 @@ plan/
 /server/desk-harness/local.mjs
 /server/desk-harness/mcp-cloud.mjs
 /server/desk-harness/server.mjs
+/server/desk-harness/steer-live.mjs
 /server/harness-status.mjs
 /server/hermes-acp.mjs
 /server/host-cli.mjs

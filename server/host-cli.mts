@@ -886,7 +886,7 @@ export function cliSessionId(
   return String(bot?.harnessSessionId || bot?.grokSessionId || bot?.id || "").trim();
 }
 
-function grokSessionExists(home: string, id: string): boolean {
+export function grokSessionExists(home: string, id: string): boolean {
   const root = path.join(home, "sessions");
   if (!id || !fsSync.existsSync(root)) return false;
   try {
@@ -1277,6 +1277,142 @@ export function grokResumeArgs(args: readonly string[], sessionId: string, promp
   return out;
 }
 
+/**
+ * Claude Code's live stdin for one turn (`--input-format stream-json`), shared
+ * by driveCli and the desk harness. `steer` writes new chat lines into the
+ * running session as one more user message (Claude folds it in at its next
+ * tool boundary). `watch` reads every stdout line and closes stdin once a
+ * `result` arrives with nothing still queued, which lets the process exit.
+ */
+export interface ClaudeLiveInput {
+  steer(texts: string[]): boolean;
+  watch(line: string): void;
+  close(): void;
+  readonly open: boolean;
+}
+
+export function claudeLiveInput(stdin: () => NodeJS.WritableStream | null | undefined, onClose?: () => void): ClaudeLiveInput {
+  let open = true;
+  let lifecycleSeen = false;
+  const waiting = new Set<string>();
+  const close = (): void => {
+    if (!open) return;
+    open = false;
+    onClose?.();
+    try {
+      stdin()?.end();
+    } catch {
+      /* ignore */
+    }
+  };
+  return {
+    get open() {
+      return open;
+    },
+    close,
+    steer(texts: string[]): boolean {
+      const s = stdin();
+      if (!open || !s) return false;
+      const uuid = randomUUID();
+      try {
+        s.write(claudeUserLine(steerPrompt(texts), uuid));
+      } catch {
+        return false;
+      }
+      waiting.add(uuid);
+      return true;
+    },
+    watch(line: string): void {
+      if (!open || line[0] !== "{") return;
+      let evt: { type?: string; state?: string; command_uuid?: string };
+      try {
+        evt = JSON.parse(line);
+      } catch {
+        return;
+      }
+      if (evt.type === "command_lifecycle" && evt.command_uuid) {
+        lifecycleSeen = true;
+        if (evt.state === "queued") waiting.add(evt.command_uuid);
+        else waiting.delete(evt.command_uuid);
+      }
+      // The turn ended. Lines still waiting in Claude's queue start a follow-up
+      // turn in this same process; otherwise closing stdin lets it exit.
+      if (evt.type !== "result") return;
+      if (!waiting.size) close();
+      else if (!lifecycleSeen) {
+        // A line written just before this result, on a CLI that has not
+        // reported its queue yet: give it a moment to show up, then let go.
+        setTimeout(() => {
+          if (!lifecycleSeen) close();
+        }, 2000).unref?.();
+      }
+    },
+  };
+}
+
+/**
+ * Interrupt + resume steering (Grok Build), shared by driveCli and the desk
+ * harness. `steer` interrupts the child (SIGINT, SIGTERM after `graceMs`) and
+ * collects the lines; the caller's close handler asks `takeRestart()` whether
+ * that exit was this interrupt, and if so relaunches the same session with
+ * them. Lines that arrive while a restart is under way join it.
+ */
+export interface InterruptResume {
+  steer(texts: string[]): boolean;
+  /** From the child's close handler: the lines to resume with when this exit was the interrupt, else null. */
+  takeRestart(): string[] | null;
+  readonly restarting: boolean;
+  dispose(): void;
+}
+
+export function interruptResume({ canResume, kill, graceMs = 5000 }: { canResume: () => boolean; kill: (sig: NodeJS.Signals) => void; graceMs?: number | undefined }): InterruptResume {
+  let restarting = false;
+  let pending: string[] = [];
+  let grace: NodeJS.Timeout | null = null;
+  const clear = (): void => {
+    if (grace) clearTimeout(grace);
+    grace = null;
+  };
+  return {
+    get restarting() {
+      return restarting;
+    },
+    steer(texts: string[]): boolean {
+      if (restarting) {
+        pending.push(...texts);
+        return true;
+      }
+      if (!canResume()) return false;
+      restarting = true;
+      pending.push(...texts);
+      try {
+        kill("SIGINT");
+      } catch {
+        /* the grace timer below escalates */
+      }
+      // Cleared by takeRestart when the child exits; firing means it did not.
+      grace = setTimeout(() => {
+        try {
+          kill("SIGTERM");
+        } catch {
+          /* ignore */
+        }
+      }, graceMs);
+      grace.unref?.();
+      return true;
+    },
+    takeRestart(): string[] | null {
+      if (!restarting) return null;
+      clear();
+      restarting = false;
+      const texts = pending;
+      pending = [];
+      return texts;
+    },
+    dispose: clear,
+  };
+}
+
 /** The slice of a spawned child driveCli uses (structural so a test can fake it). */
 export interface CliChild {
   stdin: NodeJS.WritableStream | null;
@@ -1329,16 +1465,15 @@ export function driveCli(o: DriveCliOptions): Promise<string> {
     let buf = "";
     let done = false;
     let child: CliChild;
-    // Claude live-input bookkeeping.
-    let stdinOpen = live;
-    let lifecycleSeen = false;
-    const waiting = new Set<string>();
-    // Grok interrupt + resume bookkeeping.
-    let restartTexts: string[] = [];
-    let restarting = false;
+    // Claude live input (stdin stays open for the turn).
+    const input = live ? claudeLiveInput(() => child?.stdin, () => steering?.detach()) : null;
+    // Grok interrupt + resume.
+    const resumer =
+      o.canResume && o.resumeArgs
+        ? interruptResume({ canResume: o.canResume, kill: (sig) => child.kill(sig), graceMs: o.interruptGraceMs })
+        : null;
     let resumedTexts: string[] = [];
     let priorReply = "";
-    let graceTimer: NodeJS.Timeout | null = null;
     let idleTimer: NodeJS.Timeout | null = null;
     const bumpIdle = () => {
       if (idleTimer) clearTimeout(idleTimer);
@@ -1353,16 +1488,6 @@ export function driveCli(o: DriveCliOptions): Promise<string> {
       HARD_MS,
     );
     hardTimer.unref?.();
-    const closeInput = () => {
-      if (!stdinOpen) return;
-      stdinOpen = false;
-      steering?.detach();
-      try {
-        child.stdin?.end();
-      } catch {
-        /* ignore */
-      }
-    };
     // `failed` gates the auth rewrite below. It defaults to true because every
     // other caller of finish() IS a failure (idle timeout, hard timeout, abort,
     // spawn error); only the close handler can report success.
@@ -1371,7 +1496,7 @@ export function driveCli(o: DriveCliOptions): Promise<string> {
       done = true;
       steering?.detach();
       if (idleTimer) clearTimeout(idleTimer);
-      if (graceTimer) clearTimeout(graceTimer);
+      resumer?.dispose();
       clearTimeout(hardTimer);
       try {
         if (!child.killed) child.kill("SIGTERM");
@@ -1411,31 +1536,6 @@ export function driveCli(o: DriveCliOptions): Promise<string> {
       else if (provider === "grok-build") parseGrokStream(line, acc);
       else acc.reply += (acc.reply ? "\n" : "") + line;
     };
-    const watchLiveInput = (line: string): void => {
-      if (!live || line[0] !== "{") return;
-      let evt: { type?: string; state?: string; command_uuid?: string };
-      try {
-        evt = JSON.parse(line);
-      } catch {
-        return;
-      }
-      if (evt.type === "command_lifecycle" && evt.command_uuid) {
-        lifecycleSeen = true;
-        if (evt.state === "queued") waiting.add(evt.command_uuid);
-        else waiting.delete(evt.command_uuid);
-      }
-      // The turn ended. Lines still waiting in Claude's queue start a follow-up
-      // turn in this same process; otherwise closing stdin lets it exit.
-      if (evt.type !== "result") return;
-      if (!waiting.size) closeInput();
-      else if (!lifecycleSeen) {
-        // A line written just before this result, on a CLI that has not
-        // reported its queue yet: give it a moment to show up, then let go.
-        setTimeout(() => {
-          if (!lifecycleSeen) closeInput();
-        }, 2000).unref?.();
-      }
-    };
     const onChunk = (chunk: Buffer | string): void => {
       bumpIdle();
       buf += chunk.toString();
@@ -1443,7 +1543,7 @@ export function driveCli(o: DriveCliOptions): Promise<string> {
       buf = lines.pop() || "";
       for (const line of lines) {
         parseLine(line);
-        watchLiveInput(line);
+        input?.watch(line);
       }
     };
     const launch = (args: string[]): void => {
@@ -1466,11 +1566,8 @@ export function driveCli(o: DriveCliOptions): Promise<string> {
         if (me !== child || done) return;
         if (buf.trim()) parseLine(buf);
         buf = "";
-        if (restarting) {
-          if (graceTimer) clearTimeout(graceTimer);
-          graceTimer = null;
-          restarting = false;
-          const texts = restartTexts.splice(0);
+        const texts = resumer?.takeRestart();
+        if (texts) {
           resumedTexts = texts;
           priorReply = acc.reply || priorReply;
           acc = { reply: "" };
@@ -1505,43 +1602,10 @@ export function driveCli(o: DriveCliOptions): Promise<string> {
     signal?.addEventListener("abort", () => finish("Stopped."));
     launch(o.args);
     if (!steering) return;
-    if (live) {
-      steering.attach((texts) => {
-        if (done || !stdinOpen || !child.stdin) return false;
-        const uuid = randomUUID();
-        try {
-          child.stdin.write(claudeUserLine(steerPrompt(texts), uuid));
-        } catch {
-          return false;
-        }
-        waiting.add(uuid);
-        return true;
-      });
-    } else if (o.canResume && o.resumeArgs) {
-      steering.attach((texts) => {
-        if (done) return false;
-        if (restarting) {
-          restartTexts.push(...texts);
-          return true;
-        }
-        if (!o.canResume!()) return false;
-        restarting = true;
-        restartTexts.push(...texts);
-        try {
-          child.kill("SIGINT");
-        } catch {
-          /* the grace timer below escalates */
-        }
-        graceTimer = setTimeout(() => {
-          try {
-            if (!child.killed) child.kill("SIGTERM");
-          } catch {
-            /* ignore */
-          }
-        }, o.interruptGraceMs ?? 5000);
-        graceTimer.unref?.();
-        return true;
-      });
+    if (input) {
+      steering.attach((texts) => !done && input.steer(texts));
+    } else if (resumer) {
+      steering.attach((texts) => !done && resumer.steer(texts));
     } else {
       steering.unsupported();
     }

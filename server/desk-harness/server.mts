@@ -26,6 +26,15 @@
  *                    Marking a turn "aborted" in the DO only stops the Worker
  *                    from reading more of the stream — without this the child
  *                    keeps running on the droplet until it finishes on its own.
+ *   POST /steer    → { delivered, reason?, results }  Authorization: Bearer <desk token>
+ *                    body { botId?, display?, messages: [string | {id?, text}] }
+ *                    A chat line sent while that bot's turn runs: written into
+ *                    the live Claude session, or Grok Build interrupted and
+ *                    resumed with it (server/steer.mts). delivered:false means
+ *                    the caller still owns the line and must queue it; nothing
+ *                    is kept here. A line that was delivered but whose Grok
+ *                    resume then failed leaves on that turn's done event as
+ *                    `undelivered`, for the Worker to run next.
  *   POST /turn     → NDJSON {type:"tool"|"delta"|"done"|"error"}
  *                    Authorization: Bearer <desk token>
  *                    body: the executor / harness-client contract
@@ -58,6 +67,8 @@ import {
   claudeLogout,
   claudeExportCredentials,
   claudeImportCredentials, harnessPlugins, warmPlugins } from "./harness.mjs";
+
+import { openLiveTurn, closeLiveTurn, steerLiveTurn } from "./steer-live.mjs";
 
 import type { ChildProcess } from "node:child_process";
 
@@ -266,6 +277,17 @@ function serve(): void {
       // had anything wired to it before /stop existed.
       const ctl = new AbortController();
       running.add(ctl);
+      // Mid-task lines for this turn (POST /steer).
+      const live = openLiveTurn(
+        String(body.botId || (body.callback as { botId?: unknown } | undefined)?.botId || "").trim(),
+        Number(body.display || 1) || 1,
+      );
+      let liveClosed = false;
+      const endLive = (): string[] => {
+        if (liveClosed) return [];
+        liveClosed = true;
+        return closeLiveTurn(live);
+      };
       // The Worker hanging up (user closed the app, socket died) should also
       // kill grok rather than leave it burning tokens on the droplet.
       res.on("close", () => {
@@ -284,11 +306,14 @@ function serve(): void {
           internalPort: PORT,
           deskToken: TOKEN,
           signal: ctl.signal,
+          steering: live.inbox.hooks,
+          undelivered: endLive,
         });
       } catch (err) {
         emit({ type: "error", message: String((err as Error)?.message || err) });
       } finally {
         running.delete(ctl);
+        endLive();
       }
       res.end();
       return;
@@ -351,6 +376,26 @@ function serve(): void {
       return;
     }
 
+    if (req.method === "POST" && req.url === "/steer") {
+      const auth = String(req.headers.authorization || "");
+      if (!TOKEN || auth !== `Bearer ${TOKEN}`) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "bad token" }));
+        return;
+      }
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c);
+      let body: Record<string, unknown> = {};
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+      } catch {
+        body = {};
+      }
+      const out = await steerLiveTurn(body);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(out));
+      return;
+    }
     if (req.method === "POST" && req.url === "/stop") {
       const auth = String(req.headers.authorization || "");
       if (!TOKEN || auth !== `Bearer ${TOKEN}`) {

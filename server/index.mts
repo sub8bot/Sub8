@@ -182,6 +182,8 @@ interface RestoredRoutine {
 interface CloudTurnReply {
   turnId?: unknown;
   userMessage?: unknown;
+  /** The bot was working: its running task got the line, or the line waits for it. */
+  delivery?: "delivered" | "queued" | undefined;
   reply?: { userMessage?: unknown } | undefined;
 }
 
@@ -1035,10 +1037,13 @@ app.post("/api/cloud/draft/bots/:id/messages", async (req, res) => {
       });
       const snap = await account.liveSnapshot();
       // `liveBrainChat` answers `unknown` — account.mts moves the Worker's turn
-      // payload without reading one. `CloudTurnReply` is the three fields this
-      // route forwards to the client, and this is where that is stated.
+      // payload without reading one. `CloudTurnReply` is the fields this route
+      // forwards to the client, and this is where that is stated.
       const userMessage = (turned as CloudTurnReply)?.userMessage || (turned as CloudTurnReply)?.reply?.userMessage;
-      res.json({ ...snap, ok: true, queued: true, turnId: (turned as CloudTurnReply)?.turnId, userMessage, reply: turned });
+      // Mid-task steering (Worker DeskTurn + desk POST /steer): same notes as a
+      // local bot, "Delivered to X mid-task" or "Queued: ...".
+      const delivery = (turned as CloudTurnReply)?.delivery;
+      res.json({ ...snap, ok: true, queued: true, turnId: (turned as CloudTurnReply)?.turnId, userMessage, ...(delivery ? { delivery } : {}), reply: turned });
       return;
     }
     // `addMessage` spells `content` `string`; an empty body reaches it as

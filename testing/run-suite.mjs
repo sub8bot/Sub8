@@ -66,6 +66,7 @@ const ORDER = [
   "grok-stream.mjs",
   "desk-harness.mjs",
   "desk-harness-latch.mjs",
+  "desk-harness-steer.mjs",
   "teams.mjs",
   "bot-identity.mjs",
   "channel-routes.mjs",

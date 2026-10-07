@@ -504,7 +504,9 @@ interface CloudDraftState {
   computer?: Computer;
   userMessage?: Message;
   turnId?: string;
-  reply?: { userMessage?: Message; turnId?: string };
+  /** The bot was working: its running task got the line ("delivered") or it waits ("queued"). */
+  delivery?: "delivered" | "queued";
+  reply?: { userMessage?: Message; turnId?: string; delivery?: "delivered" | "queued" };
 }
 
 interface CloudSku {
@@ -2574,7 +2576,7 @@ function deliveryNoteHtml(bot: Bot, m: Message): string {
   if (m.delivery === "delivered") return note(`Delivered to ${name} mid-task`);
   if (m.delivery === "queued") return note(`Queued: ${name} will read it when the current task ends`);
   if (m.delivery === "stopped") return note("Not delivered: the task was stopped. Send it again if it still matters.", " is-warn");
-  if (bot.busy && !isCloudPlace() && queuedWhileBusy.get(bot.id) === String(m.content || "")) {
+  if (bot.busy && queuedWhileBusy.get(bot.id) === String(m.content || "")) {
     return note(`Sending to ${name} mid-task…`);
   }
   return "";
@@ -10569,6 +10571,7 @@ async function onSend(e: ComposerSubmit): Promise<void> {
             body: { computerId, botId: chief.id, content, identityId: workerCloudIdentityId(chief.identityId || "") },
           }) as CloudDraftState;
           state.cloudDraft = snap;
+          const delivery = applyCloudDelivery(snap, chief.id, snap.userMessage || snap.reply?.userMessage);
           const turnId = snap.turnId || snap.reply?.turnId;
           if (turnId) cloudTurns.set(chief.id, { turnId, computerId });
           // The channel is the lead's thread: show the lead working, and end
@@ -10578,7 +10581,7 @@ async function onSend(e: ComposerSubmit): Promise<void> {
           const now = currentBot();
           if (now) paintChat(now);
           const userMessage = snap.userMessage || snap.reply?.userMessage;
-          void watchCloudTurn(chief.id, content, userMessage?.id, { turnId, computerId });
+          void watchCloudTurn(chief.id, content, userMessage?.id, { turnId, computerId, untilTurnEnds: delivery === "delivered" });
         }
       } else {
         const toIds = mentionedMemberIds(content, teamBots(channelTeam));
@@ -10594,7 +10597,9 @@ async function onSend(e: ComposerSubmit): Promise<void> {
   const members = teamBots(team);
   const toIds = mentionedMemberIds(content, members);
   if (bot) {
-    if (bot.busy && !isCloudPlace()) queuedWhileBusy.set(bot.id, content);
+    // Cloud too: a cloud bot's running task is steered from the Worker (desk
+    // POST /steer), and the answer says delivered or queued.
+    if (bot.busy) queuedWhileBusy.set(bot.id, content);
     else queuedWhileBusy.delete(bot.id);
     applyChatBusy(bot, { type: "send" });
     bot.messages!.push({
@@ -10622,13 +10627,18 @@ async function onSend(e: ComposerSubmit): Promise<void> {
         },
       }) as CloudDraftState;
       state.cloudDraft = snap;
+      const userMessage = snap.userMessage || snap.reply?.userMessage;
+      const delivery = applyCloudDelivery(snap, bot!.id, userMessage);
+      // No running task took or held it (it was only queued work): no note.
+      if (!delivery) queuedWhileBusy.delete(bot!.id);
       const live = currentBot();
       if (live) applyChatBusy(live, { type: "send" });
       render();
-      const userMessage = snap.userMessage || snap.reply?.userMessage;
       const turnId = snap.turnId || snap.reply?.turnId;
       if (turnId) cloudTurns.set(bot!.id, { turnId, computerId });
-      watchCloudTurn(bot!.id, content, userMessage?.id, { turnId, computerId });
+      // Steered into the running task: keep watching THAT turn to its end. A
+      // mid-task reply to the steer is not the end of the work.
+      watchCloudTurn(bot!.id, content, userMessage?.id, { turnId, computerId, untilTurnEnds: delivery === "delivered" });
     } catch (err) {
       if (bot) applyChatBusy(bot, { type: "error" });
       if ((err as CaughtError).code === "NEED_BRAIN" || /connect a brain/i.test((err as CaughtError).message || "")) {
@@ -10738,7 +10748,27 @@ async function retryTurn(botId: string): Promise<void> {
   }
 }
 
-async function watchCloudTurn(botId: string, userText: string, messageId: string | undefined, { turnId, computerId }: { turnId?: string | undefined; computerId?: string | undefined } = {}): Promise<void> {
+/**
+ * The Worker's answer to a cloud send, when the bot was working: put the
+ * delivery state on the user's row in the fresh snapshot (a KV read can lag the
+ * DO write that marked it), so the note shows at once.
+ */
+function applyCloudDelivery(snap: CloudDraftState, botId: string, userMessage: Message | undefined): "delivered" | "queued" | undefined {
+  const delivery = snap.delivery || snap.reply?.delivery;
+  if (!delivery) return undefined;
+  const bot = (snap.bots || []).find((b) => b.id === botId);
+  const id = String(userMessage?.id || "");
+  const row = id ? (bot?.messages || []).find((m) => m.id === id) : undefined;
+  if (row) row.delivery = delivery;
+  return delivery;
+}
+
+async function watchCloudTurn(
+  botId: string,
+  userText: string,
+  messageId: string | undefined,
+  { turnId, computerId, untilTurnEnds = false }: { turnId?: string | undefined; computerId?: string | undefined; untilTurnEnds?: boolean | undefined } = {},
+): Promise<void> {
   // Per bot, so sending to bot B no longer orphans bot A's watcher (which left
   // A spinning until the 10 minute cap).
   const gen = ++cloudWatchSeq;
@@ -10812,7 +10842,11 @@ async function watchCloudTurn(botId: string, userText: string, messageId: string
       (wantId ? idx.find((i) => String(msgs[i]!.id || "") === wantId) : undefined) ??
       idx.find((i) => msgs[i]!.role === "user" && String(msgs[i]!.content || "").trim() === needle);
     const since = userAt !== undefined ? Number(msgs[userAt]!.ts) || 0 : started - 60_000;
-    const replied = msgs.some((m, i) => (userAt === undefined || i > userAt) && m.role === "assistant" && !m.hidden && (Number(m.ts) || 0) >= since && m.kind !== "tool" && m.kind !== "think");
+    // A steered line rides a turn that was already running: only that turn
+    // ending (checked above) ends the watch.
+    const replied =
+      !(untilTurnEnds && turnId && computerId) &&
+      msgs.some((m, i) => (userAt === undefined || i > userAt) && m.role === "assistant" && !m.hidden && (Number(m.ts) || 0) >= since && m.kind !== "tool" && m.kind !== "think");
     if (replied) {
       finish(bot);
       render();

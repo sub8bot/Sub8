@@ -46,8 +46,15 @@ import {
   grokBin,
   hostEnv,
   spawnCapture,
+  claudeUserLine,
+  claudeLiveInput,
+  interruptResume,
+  grokResumeArgs,
+  grokSessionExists,
+  hostCliTurnFailed,
 } from "../host-cli.mjs";
 import type { StreamAcc } from "../host-cli.mjs";
+import { steerPrompt, type SteeringHooks } from "../steer.mjs";
 import type {
   ClaudeCredentials,
   HistoryMessage,
@@ -68,6 +75,8 @@ export type EmitTurnEvent = (event: TurnEvent) => void;
  */
 export interface HarnessChild {
   killed?: boolean | undefined;
+  /** Claude turns keep stdin open: the prompt and any mid-task lines go in here. */
+  stdin?: NodeJS.WritableStream | null | undefined;
   /** ChildProcess.kill answers a boolean; nothing here reads it. */
   kill(signal?: NodeJS.Signals | number): void;
   stdout?: { on(event: "data", listener: (chunk: Buffer) => void): void } | null | undefined;
@@ -783,6 +792,12 @@ export interface ClaudeArgsOptions {
   /** The --mcp-config file the caller wrote for this turn. */
   mcpFile: string;
   system?: string | undefined;
+  /**
+   * The prompt goes in on stdin as a stream-json user message (claudeUserLine)
+   * instead of after -p, and stdin stays open so a chat line sent mid-task can
+   * be written into the same live session.
+   */
+  liveInput?: boolean | undefined;
 }
 
 /**
@@ -790,10 +805,10 @@ export interface ClaudeArgsOptions {
  * claude branch. Unlike grok (which reads MCP from config.toml in GROK_HOME),
  * Claude takes an explicit --mcp-config file, so the caller writes one.
  */
-export function claudeArgs({ prompt, model, sessionId, mcpFile, system }: ClaudeArgsOptions): string[] {
+export function claudeArgs({ prompt, model, sessionId, mcpFile, system, liveInput }: ClaudeArgsOptions): string[] {
   return [
     "-p",
-    prompt,
+    ...(liveInput ? ["--input-format", "stream-json"] : [prompt]),
     "--output-format",
     "stream-json",
     "--verbose",
@@ -1071,6 +1086,8 @@ export interface GrokSpawnSpec {
   /** Set only on the Claude path, where the turn drops to CLAUDE_USER. */
   uid?: number | undefined;
   gid?: number | undefined;
+  /** Leave stdin open (Claude live input); otherwise it is closed at spawn. */
+  keepStdin?: boolean | undefined;
 }
 
 /** The desk's own wiring for a turn: who to call back, and how to stop. */
@@ -1080,6 +1097,20 @@ export interface RunTurnOptions {
   deskToken?: string | undefined;
   signal?: AbortSignal | undefined;
   spawnGrok?: ((spec: GrokSpawnSpec) => HarnessChild) | undefined;
+  /**
+   * Mid-task chat lines for this turn (server/steer.mts; POST /steer feeds the
+   * inbox). Claude gets them in its live session, Grok Build is interrupted and
+   * resumed with them.
+   */
+  steering?: SteeringHooks | undefined;
+  /**
+   * At the end of the turn: lines a steer accepted but could not deliver after
+   * all (a Grok resume that failed). They ride on the done event as
+   * `undelivered` so the Worker runs them as the next turn.
+   */
+  undelivered?: (() => string[]) | undefined;
+  /** How long an interrupted grok gets to exit before SIGTERM (tests shorten it). */
+  interruptGraceMs?: number | undefined;
 }
 
 /**
@@ -1140,6 +1171,8 @@ export async function runTurn(body: TurnBody, emit: EmitTurnEvent, opts: RunTurn
   const prompt = claude ? `${recap}${t.text}${nudge}` : `${t.system ? `${t.system}\n\n` : ""}${recap}${t.text}${nudge}`;
 
   const env: NodeJS.ProcessEnv = { ...hostEnv(), GROK_HOME: home };
+  // Kept so a mid-task line can interrupt and --resume this same session.
+  const grokSession = randomUUID();
   let args: string[];
   let mcpFilePath: string | null = null;
   if (claude) {
@@ -1175,7 +1208,7 @@ export async function runTurn(body: TurnBody, emit: EmitTurnEvent, opts: RunTurn
     // below hands it ownership -- 0600 alone would make it unreadable there.
     mcpFilePath = mcpFile;
     await fs.writeFile(mcpFile, mcpJson, { mode: 0o600 });
-    args = claudeArgs({ prompt, model: t.model, sessionId: randomUUID(), mcpFile, system: withPluginsBlock(t.system) });
+    args = claudeArgs({ prompt, model: t.model, sessionId: randomUUID(), mcpFile, system: withPluginsBlock(t.system), liveInput: true });
     // Claude authenticates by ANTHROPIC_API_KEY, or by an OAuth login already on
     // the desk (~/.claude). A stray XAI key must not leak into its env.
     delete env.XAI_API_KEY;
@@ -1189,7 +1222,7 @@ export async function runTurn(body: TurnBody, emit: EmitTurnEvent, opts: RunTurn
     if (t.apiKey) env.ANTHROPIC_API_KEY = t.apiKey;
     if (t.baseUrl && /anthropic/i.test(t.baseUrl)) env.ANTHROPIC_BASE_URL = t.baseUrl;
   } else {
-    args = grokArgs({ prompt, model: t.model, work, sessionId: randomUUID() });
+    args = grokArgs({ prompt, model: t.model, work, sessionId: grokSession });
     // hostEnv copies process.env. OAuth is auth.json; a droplet XAI_API_KEY must not shadow it.
     if (t.isOAuth) delete env.XAI_API_KEY;
     else if (t.apiKey) env.XAI_API_KEY = t.apiKey;
@@ -1259,14 +1292,29 @@ export async function runTurn(body: TurnBody, emit: EmitTurnEvent, opts: RunTurn
     provider: t.provider,
     model: t.model,
     ...(runAs ? { uid: runAs.uid, gid: runAs.gid } : {}),
+    ...(claude ? { keepStdin: true } : {}),
   };
 
+  const steering = opts.steering;
   return await new Promise<string>((resolve) => {
-    const acc: TurnAcc = { reply: "", parts: [] };
+    let acc: TurnAcc = { reply: "", parts: [] };
     let buf = "";
     let done = false;
     let idleTimer: NodeJS.Timeout | null = null;
     let child: HarnessChild | undefined;
+    // Claude: the prompt and every mid-task line go in on the live stdin.
+    const input = claude ? claudeLiveInput(() => child?.stdin, () => steering?.detach()) : null;
+    // Grok Build: interrupt, then --resume the same session with the new lines.
+    const resumer = claude
+      ? null
+      : interruptResume({
+          // Needs the session on disk; before grok has written it the line queues.
+          canResume: () => grokSessionExists(home, grokSession),
+          kill: (sig) => child?.kill(sig),
+          graceMs: opts.interruptGraceMs,
+        });
+    let resumedTexts: string[] = [];
+    let priorReply = "";
     const bumpIdle = () => {
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(
@@ -1278,6 +1326,8 @@ export async function runTurn(body: TurnBody, emit: EmitTurnEvent, opts: RunTurn
     const finish = (text: string) => {
       if (done) return;
       done = true;
+      steering?.detach();
+      resumer?.dispose();
       if (idleTimer) clearTimeout(idleTimer);
       clearTimeout(hardTimer);
       try {
@@ -1286,39 +1336,98 @@ export async function runTurn(body: TurnBody, emit: EmitTurnEvent, opts: RunTurn
         /* ignore */
       }
       const content = String(text || "").trim() || "(no output from grok)";
-      emit({ type: "done", content, usage: acc.usage || { llmCalls: 0, promptTokens: 0, completionTokens: 0 } });
+      let undelivered: string[] = [];
+      try {
+        undelivered = opts.undelivered?.() || [];
+      } catch {
+        undelivered = [];
+      }
+      emit({
+        type: "done",
+        content,
+        usage: acc.usage || { llmCalls: 0, promptTokens: 0, completionTokens: 0 },
+        // Not in harness-protocol's DoneEvent: an older Worker just ignores it.
+        ...(undelivered.length ? { undelivered } : {}),
+      } as TurnEvent);
       resolve(content);
     };
     const feedLine = claude ? feedClaudeLine : feedGrokLine;
-    const onChunk = (chunk: Buffer) => {
-      bumpIdle();
-      buf += chunk.toString();
-      const lines = buf.split(/\r?\n/);
-      buf = lines.pop() || "";
-      for (const line of lines) feedLine(line, acc, emit);
+    const onLine = (line: string) => {
+      feedLine(line, acc, emit);
+      input?.watch(line.trim());
+    };
+    const replyOf = (): string =>
+      claude
+        ? acc.reply || foldGrokVisibleText([...(acc.parts || [])].filter(Boolean))
+        : foldGrokVisibleText([...(acc.parts || []), acc.cur].filter(Boolean)) || acc.reply;
+    const launch = (argv: string[]): void => {
+      buf = "";
+      const me = spawnGrok({ ...spec, args: argv });
+      child = me;
+      const onChunk = (chunk: Buffer) => {
+        if (me !== child) return;
+        bumpIdle();
+        buf += chunk.toString();
+        const lines = buf.split(/\r?\n/);
+        buf = lines.pop() || "";
+        for (const line of lines) onLine(line);
+      };
+      me.stdout?.on("data", onChunk);
+      me.stderr?.on("data", onChunk);
+      me.on("error", (e) => {
+        if (me !== child) return;
+        emit({ type: "error", message: `grok failed: ${e.message}. Is grok installed and authed on this droplet?` });
+        finish("");
+      });
+      me.on("close", (code) => {
+        if (me !== child || done) return;
+        if (buf.trim()) onLine(buf);
+        buf = "";
+        const texts = resumer?.takeRestart();
+        if (texts) {
+          // Interrupted for a mid-task line: continue the same session with it.
+          resumedTexts = texts;
+          priorReply = replyOf() || priorReply;
+          acc = { reply: "", parts: [] };
+          try {
+            launch(grokResumeArgs(args, grokSession, steerPrompt(texts)));
+          } catch (err) {
+            steering?.requeue(texts);
+            finish(priorReply || `grok resume failed: ${(err as Error).message}`);
+          }
+          return;
+        }
+        const reply = replyOf();
+        if (resumedTexts.length && hostCliTurnFailed(code, reply)) {
+          // The continuation did not run: hand the lines back (they leave on
+          // the done event) and keep what the turn said before them.
+          steering?.requeue(resumedTexts);
+          resumedTexts = [];
+          finish(priorReply || reply);
+          return;
+        }
+        finish(reply);
+      });
+      if (input) {
+        try {
+          me.stdin?.write(claudeUserLine(prompt));
+        } catch {
+          /* the close handler reports it */
+        }
+      }
     };
     try {
-      child = spawnGrok(spec);
+      launch(spec.args);
     } catch (err) {
       emit({ type: "error", message: `grok spawn failed: ${(err as Error).message}` });
       return finish("");
     }
     opts.signal?.addEventListener?.("abort", () => finish("Stopped."));
     bumpIdle();
-    child.stdout?.on("data", onChunk);
-    child.stderr?.on("data", onChunk);
-    child.on("error", (e) => {
-      emit({ type: "error", message: `grok failed: ${e.message}. Is grok installed and authed on this droplet?` });
-      finish("");
-    });
-    child.on("close", () => {
-      if (buf.trim()) feedLine(buf, acc, emit);
-      finish(
-        claude
-          ? acc.reply || foldGrokVisibleText([...(acc.parts || [])].filter(Boolean))
-          : foldGrokVisibleText([...(acc.parts || []), acc.cur].filter(Boolean)) || acc.reply,
-      );
-    });
+    if (!steering) return;
+    if (input) steering.attach((texts) => !done && input.steer(texts));
+    else if (resumer) steering.attach((texts) => !done && resumer.steer(texts));
+    else steering.unsupported();
   });
 }
 
@@ -1347,10 +1456,12 @@ function defaultSpawnGrok(spec: GrokSpawnSpec): HarnessChild {
         stdio: ["pipe", "pipe", "pipe"],
         ...(Number.isFinite(spec.uid) ? { uid: spec.uid, gid: spec.gid } : {}),
       });
-  try {
-    child.stdin.end();
-  } catch {
-    /* ignore */
+  if (!spec.keepStdin) {
+    try {
+      child.stdin.end();
+    } catch {
+      /* ignore */
+    }
   }
   return child;
 }

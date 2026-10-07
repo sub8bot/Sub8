@@ -379,10 +379,25 @@ async function pollHealth(port, want, ms = 20000) {
       body: JSON.stringify({ content: "hi" }),
     });
     assert.equal(unauth.status, 401);
+    // POST /steer takes the same bearer, and with no turn running it hands the
+    // line back (the Worker queues it) instead of keeping it.
+    const steerUnauth = await fetch(`http://127.0.0.1:${port}/steer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ botId: "b", display: 1, messages: ["hi"] }),
+    });
+    assert.equal(steerUnauth.status, 401);
+    const steerIdle = await fetch(`http://127.0.0.1:${port}/steer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer test-token" },
+      body: JSON.stringify({ botId: "b", display: 1, messages: ["hi"] }),
+    });
+    assert.equal(steerIdle.status, 200);
+    assert.deepEqual(await steerIdle.json().then((b) => [b.delivered, b.reason]), [false, "no-turn"]);
   } finally {
     await stopChild(child);
   }
-  console.log(`ok desk-harness (GET /health + POST /turn 401 on :${port}; default port 3011)`);
+  console.log(`ok desk-harness (GET /health + POST /turn and /steer 401 on :${port}; default port 3011)`);
 }
 
 // --- Claude as an alternative harness on the desk ----------------------------
