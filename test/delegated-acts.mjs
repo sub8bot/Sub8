@@ -141,6 +141,14 @@ const HANDLED = [
   "hidden-restore",
   "hide-team-brief",
   "identity-add",
+  "identity-cleanup",
+  "identity-cleanup-keep",
+  "identity-code-submit",
+  "identity-login",
+  "identity-login-cancel",
+  "identity-login-dismiss",
+  "identity-login-open",
+  "identity-logout",
   "identity-remove",
   "install-docker",
   "install-update",
@@ -298,8 +306,11 @@ assert.deepEqual(covered, expected);
 //             limit notice), jump-latest (the "Jump to latest" pill).
 // 220 -> 221: retry-interrupted (Retry on a "Sub8 restarted while this was
 //             running" notice).
-assert.equal(HANDLED.length, 221);
-assert.equal(covered.length, 221);
+// 221 -> 229: identity-login, -login-open, -login-cancel, -login-dismiss,
+//             -code-submit, -logout, -cleanup, -cleanup-keep (separate logins
+//             per identity: sign in, sign out, remove unused).
+assert.equal(HANDLED.length, 229);
+assert.equal(covered.length, 229);
 
 console.log(
   "ok delegated-acts (" + keys.length + " in ACTIONS, " + new Set(chain).size +

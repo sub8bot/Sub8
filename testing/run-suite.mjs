@@ -50,6 +50,7 @@ const ORDER = [
   "vm-status.mjs",
   "login-intent.mjs",
   "host-cli-auth.mjs",
+  "identity-logins.mjs",
   "cursor-cli.mjs",
   "account.mjs",
   "cloud-draft.mjs",

@@ -59,6 +59,7 @@ plan/
 /web/grok-bot.js
 /web/harness-models.mjs
 /web/icons.mjs
+/web/identity-rows.mjs
 /web/markdown.js
 /web/palette.js
 /web/stream-bind.mjs
@@ -94,6 +95,7 @@ plan/
 /server/hermes-acp.mjs
 /server/host-cli.mjs
 /server/identities.mjs
+/server/identity-auth.mjs
 /server/index.mjs
 /server/interrupted.mjs
 /server/usage-limit.mjs

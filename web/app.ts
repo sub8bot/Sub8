@@ -9,6 +9,8 @@ import { mergeCloudMessages, mergeCloudDraft, isTransientChatStatus } from "./ch
 import { activityLabel, applyChatBusy as applyChatBusyPure, liveBusyLabel, usageLimitInfo, chatNoticeKind, collapseRepeats, workingRowState, formatElapsed } from "./chat-activity.mjs";
 import type { ChatBusyEvent, ChatNoticeKind } from "./chat-activity.mjs";
 import { api } from "./api-client.mjs";
+import { SEPARATE_LOGIN_PROVIDERS, cleanupBannerHtml, identityOptionLabel, identityRowHtml as identityRowMarkup } from "./identity-rows.mjs";
+import type { IdentityLoginView } from "./identity-rows.mjs";
 import { iconAbout, iconBack, iconChevrons, iconClip, iconClock, iconClose, iconCompact, iconComputer, iconExpand, iconGear, iconGitHub, iconGlobe, iconHarness, iconLicense, iconLock, iconMic, iconMonitor, iconPerson, iconPlus, iconRecord, iconSend, iconStop, iconLol } from "./icons.mjs";
 import * as cloudPlace from "./cloud-place.mjs";
 import type { Avatar } from "./avatar.js";
@@ -396,6 +398,12 @@ interface IdentityRow {
   runtimeRef?: string;
   model?: string;
   status?: string;
+  /** The account this login is signed in as (local rows). */
+  email?: string;
+  /** A separate login of its own, not this Mac's default one. */
+  separate?: boolean;
+  /** Its browser sign-in, while one runs or just finished. */
+  login?: IdentityLoginView | null;
 }
 
 /** One harness as /api/harness/status reports it, plus the extras this file reads. */
@@ -764,6 +772,12 @@ interface AppState {
   cloudPlugins: Record<string, HarnessPluginsState>;
   identities: IdentityRow[];
   identityCatalog: { id: string; label: string }[];
+  /** Separate logins added but never signed in, with no bots (server rule). */
+  identityCleanup: string[];
+  /** The user chose Keep on the cleanup offer this session. */
+  identityCleanupKept: boolean;
+  /** A pasted sign-in code is being checked, per identity. */
+  identityCodeBusy: Record<string, boolean>;
   harnessTab: string | undefined;
   /** Claude desk-login status for the selected cloud desk (iOS parity). */
   claudeAuth: {
@@ -933,6 +947,9 @@ const state: AppState = {
   cloudPlugins: {},
   identities: [],
   identityCatalog: [],
+  identityCleanup: [],
+  identityCleanupKept: false,
+  identityCodeBusy: {},
   harnessTab: "grok-build",
   claudeAuth: null,
   harnessTests: {},
@@ -4380,10 +4397,14 @@ function paintCtxMenu(): void {
     const left = Math.min(ctx.x, Math.max(8, window.innerWidth - 300));
     const cloud = ctx.sub === "cloud";
     const deskId = cloudDeskIdOf(currentBot());
-    const opts = (state.identityCatalog || []).map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`).join("");
+    // Only engines whose CLI can hold a second login in its own directory.
+    const opts = (state.identityCatalog || [])
+      .filter((item) => cloud || SEPARATE_LOGIN_PROVIDERS.includes(item.id))
+      .map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`)
+      .join("");
     host.innerHTML = `<div class="ctx-prompt add-login" style="top:${top}px;left:${left}px">
       <div class="lbl">${cloud ? "Add a Cloud login" : "Add a login"}</div>
-      <div class="sub">${cloud ? "Grok signs in for the whole account; Claude signs in per desk." : "A separate sign-in on this Mac, so two Bots can use different accounts."}</div>
+      <div class="sub">${cloud ? "Grok signs in for the whole account; Claude signs in per desk." : "A separate sign-in on this Mac, so two Bots can use different accounts. Next, you sign in with that account in your browser."}</div>
       ${
         cloud
           ? `<div class="row" style="margin-top:10px;gap:8px;flex-wrap:wrap">
@@ -4391,7 +4412,7 @@ function paintCtxMenu(): void {
           <button type="button" class="pill primary" data-act="add-login-cloud" data-id="claude" ${deskId ? "" : "disabled title=\"Select a Cloud desk bot first\""}>Claude on this desk</button>
           <button type="button" class="pill" data-act="ctx-close">Cancel</button></div>`
           : `<select class="field" id="identity-add-provider" style="margin-top:10px">${opts}</select>
-        <div class="row" style="margin-top:10px;gap:8px"><button type="button" class="pill primary" data-act="identity-add">Add</button><button type="button" class="pill" data-act="ctx-close">Cancel</button></div>`
+        <div class="row" style="margin-top:10px;gap:8px"><button type="button" class="pill primary" data-act="identity-add">Add and sign in</button><button type="button" class="pill" data-act="ctx-close">Cancel</button></div>`
       }
     </div>`;
     return;
@@ -5176,18 +5197,8 @@ function claudeCodePanelHtml(): string {
 
 /** One identity of a local harness, as a row inside that harness's card. */
 function identityRowHtml(row: IdentityRow): string {
-  const tone = row.status === "signed_in" ? "ok" : row.status === "expired" || row.status === "not_installed" ? "bad" : "warn";
-  // Grok-style logins carry no email; say what the status already proves
-  // instead of "Not connected" next to a Signed in badge.
-  const who = row.subject ? escapeHtml(row.subject) : row.status === "signed_in" ? "This Mac\u2019s login" : "Not connected";
-  const scope = row.runtimeRef === "host" ? "shared" : "isolated";
-  const usedBy = [...new Set(state.bots.filter((b) => String(b.identityId || "") === row.id).map((b) => b.name || "Bot"))]
-    .map((n) => escapeHtml(n))
-    .join(", ");
-  return `<div class="row ident-row">
-      <div><div class="lbl">${row.status === "signed_in" ? "Signed in" : "Login"}</div><div class="sub">${who} · ${scope}${usedBy ? ` · used by ${usedBy}` : " · no bots yet"}</div></div>
-      <span class="hbadge ${tone}">${escapeHtml(identityStatusLabel(row.status))}</span>
-    </div>`;
+  const usedBy = [...new Set(state.bots.filter((b) => String(b.identityId || "") === row.id).map((b) => b.name || "Bot"))];
+  return identityRowMarkup(row, { usedBy, busy: Boolean(state.identityCodeBusy[row.id]) });
 }
 
 /**
@@ -5424,7 +5435,8 @@ function harnessesHtml(h: HarnessSettingsState): string {
     </div>`;
   let body: string;
   if (place === "local") {
-    body = harnessCatalog().map((item) => harnessCardHtml(item.id, h)).join("");
+    const stale = state.identityCleanupKept ? [] : (state.identityCleanup || []).filter((id) => (state.identities || []).some((r) => r.id === id));
+    body = cleanupBannerHtml(stale.length) + harnessCatalog().map((item) => harnessCardHtml(item.id, h)).join("");
   } else {
     const cloud = (state.identities || []).filter((r) => r.place === "cloud");
     body =
@@ -6050,10 +6062,10 @@ function identityOptions(selected: string | undefined, providerFallback?: string
   const opts = [`<option value="" ${!effective ? "selected" : ""}>App default</option>`];
   for (const row of rows) {
     const on = effective === row.id || (!effective && row.provider === providerFallback && row.runtimeRef === "host");
-    const who = row.subject && !String(row.label || "").includes(row.subject) ? ` · ${row.subject}` : "";
-    opts.push(
-      `<option value="${escapeHtml(row.id)}" ${on ? "selected" : ""}>${escapeHtml(`${row.label}${who}`)}</option>`,
-    );
+    // CLI logins read "Claude · you@example.com" so two accounts of one engine
+    // tell apart; API and local engines keep their row label.
+    const text = row.kind === "cli-oauth" || row.separate ? identityOptionLabel(row) : `${row.label}${row.subject && !String(row.label || "").includes(row.subject) ? ` · ${row.subject}` : ""}`;
+    opts.push(`<option value="${escapeHtml(row.id)}" ${on ? "selected" : ""}>${escapeHtml(text)}</option>`);
   }
   return opts.join("") + ADD_IDENTITY_OPTION;
 }
@@ -9528,7 +9540,11 @@ const ACTIONS: Record<string, ActHandler> = {
   "identity-remove": async (e) => {
     const id = (e?.target as HTMLElement | null)?.closest?.("[data-id]")?.getAttribute("data-id") || "";
     if (!id) return;
-    if (!(await askConfirm("Remove this login? Bots attached to it will ask you to sign in again.", { ok: "Remove", danger: true }))) return;
+    const row = (state.identities || []).find((r) => r.id === id);
+    const msg = row?.separate && row.status === "signed_in"
+      ? `Remove this login${row.email ? ` (${row.email})` : ""}? Sub8 signs it out of its own login only. Bots attached to it will ask you to pick another.`
+      : "Remove this login? Bots attached to it will ask you to sign in again.";
+    if (!(await askConfirm(msg, { ok: "Remove", danger: true }))) return;
     void (async () => {
       try {
         await api(`/api/identities/${encodeURIComponent(id)}`, { method: "DELETE" });
@@ -9546,13 +9562,85 @@ const ACTIONS: Record<string, ActHandler> = {
     paintCtxMenu();
     void (async () => {
       try {
-        await api("/api/identities", { method: "POST", body: { provider, isolated: true } });
+        // A new login starts signed OUT and goes straight to its own browser
+        // sign-in; it never borrows this Mac's default login.
+        const r = (await api("/api/identities", { method: "POST", body: { provider, isolated: true } })) as { identity?: { id?: string } };
+        const id = String(r?.identity?.id || "");
+        state.harnessOpen[provider] = true;
         await loadIdentities();
-        if (state.modal === "settings" && state.section === "harnesses") paintModal();
+        if (id) await startIdentityLogin(id);
+        else if (state.modal === "settings" && state.section === "harnesses") paintModal();
       } catch (err) {
         flashToast((err as CaughtError).message || "Could not add that identity.");
       }
     })();
+    return;
+  },
+  "identity-login": (e, { el }) => {
+    const id = el.dataset.id || "";
+    if (id) void startIdentityLogin(id);
+    return;
+  },
+  "identity-login-open": (e, { el }) => {
+    openExternal(el.dataset.url);
+    return;
+  },
+  "identity-login-cancel": (e, { el }) => {
+    const id = el.dataset.id || "";
+    if (!id) return;
+    void api(`/api/identities/${encodeURIComponent(id)}/login`, { method: "DELETE" })
+      .catch(() => {})
+      .then(() => loadIdentities())
+      .then(() => {
+        if (state.modal === "settings" && state.section === "harnesses") paintModal();
+      });
+    return;
+  },
+  "identity-login-dismiss": (e, { el }) => {
+    const id = el.dataset.id || "";
+    const row = (state.identities || []).find((r) => r.id === id);
+    if (row) row.login = null;
+    void api(`/api/identities/${encodeURIComponent(id)}/login`, { method: "DELETE" }).catch(() => {});
+    paintModal();
+    return;
+  },
+  "identity-code-submit": (e, { el }) => {
+    const id = el.dataset.id || "";
+    if (id) void submitIdentityCode(id);
+    return;
+  },
+  "identity-logout": async (e, { el }) => {
+    const id = el.dataset.id || "";
+    const row = (state.identities || []).find((r) => r.id === id);
+    if (!id || !row) return;
+    if (!(await askConfirm(`Sign this login out${row.email ? ` (${row.email})` : ""}? Only this separate login is signed out; this Mac's own login is not touched.`, { ok: "Sign out" }))) return;
+    try {
+      await api(`/api/identities/${encodeURIComponent(id)}/logout`, { method: "POST" });
+    } catch (err) {
+      flashToast((err as CaughtError).message || "Could not sign that login out.");
+    }
+    await loadIdentities();
+    if (state.modal === "settings" && state.section === "harnesses") paintModal();
+    return;
+  },
+  "identity-cleanup": () => {
+    const ids = [...(state.identityCleanup || [])];
+    void (async () => {
+      try {
+        const r = (await api("/api/identities/cleanup", { method: "POST", body: { ids } })) as { removed?: string[] };
+        const n = Array.isArray(r?.removed) ? r.removed.length : 0;
+        flashToast(n ? `Removed ${n} unused login${n === 1 ? "" : "s"}.` : "Nothing to remove.");
+      } catch (err) {
+        flashToast((err as CaughtError).message || "Could not remove those logins.");
+      }
+      await loadIdentities();
+      if (state.modal === "settings" && state.section === "harnesses") paintModal();
+    })();
+    return;
+  },
+  "identity-cleanup-keep": () => {
+    state.identityCleanupKept = true;
+    paintModal();
     return;
   },
   "grok-oauth": (e) => {
@@ -9693,6 +9781,11 @@ function bindDelegated(): void {
     if (e.key === "Enter" && (e.target as HTMLElement | null)?.hasAttribute?.("data-account-email")) {
       e.preventDefault();
       document.querySelector<HTMLElement>("[data-act=account-magic]")?.click();
+      return;
+    }
+    if (e.key === "Enter" && (e.target as HTMLElement | null)?.hasAttribute?.("data-identity-code")) {
+      e.preventDefault();
+      void submitIdentityCode(String((e.target as HTMLElement).getAttribute("data-identity-code") || ""));
       return;
     }
     if (e.key === "Enter" && (e.target as HTMLElement | null)?.id === "claude-auth-code") {
@@ -10302,13 +10395,77 @@ function setupQuery(): URLSearchParams {
   }
 }
 
+/** Start (or resume) a separate login's browser sign-in, then watch it finish. */
+async function startIdentityLogin(id: string): Promise<void> {
+  try {
+    const r = (await api(`/api/identities/${encodeURIComponent(id)}/login`, { method: "POST" })) as { login?: IdentityLoginView };
+    const row = (state.identities || []).find((x) => x.id === id);
+    if (row && r?.login) row.login = r.login;
+    // The CLI opens the browser itself; the button stays for a closed tab.
+    pollIdentityLogin(id);
+  } catch (err) {
+    flashToast((err as CaughtError).message || "Could not start sign-in.");
+  }
+  if (state.modal === "settings" && state.section === "harnesses") paintModal();
+}
+
+const identityPolls = new Set<string>();
+
+/** Poll a running sign-in until it finishes, then reload the rows. */
+function pollIdentityLogin(id: string): void {
+  if (identityPolls.has(id)) return;
+  identityPolls.add(id);
+  const started = Date.now();
+  const tick = async (): Promise<void> => {
+    let login: IdentityLoginView | null = null;
+    try {
+      login = ((await api(`/api/identities/${encodeURIComponent(id)}/login`)) as { login?: IdentityLoginView | null })?.login || null;
+    } catch {
+      login = null;
+    }
+    const row = (state.identities || []).find((x) => x.id === id);
+    if (login?.state === "waiting" && Date.now() - started < 11 * 60_000) {
+      if (row && row.login?.url !== login.url) {
+        row.login = login;
+        if (state.modal === "settings" && state.section === "harnesses") paintModal();
+      }
+      setTimeout(() => void tick(), 1500);
+      return;
+    }
+    identityPolls.delete(id);
+    delete state.identityCodeBusy[id];
+    await loadIdentities();
+    const fresh = (state.identities || []).find((x) => x.id === id);
+    if (fresh && login) fresh.login = login;
+    if (state.modal === "settings" && state.section === "harnesses") paintModal();
+  };
+  setTimeout(() => void tick(), 1500);
+}
+
+async function submitIdentityCode(id: string): Promise<void> {
+  const code = (document.querySelector<HTMLInputElement>(`[data-identity-code="${CSS.escape(id)}"]`)?.value || "").trim();
+  if (!code) return;
+  state.identityCodeBusy[id] = true;
+  paintModal();
+  try {
+    await api(`/api/identities/${encodeURIComponent(id)}/login/code`, { method: "POST", body: { code } });
+    pollIdentityLogin(id);
+  } catch (err) {
+    delete state.identityCodeBusy[id];
+    flashToast((err as CaughtError).message || "Could not send that code.");
+    paintModal();
+  }
+}
+
 async function loadIdentities(): Promise<void> {
   try {
     const desk = isCloudPlace() ? cloudDeskIdOf(currentBot()) : "";
     const url = desk ? `/api/identities?computerId=${encodeURIComponent(desk)}` : "/api/identities";
-    const data = await api(url) as { identities?: IdentityRow[]; catalog?: { id: string; label: string }[] };
+    const data = await api(url) as { identities?: IdentityRow[]; catalog?: { id: string; label: string }[]; cleanup?: string[] };
     state.identities = data.identities || [];
     state.identityCatalog = data.catalog || [];
+    state.identityCleanup = Array.isArray(data.cleanup) ? data.cleanup : [];
+    for (const row of state.identities) if (row.login?.state === "waiting") pollIdentityLogin(row.id);
   } catch {
     state.identities = state.identities || [];
   }

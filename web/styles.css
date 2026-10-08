@@ -3516,6 +3516,18 @@ select.pill { appearance: none; padding-right: 24px; }
 .harness-card-body { padding: 2px 14px 12px; border-top: 1px solid var(--line, rgba(0,0,0,.08)); }
 .harness-card-body .harness-log[hidden] { display: none; }
 .ident-row .sub { word-break: break-word; }
+/* A login row: who + scope on the left, then its badge and Sign in / Sign out / Remove. */
+.ident-row > div:first-child { flex: 1 1 auto; min-width: 0; }
+.ident-row .hbadge { flex: 0 0 auto; }
+.ident-actions { flex: 0 0 auto; }
+/* The sign-in steps under a login row while its browser sign-in runs. */
+.ident-login { margin: 8px 0 4px; padding: 10px 12px; border-radius: 10px; background: var(--hover); display: flex; flex-direction: column; gap: 8px; }
+.ident-login .sub { color: var(--muted); font-size: 13px; }
+.ident-login .row { justify-content: flex-start; }
+.ident-login .row + .row { margin-top: 0; padding-top: 0; border-top: 0; }
+.ident-login .field { flex: 1 1 auto; min-width: 0; }
+.ident-cleanup { margin-bottom: 8px; }
+@media (max-width: 560px) { .ident-row { flex-wrap: wrap; } }
 
 /* Harness card head: a toggle plus a ⋯ menu (the head itself is no longer a button). */
 .harness-card-head { display: flex; align-items: stretch; padding: 0; cursor: default; }

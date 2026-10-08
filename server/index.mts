@@ -12,6 +12,7 @@ import { runTurn, publicBot, pingHarness, webSearch, orchestratorReply, HARNESS_
 import { detectLocalHarnesses } from "./local-llm.mjs";
 import { collectHarnessStatus } from "./harness-status.mjs";
 import * as identities from "./identities.mjs";
+import * as identityAuth from "./identity-auth.mjs";
 import type { Identity } from "@sub8/identities";
 import { applySimulate } from "../web/brain-setup.mjs";
 import { looksLikeAuthFailure, rewriteHarnessOutput } from "@sub8/harness-auth";
@@ -2248,6 +2249,31 @@ app.get("/api/harness/:provider/plugins", async (req, res) => {
   }
 });
 
+function providerLabelOf(provider: string): string {
+  return ({ claude: "Claude", codex: "Codex", "grok-build": "Grok Build" } as Record<string, string>)[provider] || provider;
+}
+
+/** What a sign-in job needs from the app: other rows' emails, and where to save its own. */
+function identityLoginDeps(row: Identity): identityAuth.LoginDeps {
+  return {
+    others: async () => {
+      const settings = await store.loadSettings();
+      const status = await collectHarnessStatus(settings);
+      const all = (await identities.loadNormalizedIdentities()).filter((r) => r.place === "local" && r.provider === row.provider && r.id !== row.id);
+      return Promise.all(
+        all.map(async (r) => {
+          const own = identities.isIsolatedIdentity(r) ? await identityAuth.ownAuth(r).catch(() => null) : null;
+          const d = identities.decorateIdentity(r, status, own);
+          return { id: r.id, label: r.label, email: d.status === "signed_in" ? d.email : "" };
+        }),
+      );
+    },
+    onSignedIn: async (id, email) => {
+      await identities.patchIdentity(id, { subject: email, label: email ? `${providerLabelOf(row.provider)} · ${email}` : providerLabelOf(row.provider) });
+    },
+  };
+}
+
 app.get("/api/identities", async (req, res) => {
   try {
     const settings = await store.loadSettings();
@@ -2274,11 +2300,29 @@ app.get("/api/identities", async (req, res) => {
         /* cloud brain optional */
       }
     }
+    // Each isolated row is probed against its OWN login dir (in parallel, cached).
+    const own = new Map<string, identityAuth.OwnAuthResult>();
+    await Promise.all(
+      rows.filter((row) => identities.isIsolatedIdentity(row)).map(async (row) => {
+        const r = await identityAuth.ownAuth(row).catch(() => null);
+        if (r) own.set(row.id, r);
+      }),
+    );
+    const bots = (await store.loadBots()) as IndexBot[];
+    const facts: Record<string, identities.CleanupFacts> = {};
+    for (const row of rows) {
+      const r = own.get(row.id);
+      facts[row.id] = { ownCredentials: r ? r.ownCredentials : null, loginActive: identityAuth.loginActive(row.id) };
+    }
+    const cleanup = identities.cleanupCandidates(rows, facts, bots).map((row) => row.id);
     res.json({
       identities: rows.map((row) =>
-        row.place === "cloud" ? identities.decorateCloudIdentity(row, cloudCtx) : identities.decorateIdentity(row, status),
+        row.place === "cloud"
+          ? identities.decorateCloudIdentity(row, cloudCtx)
+          : { ...identities.decorateIdentity(row, status, own.get(row.id) || null), login: identityAuth.loginStatus(row.id) },
       ),
       catalog: (await import("@sub8/identities")).catalog(),
+      cleanup,
     });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -2312,7 +2356,86 @@ app.patch("/api/identities/:id", async (req, res) => {
   res.json({ identity: row });
 });
 
+/** Start the browser sign-in for an isolated identity (its own login dir). */
+app.post("/api/identities/:id/login", async (req, res) => {
+  const row = (await identities.loadNormalizedIdentities()).find((r) => r.id === req.params.id);
+  if (!row) return res.status(404).json({ error: "not found" });
+  try {
+    const login = await identityAuth.startLogin(row, identityLoginDeps(row));
+    res.json({ login });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+app.get("/api/identities/:id/login", (req, res) => {
+  res.json({ login: identityAuth.loginStatus(req.params.id) });
+});
+
+app.post("/api/identities/:id/login/code", (req, res) => {
+  try {
+    res.json({ login: identityAuth.submitLoginCode(req.params.id, req.body?.code) });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+app.delete("/api/identities/:id/login", (req, res) => {
+  const cancelled = identityAuth.cancelLogin(req.params.id);
+  identityAuth.clearLogin(req.params.id);
+  res.json({ ok: true, cancelled });
+});
+
+/** Sign an isolated identity out of its own login. The shared one is refused. */
+app.post("/api/identities/:id/logout", async (req, res) => {
+  const row = (await identities.loadNormalizedIdentities()).find((r) => r.id === req.params.id);
+  if (!row) return res.status(404).json({ error: "not found" });
+  try {
+    await identityAuth.signOut(row);
+    await identities.patchIdentity(row.id, { subject: "", label: identities.isIsolatedIdentity(row) ? providerLabelOf(row.provider) : row.label });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+/**
+ * Remove identities that were added but never signed in. The server re-checks
+ * the rule; a row with bots or credentials of its own is never removed.
+ */
+app.post("/api/identities/cleanup", async (req, res) => {
+  const rows = await identities.loadNormalizedIdentities();
+  const facts: Record<string, identities.CleanupFacts> = {};
+  for (const row of rows.filter((r) => identities.isIsolatedIdentity(r))) {
+    const r = await identityAuth.ownAuth(row, { force: true }).catch(() => null);
+    facts[row.id] = { ownCredentials: r ? r.ownCredentials : null, loginActive: identityAuth.loginActive(row.id) };
+  }
+  const bots = (await store.loadBots()) as IndexBot[];
+  const wanted = Array.isArray(req.body?.ids) ? new Set((req.body.ids as unknown[]).map(String)) : null;
+  const removable = identities.cleanupCandidates(rows, facts, bots).filter((row) => !wanted || wanted.has(row.id));
+  for (const row of removable) {
+    await identities.removeIdentity(row.id);
+    const shared = rows.some((r) => r.id !== row.id && r.provider === row.provider && r.runtimeRef === row.runtimeRef);
+    if (!shared) await identityAuth.removeLoginDir(row).catch(() => {});
+  }
+  res.json({ ok: true, removed: removable.map((row) => row.id) });
+});
+
 app.delete("/api/identities/:id", async (req, res) => {
+  // An isolated login is Sub8's own: sign it out (only its own Keychain item /
+  // auth.json) and drop its dir, so it does not linger after the row is gone.
+  const pool = await identities.loadNormalizedIdentities();
+  const target = pool.find((r) => r.id === req.params.id);
+  // Another row on the same login dir keeps it (and its login).
+  const sharedDir = Boolean(target && pool.some((r) => r.id !== target.id && r.provider === target.provider && r.runtimeRef === target.runtimeRef));
+  if (target && identities.isIsolatedIdentity(target) && !sharedDir) {
+    try {
+      await identityAuth.signOut(target);
+      await identityAuth.removeLoginDir(target);
+    } catch (err) {
+      return res.status(500).json({ error: (err as Error).message });
+    }
+  }
   // The cloud Claude identity is the account credential: removing it forgets
   // the credential on the Worker too, so it does not come straight back.
   if (req.params.id === "cloud-claude") {

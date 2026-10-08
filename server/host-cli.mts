@@ -724,10 +724,10 @@ export async function harvestAuthFile(src: string, dest: string): Promise<"symli
   }
 }
 
-export async function writeCodexHome(work: string, mcpEnv: McpEnv): Promise<string> {
+export async function writeCodexHome(work: string, mcpEnv: McpEnv, authSrc: string = hostCodexAuthPath()): Promise<string> {
   const home = path.join(work, "codex-home");
   await fs.mkdir(home, { recursive: true });
-  await shareAuthFile(hostCodexAuthPath(), path.join(home, "auth.json"));
+  await shareAuthFile(authSrc, path.join(home, "auth.json"));
   const envLines = Object.entries({ PATH: hostEnv().PATH, ...mcpEnv })
     .filter(([, v]) => v != null && String(v))
     .map(([k, v]) => `${k} = ${JSON.stringify(String(v))}`)
@@ -995,14 +995,27 @@ export function withHostPluginsBlock(system: string): string {
   return block ? `${system}\n\n${block}` : system;
 }
 
+/**
+ * The identity a host turn runs as, when it has a login of its own. Only when
+ * it is for THIS turn's engine: a Claude identity's dir handed to a Grok turn
+ * would be the wrong login twice over.
+ */
+export function turnIdentity(
+  attach: { identityId: string; runtimeRef: string; provider?: string; place?: string } | null | undefined,
+  provider: string,
+): (Pick<import("@sub8/identities").Identity, "id" | "runtimeRef" | "provider" | "place">) | null {
+  if (!attach || (attach.provider && attach.provider !== provider)) return null;
+  const row = { id: attach.identityId, runtimeRef: attach.runtimeRef, provider: provider as import("@sub8/identities").IdentityProvider, place: (attach.place === "cloud" ? "cloud" : "local") as "cloud" | "local" };
+  return identities.isIsolatedIdentity(row) ? row : null;
+}
+
 export async function runHostCli({ provider, model, userText, signal, bot, settings, hidden = false, emit, internalToken, port, steering }: RunHostCliOptions): Promise<string> {
   const box = bot?.vm?.container;
   if (!box) return "This harness only runs after the Bot computer is up.";
   const attach = await identities.attachForBot(bot as import("@sub8/identities").AttachBot).catch(() => null);
-  const isolatedHome = attach
-    ? identities.identityRuntimeDir({ id: attach.identityId, runtimeRef: attach.runtimeRef, provider: attach.provider || provider })
-    : "";
-  if (isolatedHome) await fs.mkdir(isolatedHome, { recursive: true });
+  const identity = turnIdentity(attach, provider);
+  const isolatedHome = identity ? identities.identityRuntimeDir(identity) : "";
+  if (isolatedHome) await fs.mkdir(isolatedHome, { recursive: true, mode: 0o700 });
   const work = await fs.mkdtemp(path.join(os.tmpdir(), `sub8-${provider}-`));
   const extra = await ctx.agentsExtra({ bot, settings, hidden });
   await memory.ensureLayout(bot).catch(() => {});
@@ -1077,9 +1090,10 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
 
   let bin: string;
   let args: string[];
-  const spawnEnv = hostEnv();
+  // An isolated identity runs on its own login dir (CLAUDE_CONFIG_DIR /
+  // CODEX_HOME / GROK_HOME); the shared one gets this Mac's env untouched.
+  const spawnEnv = identities.applyIdentityEnv(hostEnv(), identity);
   if (provider === "claude") {
-    if (isolatedHome) spawnEnv.CLAUDE_CONFIG_DIR = isolatedHome;
     bin = claudeBin();
     // The prompt goes in on stdin as a stream-json user message, and stdin
     // stays open for the turn: a chat line the user sends while Claude works
@@ -1190,7 +1204,8 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
       `${rules}\n\n${prompt}`,
     ];
   } else {
-    const home = await writeCodexHome(work, mcpEnv);
+    // Isolated: the turn's CODEX_HOME shares the identity's auth.json, not the Mac's.
+    const home = await writeCodexHome(work, mcpEnv, isolatedHome ? path.join(isolatedHome, "auth.json") : undefined);
     spawnEnv.CODEX_HOME = home;
     bin = codexBin();
     args = [
@@ -1239,7 +1254,7 @@ You have an MCP server named "sub8". Use computer action=open to go to a URL. Do
   // Codex runs --ephemeral (no session to resume), Cursor is not resumed
   // here: a line sent mid-turn waits for the turn to end.
   steering?.unsupported();
-  return driveCli({ provider, bin, args, env: spawnEnv, cwd: work, signal });
+  return driveCli({ provider, bin, args, env: spawnEnv, cwd: work, signal, ...(provider === "codex" && isolatedHome ? { codexAuthSrc: path.join(isolatedHome, "auth.json") } : {}) });
 }
 
 /** One stream-json user message for `claude -p --input-format stream-json`. */
@@ -1442,6 +1457,8 @@ export interface DriveCliOptions {
   hardMs?: number | undefined;
   /** How long an interrupted child gets to exit before SIGTERM. */
   interruptGraceMs?: number | undefined;
+  /** Codex: the auth.json the turn's CODEX_HOME shares (an isolated identity's, else this Mac's). */
+  codexAuthSrc?: string | undefined;
 }
 
 /**
@@ -1522,7 +1539,7 @@ export function driveCli(o: DriveCliOptions): Promise<string> {
         /* ignore */
       }
       try {
-        if (provider === "codex") await harvestAuthFile(hostCodexAuthPath(), path.join(String(o.cwd || ""), "codex-home", "auth.json"));
+        if (provider === "codex") await harvestAuthFile(String(o.codexAuthSrc || "") || hostCodexAuthPath(), path.join(String(o.cwd || ""), "codex-home", "auth.json"));
         if (provider === "hermes") await harvestAuthFile(hostHermesAuthPath(), path.join(hermesHomeDir(), "auth.json"));
       } catch {
         /* ignore */

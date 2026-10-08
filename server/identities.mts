@@ -45,6 +45,94 @@ export function identityRuntimeDir(identity: Pick<Identity, "id" | "runtimeRef" 
   return path.join(dataDir, "identities", ref, identity.provider);
 }
 
+/**
+ * Engines whose CLI keeps its whole login under one directory we can point it
+ * at, so two identities of the same engine can hold two different accounts:
+ *
+ * - claude: CLAUDE_CONFIG_DIR. On macOS the OAuth token lives in the Keychain,
+ *   but under a service named "Claude Code-credentials-<sha256(dir)[0:8]>", so a
+ *   different config dir is a different Keychain item (the default ~/.claude
+ *   login is the unsuffixed "Claude Code-credentials").
+ * - codex: CODEX_HOME (auth.json inside it).
+ * - grok-build: GROK_HOME (auth.json inside it).
+ *
+ * Cursor, Hermes and the local engines keep one login per Mac.
+ */
+export const SEPARATE_LOGIN_ENV: Readonly<Record<string, string>> = {
+  claude: "CLAUDE_CONFIG_DIR",
+  codex: "CODEX_HOME",
+  "grok-build": "GROK_HOME",
+};
+
+export function supportsSeparateLogin(provider: string): boolean {
+  return Object.prototype.hasOwnProperty.call(SEPARATE_LOGIN_ENV, provider);
+}
+
+/** A local identity with its own login directory (not this Mac's default login). */
+export function isIsolatedIdentity(identity: Pick<Identity, "place" | "runtimeRef" | "provider"> | null | undefined): boolean {
+  if (!identity || identity.place === "cloud") return false;
+  const ref = String(identity.runtimeRef || "");
+  if (!ref || ref === "host" || ref === "brain" || ref === "account") return false;
+  return supportsSeparateLogin(identity.provider);
+}
+
+/**
+ * The env a CLI child needs to run as this identity: its login directory, and
+ * nothing that would shadow that login. Empty for the shared (host) identity,
+ * which keeps running exactly as before.
+ */
+export function identityCliEnv(identity: Pick<Identity, "id" | "place" | "runtimeRef" | "provider">): Record<string, string> {
+  if (!isIsolatedIdentity(identity)) return {};
+  const key = SEPARATE_LOGIN_ENV[identity.provider];
+  const dir = identityRuntimeDir(identity);
+  return key && dir ? { [key]: dir } : {};
+}
+
+/** Apply identityCliEnv to a spawn env, dropping inherited credentials that would win over it. */
+export function applyIdentityEnv(env: NodeJS.ProcessEnv, identity: Pick<Identity, "id" | "place" | "runtimeRef" | "provider"> | null | undefined): NodeJS.ProcessEnv {
+  if (!identity) return env;
+  const extra = identityCliEnv(identity);
+  if (!Object.keys(extra).length) return env;
+  const next: NodeJS.ProcessEnv = { ...env, ...extra };
+  if (identity.provider === "claude") {
+    // Any of these beats the config dir's own login, and they belong to the
+    // shell that launched Sub8, not to this identity.
+    delete next.ANTHROPIC_API_KEY;
+    delete next.ANTHROPIC_AUTH_TOKEN;
+    delete next.CLAUDE_CODE_OAUTH_TOKEN;
+  }
+  if (identity.provider === "codex") delete next.OPENAI_API_KEY;
+  return next;
+}
+
+/** What the cleanup rule needs to know about one identity's own login. */
+export interface CleanupFacts {
+  /** null = could not tell (probe failed); never cleaned up then. */
+  ownCredentials: boolean | null;
+  loginActive?: boolean;
+}
+
+/**
+ * Identities that were added but never signed in: isolated, no credentials of
+ * their own, no bot attached, no sign-in under way, and not brand new (the
+ * user may be about to sign in). Anything else is kept.
+ */
+export function cleanupCandidates(
+  rows: readonly Identity[],
+  facts: Readonly<Record<string, CleanupFacts | undefined>>,
+  bots: ReadonlyArray<{ identityId?: unknown }>,
+  { now = Date.now(), graceMs = 2 * 60_000 }: { now?: number; graceMs?: number } = {},
+): Identity[] {
+  const used = new Set(bots.map((b) => String(b?.identityId || "")).filter(Boolean));
+  return rows.filter((row) => {
+    if (!isIsolatedIdentity(row)) return false;
+    if (used.has(row.id)) return false;
+    const f = facts[row.id];
+    if (!f || f.ownCredentials !== false || f.loginActive) return false;
+    return now - (Number(row.createdAt) || 0) >= graceMs;
+  });
+}
+
 export async function loadNormalizedIdentities(): Promise<Identity[]> {
   const raw = await store.loadIdentities();
   return raw.map((row) => normalizeIdentity(row)).filter((row): row is Identity => Boolean(row));
@@ -226,6 +314,11 @@ export async function addIdentity(input: {
 }): Promise<Identity> {
   const provider = (input.provider || "claude") as IdentityProvider;
   const isolated = input.isolated !== false && input.place !== "cloud";
+  if (isolated && !input.runtimeRef && !supportsSeparateLogin(provider)) {
+    // A second "isolated" Cursor/Hermes/... row would only ever run on this
+    // Mac's one login while claiming to be separate.
+    throw new Error(`${providerLabel(provider)} keeps one login per Mac. Separate logins work for Claude, Codex and Grok Build.`);
+  }
   const id = randomUUID();
   const row = normalizeIdentity({
     id,
@@ -266,8 +359,31 @@ export async function removeIdentity(id: string): Promise<boolean> {
   return true;
 }
 
-export function decorateIdentity(identity: Identity, probe: IdentityProbe = {}): Identity & { status: ReturnType<typeof statusForIdentity> } {
-  return { ...identity, status: statusForIdentity(probe.harnesses?.[identity.provider]) };
+/** This identity's own login, as identity-auth probed it. */
+export interface OwnAuth {
+  status: IdentityProbeStatus;
+  email: string;
+  ownCredentials: boolean | null;
+}
+
+/**
+ * Status for Settings. The shared (host) identity reports this Mac's default
+ * login. An isolated one reports ONLY its own login: reading the Mac's default
+ * there is what made every "+ Add login" row claim "Signed in" at once.
+ */
+export function decorateIdentity(
+  identity: Identity,
+  probe: IdentityProbe = {},
+  own?: OwnAuth | null,
+): Identity & { status: IdentityProbeStatus; email: string; separate: boolean; ownCredentials?: boolean | null } {
+  if (isIsolatedIdentity(identity)) {
+    const row = probe.harnesses?.[identity.provider];
+    const status: IdentityProbeStatus = row && row.installed === false ? "not_installed" : own?.status || "signed_out";
+    return { ...identity, status, email: own?.email || "", separate: true, ownCredentials: own ? own.ownCredentials : null };
+  }
+  const row = probe.harnesses?.[identity.provider];
+  const email = identity.place === "local" ? String(row?.extra?.email || "") : "";
+  return { ...identity, status: statusForIdentity(row), email: email || identity.subject || "", separate: false };
 }
 
 export async function attachForBot(

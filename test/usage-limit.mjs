@@ -103,7 +103,7 @@ assert.match(run.slice(run.indexOf("finally {")), /inflightTurns\.get\(botId\) =
 const agent = readFileSync(path.join(root, "server/agent.mts"), "utf8");
 assert.match(
   agent,
-  /harness\.provider === "grok-build"\s*\?\s*await tryDeskBrain\(/,
+  /harness\.provider === "grok-build"(?: && !ownGrokLogin)?\s*\?\s*await tryDeskBrain\(/,
   "a Claude/Codex/API bot must not be answered by the desk's grok (found live: a 'custom' bot replied via grok on the host login)",
 );
 

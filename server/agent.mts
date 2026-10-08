@@ -7,6 +7,7 @@ import { appRoot } from "./paths.mjs";
 import { isHumanControl } from "@sub8/control";
 import * as vault from "./vault.mjs";
 import * as hostCli from "./host-cli.mjs";
+import * as identities from "./identities.mjs";
 import { detectLocalHarnesses, localSpec } from "./local-llm.mjs";
 import * as ctx from "./context.mjs";
 import * as memory from "./memory.mjs";
@@ -1052,8 +1053,13 @@ export async function runTurn({ bot, settings, userText, emit, hidden = false, i
   // it every turn meant a bot switched to Claude, Codex or an API identity was
   // still answered by Grok on the host's account: the identity switch did
   // nothing (and spent the wrong quota). Only a grok-build bot goes through it.
+  // An isolated Grok identity has its own login on this Mac; the desk only
+  // holds the Mac's default one, so that bot runs through the host CLI.
+  const ownGrokLogin =
+    harness.provider === "grok-build" &&
+    Boolean(hostCli.turnIdentity(await identities.attachForBot(bot as import("@sub8/identities").AttachBot).catch(() => null), "grok-build"));
   const viaDesk =
-    harness.provider === "grok-build"
+    harness.provider === "grok-build" && !ownGrokLogin
       ? await tryDeskBrain({ bot, settings, userText: savedLogin?.did ? `${userText}\n\n${savedLogin.brief}` : userText, emit, signal, hidden, steering })
       : null;
   if (viaDesk) return viaDesk;
