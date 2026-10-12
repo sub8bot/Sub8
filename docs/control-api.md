@@ -7,6 +7,12 @@ Sub8 exposes a local HTTP API that other apps and agent harnesses on the same co
 - Only connections from this computer (loopback) are accepted. Requests that carry an `Origin` header (web pages) are refused.
 - The API covers bots that run on this Mac. Cloud bots are not listed in v1.
 
+## skill.md for agent harnesses
+
+`GET http://127.0.0.1:8787/skill.md` (also `/api/control/v1/skill.md`) serves a SKILL.md in Claude skill format (YAML frontmatter with `name: sub8` and a one-line `description`) that walks an agent through this API. Point any harness at it, for example with the prompt "Read http://127.0.0.1:8787/skill.md and use it to control Sub8". It needs no token and holds none: it names the `control.json` path, the `sub8ctl.mjs` path and the port for this install, filled in per request. It answers `text/markdown`, from this computer only, even when the API is switched off.
+
+Settings > Agent harness ("Control Sub8 with a harness") has Copy buttons for the skill URL, the MCP command and that prompt, and opens skill.md in the browser. The same panel is reachable from the title bar and from the header of Settings > Control API.
+
 ## Turning it on and finding the token
 
 The app writes `control.json` to its data folder at startup:
@@ -47,6 +53,7 @@ Errors are JSON with a stable `code`:
 | 403 | `forbidden` | Not loopback, or a browser request |
 | 403 | `disabled` | Switched off in Settings |
 | 404 | `not_found` | Unknown bot or route |
+| 404 | `no_screen` | The bot has no screenshot yet |
 | 409 | `ambiguous` | More than one bot has that name; use the id |
 
 ## Addressing bots
@@ -131,6 +138,14 @@ Stops the running turn, like the Stop button.
 
 `stopped` is false when nothing was running.
 
+### GET /bots/:bot/screen?cached=
+
+The bot computer's screen as `image/png`. When the computer is running a new screenshot is taken (the same capture the bot's own screenshot tool makes); otherwise, or with `cached=1`, the latest saved one is returned. `X-Sub8-Captured-At` (ms) and `X-Sub8-Fresh` (`1` or `0`) say which.
+
+```sh
+curl -s -H "Authorization: Bearer $TOKEN" -o scout.png "$API/bots/Scout/screen"
+```
+
 ### GET /events?bot=
 
 Server-sent events. `bot` (an id) limits the stream to one bot.
@@ -174,13 +189,14 @@ sub8ctl send Scout "Check the build and report back" --wait --timeout 600
 sub8ctl stop Scout
 sub8ctl tail Scout          # recent messages, then follows new ones
 sub8ctl events [--bot Scout]
+sub8ctl screen Scout scout.png [--cached]
 ```
 
 `--json` prints raw JSON. `--file <path>` or `SUB8_CONTROL_FILE` points at a different control.json. Exit codes: 0 ok, 1 error, 2 usage, 3 auth refused.
 
 ## MCP
 
-`sub8ctl mcp` is a stdio MCP server with these tools: `list_bots`, `get_bot`, `read_messages`, `send_message` (optional `wait` and `timeout_seconds`), `wait_for_bot`, `stop_bot`.
+`sub8ctl mcp` is a stdio MCP server with these tools: `list_bots`, `get_bot`, `read_messages`, `send_message` (optional `wait` and `timeout_seconds`), `wait_for_bot`, `stop_bot`, `get_screen` (returns the bot's desktop as an image).
 
 Claude Code:
 

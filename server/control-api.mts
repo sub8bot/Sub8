@@ -80,6 +80,14 @@ export interface ControlDeps {
   stop: (botId: string) => Promise<{ stopped: boolean }>;
   /** Every app broadcast (event name + payload). Returns an unsubscribe. */
   subscribe: (fn: (event: string, data: unknown) => void) => () => void;
+  /**
+   * The bot computer's screen as a PNG. `fresh` asks for a new capture when
+   * the computer is running; otherwise (or when that fails) the latest saved
+   * screenshot. Null when there is none.
+   */
+  screen?: (bot: ControlBot, opts: { fresh: boolean }) => Promise<{ png: Buffer; ts: number; fresh: boolean } | null>;
+  /** Absolute path of bin/sub8ctl.mjs for this install, quoted in skill.md. */
+  cliPath?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -389,6 +397,289 @@ class ControlEvents {
 }
 
 // ---------------------------------------------------------------------------
+// skill.md: a public, token-free guide an agent harness can be pointed at
+
+export interface SkillInfo {
+  port: number;
+  /** Absolute path of control.json on this computer. */
+  controlFile: string;
+  /** Absolute path of bin/sub8ctl.mjs (inside the installed app, or the dev tree). */
+  cliPath: string;
+  appVersion?: string;
+}
+
+/**
+ * The SKILL.md served at /skill.md and /api/control/v1/skill.md. It names the
+ * file that holds the token and never the token itself, so it is safe to serve
+ * without auth. Paths and port are filled in per request, so the text is right
+ * for this install (packaged app or source checkout) and this port.
+ */
+export function skillMarkdown(info: SkillInfo): string {
+  const base = `http://127.0.0.1:${info.port}`;
+  const api = `${base}${CONTROL_PREFIX}`;
+  const file = info.controlFile;
+  const cli = info.cliPath;
+  const q = (s: string) => JSON.stringify(s);
+  const fence = "```";
+  return `---
+name: sub8
+description: Hand browser and computer tasks to Sub8 bots on this machine (each runs its own isolated Linux desktop with a real browser, shell and files), check on them, steer them, see their screens and get results back. Use when a task needs a separate computer or the user mentions Sub8 or their bots.
+---
+
+# Sub8
+
+Sub8 is a desktop app running on this computer${info.appVersion ? ` (version ${info.appVersion})` : ""}. It runs AI bots, and each bot has its own Linux desktop computer (a container in Docker) that it operates with a browser, a shell and files. The bots do real work on those computers: browse sites, sign in to accounts the user granted, fill forms, download and edit files, run commands.
+
+The control API lets you, an agent harness on this same computer, use those bots:
+
+- list bots and see whether each is idle, working, paused or in error
+- read a bot's conversation
+- send a bot a task, or steer a bot that is already working
+- wait for the bot to finish and get its reply
+- stop a running turn
+- follow live events (status changes, new messages)
+- see the bot's desktop as a screenshot
+
+Use it when a task needs a browser or a computer of its own, when the work should not touch the user's own machine, or when the user asks you to check on or direct their Sub8 bots.
+
+## Auth
+
+Everything except this file needs a bearer token.
+
+1. Read the token and URL from \`${file}\` (JSON: \`{ "url", "token", "version", "enabled" }\`). Read it fresh; if a call returns 401, read it again, since the user can regenerate the token.
+2. Send \`Authorization: Bearer <token>\` on every request.
+3. Only connections from this computer (loopback) are accepted, and requests with an \`Origin\` header (web pages) are refused.
+
+Never print, log or paste the token into chat. Do not copy it into files.
+
+${fence}sh
+FILE=${q(file)}
+TOKEN=$(node -p 'require(process.argv[1]).token' "$FILE")
+API=${api}
+curl -s -H "Authorization: Bearer $TOKEN" "$API/status"
+${fence}
+
+## Endpoints
+
+Base URL: \`${api}\`. Every \`:bot\` takes a bot id or the bot's exact name (case-insensitive, URL-encoded). Responses are JSON with \`ok: true\`.
+
+### GET /status
+
+${fence}sh
+curl -s -H "Authorization: Bearer $TOKEN" "$API/status"
+${fence}
+${fence}json
+{ "ok": true, "app": "Sub8", "version": "0.3.43", "api": 1,
+  "bots": { "total": 3, "idle": 2, "working": 1, "paused": 0, "error": 0 } }
+${fence}
+
+### GET /bots
+
+${fence}sh
+curl -s -H "Authorization: Bearer $TOKEN" "$API/bots"
+${fence}
+${fence}json
+{ "ok": true, "bots": [ {
+  "id": "5f0c...", "name": "Scout", "description": "",
+  "provider": "claude", "model": "opus", "location": "local",
+  "status": "working",
+  "turn": { "request": "Find flights to Lisbon", "requestAt": 1760300000000, "doing": "Opened google.com/flights" },
+  "lastReply": { "id": "a1760...", "text": "Done. Three options...", "ts": 1760290000000 },
+  "teamId": null, "updatedAt": 1760300004000
+} ] }
+${fence}
+
+\`status\` is \`idle\` (ready), \`working\` (a turn is running; \`turn\` says what), \`paused\` (computer paused or usage limit) or \`error\`.
+
+### GET /bots/:bot
+
+The same summary plus \`recent\`, the last 10 chat messages.
+
+${fence}sh
+curl -s -H "Authorization: Bearer $TOKEN" "$API/bots/Scout"
+${fence}
+
+### GET /bots/:bot/messages?since=&limit=&activity=
+
+Chat messages, oldest first. \`since\` is a millisecond timestamp (exclusive), \`limit\` defaults to 50 (max 500), \`activity=1\` adds tool and thinking rows.
+
+${fence}sh
+curl -s -H "Authorization: Bearer $TOKEN" "$API/bots/Scout/messages?limit=20"
+${fence}
+${fence}json
+{ "ok": true, "botId": "5f0c...", "hasMore": false, "messages": [
+  { "id": "u1760...", "role": "user", "text": "Find flights to Lisbon", "ts": 1760300000000 },
+  { "id": "a1760...", "role": "assistant", "text": "Here are three...", "ts": 1760300090000 }
+] }
+${fence}
+
+Assistant rows can carry \`kind\` (\`choices\`, \`secret-request\`, \`notice\`). Choices and secret requests are answered by the user in the Sub8 app, not through this API.
+
+### POST /bots/:bot/messages
+
+Send a message as the user. Starts a turn when the bot is idle; when it is busy the message is steered into the running turn. Body: \`{ "text": "...", "wait": false, "timeoutMs": 120000 }\`.
+
+${fence}sh
+curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \\
+  -d '{"text":"Open example.com and summarize the page","wait":true,"timeoutMs":300000}' \\
+  "$API/bots/Scout/messages"
+${fence}
+${fence}json
+{ "ok": true, "botId": "5f0c...", "messageId": "u1760...", "ts": 1760300000000, "delivery": "started",
+  "wait": { "done": true, "timedOut": false, "status": "idle",
+            "reply": { "id": "a1760...", "role": "assistant", "text": "The page says...", "ts": 1760300090000 },
+            "replies": [ ... ] } }
+${fence}
+
+\`delivery\` is \`started\` or \`steered\`. \`wait\` is present only when you asked to wait.
+
+### POST /bots/:bot/wait?timeoutMs=&since=
+
+Long-poll until the bot is idle and has replied after \`since\` (default: its latest user message), or until \`timeoutMs\` (default 120000, max 600000). \`GET\` works too.
+
+${fence}sh
+curl -s -X POST -H "Authorization: Bearer $TOKEN" "$API/bots/Scout/wait?timeoutMs=600000"
+${fence}
+${fence}json
+{ "ok": true, "botId": "5f0c...", "done": true, "timedOut": false, "status": "idle",
+  "reply": { "id": "a1760...", "role": "assistant", "text": "...", "ts": 1760300090000 }, "replies": [ ... ] }
+${fence}
+
+On timeout: \`"done": false, "timedOut": true\` and the current \`status\`. Call it again to keep waiting.
+
+### POST /bots/:bot/stop
+
+Stops the running turn, like the Stop button. Answers \`{ "ok": true, "botId": "...", "stopped": true }\`; \`stopped\` is false when nothing was running.
+
+${fence}sh
+curl -s -X POST -H "Authorization: Bearer $TOKEN" "$API/bots/Scout/stop"
+${fence}
+
+### GET /bots/:bot/screen?cached=1
+
+The bot's desktop as a PNG (\`image/png\`). By default a new screenshot is taken when the bot's computer is running; \`cached=1\` returns the latest saved one without capturing. Headers: \`X-Sub8-Captured-At\` (ms) and \`X-Sub8-Fresh\` (\`1\` or \`0\`). 404 \`no_screen\` when there is no screenshot yet.
+
+${fence}sh
+curl -s -H "Authorization: Bearer $TOKEN" -o scout.png "$API/bots/Scout/screen"
+${fence}
+
+### GET /events?bot=<id>
+
+Server-sent events. \`bot\` (an id) limits the stream to one bot.
+
+${fence}sh
+curl -sN -H "Authorization: Bearer $TOKEN" "$API/events"
+${fence}
+${fence}
+event: hello
+data: {"ts":1760300000000,"version":"0.3.43"}
+
+event: status
+data: {"botId":"5f0c...","status":"working","ts":1760300000100}
+
+event: message
+data: {"botId":"5f0c...","message":{"id":"a1760...","role":"assistant","text":"Done.","ts":1760300090000}}
+${fence}
+
+A comment line is sent every 15 seconds as a keepalive.
+
+## sub8ctl (command line)
+
+A dependency-free Node client that reads control.json for you:
+
+${fence}sh
+SUB8CTL=${q(cli)}
+node "$SUB8CTL" status
+node "$SUB8CTL" bots
+node "$SUB8CTL" show Scout
+node "$SUB8CTL" send Scout "Check the build and report back" --wait --timeout 600
+node "$SUB8CTL" stop Scout
+node "$SUB8CTL" tail Scout            # recent messages, then follows new ones
+node "$SUB8CTL" events --bot Scout
+node "$SUB8CTL" screen Scout scout.png
+${fence}
+
+\`--json\` prints raw JSON. Exit codes: 0 ok, 1 error, 2 usage, 3 auth refused.
+
+## MCP
+
+\`sub8ctl mcp\` is a stdio MCP server with the tools \`list_bots\`, \`get_bot\`, \`read_messages\`, \`send_message\` (optional \`wait\`, \`timeout_seconds\`), \`wait_for_bot\`, \`stop_bot\` and \`get_screen\` (returns an image).
+
+Claude Code, one line:
+
+${fence}sh
+claude mcp add sub8 -- node ${q(cli)} mcp
+${fence}
+
+Codex (\`~/.codex/config.toml\`):
+
+${fence}toml
+[mcp_servers.sub8]
+command = "node"
+args = [${q(cli)}, "mcp"]
+${fence}
+
+Cursor and other MCP clients: command \`node\`, args \`[${q(cli)}, "mcp"]\`.
+
+## Workflows
+
+**Delegate a browser task and wait for the result.** List bots, pick an idle one whose description fits, send the task with \`wait: true\` and a generous timeout (browser work often takes minutes). If the wait times out, call \`/wait\` again rather than resending.
+
+${fence}sh
+curl -s -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \\
+  -d '{"text":"Go to news.ycombinator.com and list the top 5 titles with links.","wait":true,"timeoutMs":600000}' \\
+  "$API/bots/Scout/messages"
+${fence}
+
+**Check on running bots.** \`GET /bots\` shows each bot's status and, for working bots, \`turn.request\` and \`turn.doing\`. Use \`GET /bots/:bot/messages?since=<ts>&activity=1\` for detail and \`GET /bots/:bot/screen\` to see the desktop.
+
+**Steer mid-task.** Send another message while the bot is working; it goes into the running turn (\`delivery: "steered"\`). Keep steering short and specific. Use \`/stop\` only to abandon the turn.
+
+**Watch events.** Open \`/events\` (optionally \`?bot=<id>\`) and react to \`status\` and \`message\` events instead of polling.
+
+## Etiquette
+
+- These are the user's real bots, often signed in to real accounts. Send only tasks the user asked for or clearly expects. Do not spam them, and do not start several bots on the same thing.
+- Prefer \`wait\` or \`/events\` over tight polling. If you must poll, every 5 to 10 seconds is plenty.
+- Do not interrupt a bot that is working on someone else's task unless the user asked you to; check \`status\` first.
+- Use bot ids once you have them. A name shared by two bots answers 409 \`ambiguous\`.
+- When a bot asks for a choice or a secret, tell the user to answer it in the Sub8 app.
+- Never print or store the token.
+
+## Errors
+
+Errors are JSON: \`{ "ok": false, "error": { "code": "...", "message": "..." } }\`.
+
+| Status | code | Meaning |
+| --- | --- | --- |
+| 400 | \`bad_request\` | Missing or empty \`text\` |
+| 401 | \`unauthorized\` | No token or a wrong one; read control.json again |
+| 403 | \`forbidden\` | Not from this computer, or a browser request |
+| 403 | \`disabled\` | The user turned the API off in Sub8 > Settings > Control API |
+| 404 | \`not_found\` | Unknown bot or route |
+| 404 | \`no_screen\` | The bot has no screenshot yet |
+| 409 | \`ambiguous\` | More than one bot has that name; use the id |
+| 413 | \`too_large\` | \`text\` longer than 100000 characters |
+
+If nothing answers at ${base}, Sub8 is not running; ask the user to open it. If control.json is missing, Sub8 has not been started on this computer yet.
+`;
+}
+
+/**
+ * GET handler for skill.md. No token (it holds none), loopback only, plain
+ * markdown. Mounted ahead of the control gate and at /skill.md.
+ */
+export function skillHandler(info: () => SkillInfo) {
+  return (req: Request, res: Response): void => {
+    if (!isLoopback(req.socket?.remoteAddress)) return fail(res, 403, "forbidden", "skill.md is served to this computer only");
+    res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.send(skillMarkdown(info()));
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Router
 
 export interface WaitResult {
@@ -409,6 +700,14 @@ export function controlRouter(deps: ControlDeps): Router {
   const events = new ControlEvents(deps);
   const isBusy = (id: string): boolean => new Set(deps.busyIds()).has(id);
   const limited = (b: ControlBot): boolean => (deps.limited ? deps.limited(b) : false);
+
+  // The skill file carries no secret, so it sits in front of the token gate.
+  router.get("/skill.md", skillHandler(() => ({
+    port: deps.port,
+    controlFile: controlFilePath(deps.dataDir),
+    cliPath: deps.cliPath || "sub8ctl.mjs",
+    appVersion: deps.appVersion(),
+  })));
 
   router.use(controlGate(deps));
 
@@ -533,6 +832,19 @@ export function controlRouter(deps: ControlDeps): Router {
     if (!bot) return;
     const r = await deps.stop(bot.id);
     res.json({ ok: true, botId: bot.id, stopped: r.stopped });
+  });
+
+  router.get("/bots/:bot/screen", async (req, res) => {
+    const bot = await botOr404(req, res);
+    if (!bot) return;
+    if (!deps.screen) return fail(res, 404, "no_screen", "screenshots are not available");
+    const cached = ["1", "true", "yes"].includes(String(req.query.cached || "").toLowerCase());
+    const shot = await deps.screen(bot, { fresh: !cached }).catch(() => null);
+    if (!shot) return fail(res, 404, "no_screen", "this bot has no screenshot yet; its computer may not have started");
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("X-Sub8-Captured-At", String(Math.round(shot.ts)));
+    res.setHeader("X-Sub8-Fresh", shot.fresh ? "1" : "0");
+    res.end(shot.png);
   });
 
   const waitRoute = async (req: Request, res: Response): Promise<void> => {

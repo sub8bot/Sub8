@@ -488,11 +488,54 @@ app.get("/api/events", (req, res) => {
  * Bearer token in <dataDir>/control.json, loopback only, separate from the
  * internal token above. The routes reuse the chat box's send and Stop.
  */
+const controlCliPath = path.join(fileRoot, "bin", "sub8ctl.mjs");
+/** How long a fresh capture for the control API may take before the saved one is used. */
+const CONTROL_SHOT_MS = 20_000;
+/**
+ * The bot computer's screen for GET /api/control/v1/bots/:bot/screen. A fresh
+ * capture (vm.screenshot, the same one the bot's own screenshot tool takes)
+ * when the computer is running, else the latest saved data/screens/<id>.png,
+ * which is what GET /api/bots/:id/screen serves.
+ */
+async function controlScreen(b: controlApi.ControlBot, opts: { fresh: boolean }): Promise<{ png: Buffer; ts: number; fresh: boolean } | null> {
+  const bot = (await store.getBot(b.id).catch(() => null)) as IndexBot | null;
+  if (!bot) return null;
+  if (opts.fresh && bot.vm?.status === "running" && (bot.vm?.container || bot.vm?.deskUrl)) {
+    try {
+      const shot = await Promise.race([
+        vm.screenshot(bot as vm.DeskBot),
+        new Promise<never>((_r, rej) => setTimeout(() => rej(new Error("screenshot timed out")), CONTROL_SHOT_MS).unref?.()),
+      ]);
+      if (shot?.buf?.length) return { png: shot.buf, ts: Date.now(), fresh: true };
+    } catch {
+      /* fall back to the saved one */
+    }
+  }
+  const dir = path.resolve(dataDir, "screens");
+  const file = path.resolve(dir, `${bot.id}.png`);
+  if (path.dirname(file) !== dir) return null;
+  try {
+    const [png, st] = await Promise.all([fs.readFile(file), fs.stat(file)]);
+    return { png, ts: st.mtimeMs, fresh: false };
+  } catch {
+    return null;
+  }
+}
+const controlSkill = controlApi.skillHandler(() => ({
+  port: PORT,
+  controlFile: controlApi.controlFilePath(store.dataDir),
+  cliPath: controlCliPath,
+  appVersion: appUpdate.appVersion(),
+}));
+/** skill.md for agent harnesses: no token in it, none needed to read it. */
+app.get("/skill.md", controlSkill);
 app.use(
   controlApi.CONTROL_PREFIX,
   controlApi.controlRouter({
     dataDir: store.dataDir,
     port: PORT,
+    cliPath: controlCliPath,
+    screen: controlScreen,
     appVersion: () => appUpdate.appVersion(),
     loadBots: async () => (await store.loadBots()) as controlApi.ControlBot[],
     getBot: async (id) => {
@@ -515,7 +558,8 @@ app.use(
 
 /** Settings → Control API. App-only, the same guard as /api/vault. */
 function controlAccessPayload(rec: controlApi.ControlFile) {
-  const cliPath = path.join(fileRoot, "bin", "sub8ctl.mjs");
+  const cliPath = controlCliPath;
+  const skillUrl = `http://127.0.0.1:${PORT}/skill.md`;
   return {
     ok: true,
     enabled: rec.enabled,
@@ -525,6 +569,8 @@ function controlAccessPayload(rec: controlApi.ControlFile) {
     tokenHint: controlApi.tokenHint(rec.token),
     cliPath,
     mcpCommand: `claude mcp add sub8 -- node "${cliPath}" mcp`,
+    skillUrl,
+    agentPrompt: `Read ${skillUrl} and use it to control Sub8.`,
   };
 }
 app.use("/api/control-access", (req, res, next) => {

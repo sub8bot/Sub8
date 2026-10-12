@@ -11,7 +11,7 @@ import type { ChatBusyEvent, ChatNoticeKind } from "./chat-activity.mjs";
 import { api } from "./api-client.mjs";
 import { SEPARATE_LOGIN_PROVIDERS, cleanupBannerHtml, identityOptionLabel, identityRowHtml as identityRowMarkup } from "./identity-rows.mjs";
 import type { IdentityLoginView } from "./identity-rows.mjs";
-import { iconAbout, iconBack, iconChevrons, iconClip, iconClock, iconClose, iconCompact, iconComputer, iconExpand, iconGear, iconGitHub, iconGlobe, iconHarness, iconLicense, iconLock, iconMic, iconMonitor, iconPerson, iconPlus, iconRecord, iconSend, iconStop, iconLol } from "./icons.mjs";
+import { iconAbout, iconBack, iconChevrons, iconClip, iconClock, iconClose, iconCompact, iconComputer, iconExpand, iconGear, iconGitHub, iconGlobe, iconHarness, iconLicense, iconLock, iconMic, iconMonitor, iconPerson, iconPlus, iconRecord, iconSend, iconStop, iconLol, iconTerminal } from "./icons.mjs";
 import * as cloudPlace from "./cloud-place.mjs";
 import type { Avatar } from "./avatar.js";
 import type { BrainApiDraft } from "./brain-setup.mjs";
@@ -711,6 +711,10 @@ interface ControlAccess {
   tokenHint: string;
   cliPath: string;
   mcpCommand: string;
+  /** http://127.0.0.1:<port>/skill.md: public, holds no token. */
+  skillUrl?: string;
+  /** A one-line prompt that points an agent at skillUrl. */
+  agentPrompt?: string;
 }
 
 /** Everything the shell renders from. One object, mutated in place, read by every painter. */
@@ -3324,6 +3328,7 @@ function paintTitle(bot: Bot | null | undefined): void {
     </div>
     <div class="spacer"></div>
     <div class="title-actions">
+      <button class="iconbtn" data-act="open-harness-control" title="Control Sub8 with a harness" aria-label="Control Sub8 with a harness">${iconTerminal()}</button>
       <button class="iconbtn" data-act="open-passwords" title="Passwords">${iconLock()}</button>
       ${
         !bot
@@ -7764,7 +7769,7 @@ function loadControlAccess(): void {
     })
     .finally(() => {
       state.controlAccessLoading = false;
-      if (state.modal === "settings" && state.section === "control") paintModal();
+      if (state.modal === "settings" && (state.section === "control" || state.section === HARNESS_SECTION)) paintModal();
     });
 }
 
@@ -7779,7 +7784,7 @@ function applyControlAccess(p: Promise<unknown>, failure: string): void {
       state.controlAccessError = (err as CaughtError | undefined)?.message || failure;
     })
     .finally(() => {
-      if (state.modal === "settings" && state.section === "control") paintModal();
+      if (state.modal === "settings" && (state.section === "control" || state.section === HARNESS_SECTION)) paintModal();
     });
 }
 
@@ -7790,6 +7795,60 @@ function controlSnippetHtml(label: string, text: string): string {
         <button type="button" class="pill" data-act="control-copy-snippet" data-text="${escapeHtml(text)}">Copy</button></div>
       <pre class="harness-log control-code"><code>${escapeHtml(text)}</code></pre>
     </div>`;
+}
+
+/** Settings section id for "Control Sub8 with a harness". */
+const HARNESS_SECTION = "agent-harness";
+
+/** Header entry on the Control API panel that leads to the harness setup. */
+function harnessEntryHtml(): string {
+  return `<button type="button" class="harness-entry" data-act="open-harness-control">
+      <span class="harness-entry-ico">${iconTerminal()}</span>
+      <span><strong>Control Sub8 with a harness</strong><em>Let Claude Code, Codex, Cursor or your own agent hand tasks to your bots.</em></span>
+    </button>`;
+}
+
+/** One labelled value with its action buttons, for the harness panel. */
+function harnessRowHtml(label: string, value: string, buttons: string): string {
+  return `<div class="harness-row">
+      <div class="lbl">${escapeHtml(label)}</div>
+      <div class="harness-value control-mono">${escapeHtml(value)}</div>
+      <div class="harness-btns">${buttons}</div>
+    </div>`;
+}
+
+/**
+ * Settings > Control Sub8 with a harness: the short version of the Control API
+ * for someone who just wants their coding agent to use Sub8. Point the agent at
+ * skill.md (no token in it) or add the MCP server.
+ */
+function harnessControlHtml(): string {
+  const c = state.controlAccess;
+  if (!c && !state.controlAccessLoading && !state.controlAccessError) loadControlAccess();
+  const title = `<h2>Control Sub8 with a harness</h2>
+    <p class="muted harness-intro">Your coding agent (Claude Code, Codex, Cursor or your own) can hand tasks to your bots, check on them, steer them, see their screens and get the results back. Each bot works on its own Linux computer with a real browser, so your agent gets a safe, isolated machine to work on without touching this Mac. Point the agent at the skill file, or add Sub8 as an MCP server.</p>`;
+  if (!c) {
+    return `${title}<div class="card"><div class="sub">${escapeHtml(state.controlAccessError || "Loading…")}</div>
+      ${state.controlAccessError ? `<div class="row" style="justify-content:flex-end"><button type="button" class="pill" data-act="sec" data-id="${HARNESS_SECTION}">Try again</button></div>` : ""}</div>`;
+  }
+  const skillUrl = c.skillUrl || c.url.replace(/\/api\/control\/v1\/?$/, "/skill.md");
+  const prompt = c.agentPrompt || `Read ${skillUrl} and use it to control Sub8.`;
+  const copy = (label: string, text: string) =>
+    `<button type="button" class="pill" data-act="control-copy-snippet" data-text="${escapeHtml(text)}">${escapeHtml(label)}</button>`;
+  const off = c.enabled
+    ? ""
+    : `<div class="card harness-off"><div class="row"><div class="sub">The Control API is off, so agents cannot reach your bots. Turn it on to use them from a harness.</div>
+        <button type="button" class="pill primary" data-act="control-toggle">Turn on</button></div></div>`;
+  return `${title}${off}
+    <div class="block"><h3>Point your agent at Sub8</h3>
+      <div class="card">
+        ${harnessRowHtml("Prompt for your agent", prompt, copy("Copy prompt for your agent", prompt))}
+        ${harnessRowHtml("Skill URL", skillUrl, `${copy("Copy skill URL", skillUrl)}<button type="button" class="pill" data-act="open-url" data-url="${escapeHtml(skillUrl)}">Open skill.md</button>`)}
+        ${harnessRowHtml("MCP server (Claude Code)", c.mcpCommand, copy("Copy MCP command", c.mcpCommand))}
+      </div>
+    </div>
+    <p class="muted harness-foot">The skill file holds no token. Agents read it from <span class="control-mono">${escapeHtml(c.file)}</span>, which only apps on this Mac can open.
+      <button type="button" class="linkbtn" data-act="sec" data-id="control">Control API settings</button></p>`;
 }
 
 /** Settings > Control API: lets other local apps and agent harnesses drive bots over a token-gated local API. */
@@ -7813,6 +7872,7 @@ function controlApiHtml(): string {
         </div></div>`
     : "";
   return `<h2>Control API</h2>${intro}
+    ${harnessEntryHtml()}
     ${state.controlAccessError ? `<div class="card"><div class="sub">${escapeHtml(state.controlAccessError)}</div></div>` : ""}
     <div class="block"><h3>Access</h3>
       <div class="card">
@@ -7894,6 +7954,7 @@ function settingsHtml(): string {
         <button type="button" class="${sec === "updates" ? "active" : ""}" data-act="sec" data-id="updates">${iconMonitor()} <span>Computer</span></button>
         <button type="button" data-act="open-passwords" title="Passwords">${iconLock()} <span>Passwords</span></button>
         <button type="button" class="${sec === "lol" ? "active" : ""}" data-act="sec" data-id="lol">${iconLol()} <span>Bots.lol</span></button>
+        <button type="button" class="${sec === HARNESS_SECTION ? "active" : ""}" data-act="sec" data-id="${HARNESS_SECTION}">${iconTerminal()} <span>Agent harness</span></button>
         <button type="button" class="${sec === "control" ? "active" : ""}" data-act="sec" data-id="control">${iconChevrons()} <span>Control API</span></button>
         <button type="button" class="${sec === "about" ? "active" : ""}" data-act="sec" data-id="about">${iconAbout()} <span>About</span></button>
       </nav>
@@ -7908,6 +7969,8 @@ function settingsHtml(): string {
             ? lolPanelHtml()
             : sec === "control"
             ? controlApiHtml()
+            : sec === HARNESS_SECTION
+            ? harnessControlHtml()
             : sec === "about"
             ? aboutHtml()
             : sec === "general"
@@ -8516,7 +8579,7 @@ const ACTIONS: Record<string, ActHandler> = {
   },
   "sec": (e, { el }) => {
     state.section = el.dataset.id;
-    if (el.dataset.id === "control") {
+    if (el.dataset.id === "control" || el.dataset.id === HARNESS_SECTION) {
       state.controlConfirmRegen = false;
       state.controlAccessError = "";
       loadControlAccess();
@@ -9683,6 +9746,14 @@ const ACTIONS: Record<string, ActHandler> = {
       "Could not regenerate the token.",
     );
     return;
+  },
+  "open-harness-control": () => {
+    state.modal = "settings";
+    state.section = HARNESS_SECTION;
+    state.controlConfirmRegen = false;
+    state.controlAccessError = "";
+    loadControlAccess();
+    return FALL_THROUGH;
   },
   "control-copy-snippet": (e, { el }) => {
     const text = String(el.dataset.text || "");

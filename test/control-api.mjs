@@ -38,6 +38,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ---------------------------------------------------------------------------
 // Part 1: router with stubs
 
+// A valid 1x1 PNG.
+const PNG_1PX = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+  "base64",
+);
+
 function stubWorld() {
   const busy = new Set();
   const taps = new Set();
@@ -101,6 +107,8 @@ function stubWorld() {
       taps.add(fn);
       return () => taps.delete(fn);
     },
+    cliPath: "/opt/sub8/bin/sub8ctl.mjs",
+    screen: async (bot, { fresh }) => (bot.id === "b1" ? { png: PNG_1PX, ts: 1760000000000, fresh } : null),
   };
   return { deps, busy, bots, sent, stopped, broadcast };
 }
@@ -309,6 +317,46 @@ await test("events streams status changes and new messages", async () => {
   assert.ok(seen.some((e) => e.ev === "status" && e.data.status === "idle"), "idle status event");
 });
 
+await test("skill.md is served without a token, as markdown, and never contains the token", async () => {
+  const r = await fetch(`${base}/skill.md`);
+  assert.equal(r.status, 200);
+  assert.match(r.headers.get("content-type"), /^text\/markdown/);
+  const body = await r.text();
+  assert.ok(!body.includes(rec.token), "skill.md leaked the token");
+  assert.ok(!/s8c_[A-Za-z0-9_-]{24,}/.test(body), "skill.md carries something shaped like a token");
+  assert.match(body, /^---\nname: sub8\ndescription: [^\n]+\n---\n/);
+  // The description is one YAML plain scalar: no ": " that would split it.
+  const desc = /^description: (.*)$/m.exec(body)[1];
+  assert.ok(!desc.includes(": "), "description must stay a plain YAML scalar");
+  assert.ok(body.includes(control.controlFilePath(tmpData)), "names the control.json for this install");
+  assert.ok(body.includes("/opt/sub8/bin/sub8ctl.mjs"), "names the CLI for this install");
+  assert.ok(body.includes(`http://127.0.0.1:${port}/api/control/v1`), "names the live port");
+  for (const ep of ["/status", "/bots", "/bots/:bot/messages", "/bots/:bot/wait", "/bots/:bot/stop", "/bots/:bot/screen", "/events"]) {
+    assert.ok(body.includes(ep), ep);
+  }
+  assert.ok(!/[\u2013\u2014]/.test(body), "no en or em dashes");
+  // Still free with the API switched off: it is documentation, not access.
+  control.setControlEnabled(tmpData, port, false);
+  assert.equal((await fetch(`${base}/skill.md`)).status, 200);
+  control.setControlEnabled(tmpData, port, true);
+});
+
+await test("screen returns the bot's desktop PNG behind the token; 404 no_screen when there is none", async () => {
+  assert.equal((await get("/bots/b1/screen", {})).status, 401);
+  const r = await get("/bots/b1/screen");
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get("content-type"), "image/png");
+  assert.equal(r.headers.get("x-sub8-fresh"), "1");
+  assert.equal(r.headers.get("x-sub8-captured-at"), "1760000000000");
+  assert.deepEqual(Buffer.from(await r.arrayBuffer()), PNG_1PX);
+  const cached = await get("/bots/scout/screen?cached=1");
+  assert.equal(cached.headers.get("x-sub8-fresh"), "0");
+  const none = await get("/bots/b2/screen");
+  assert.equal(none.status, 404);
+  assert.equal((await none.json()).error.code, "no_screen");
+  assert.equal((await get("/bots/nobody/screen")).status, 404);
+});
+
 await test("turning the API off answers 403 disabled; regenerate invalidates the old token", async () => {
   control.setControlEnabled(tmpData, port, false);
   const off = await get("/status");
@@ -431,6 +479,42 @@ await withTempData(async ({ base: appBase, data }) => {
     assert.ok(!bad.err.includes(j.token));
   });
 
+  await test("live server: /skill.md and /api/control/v1/skill.md answer 200 without auth and carry no token", async () => {
+    for (const u of [`${appBase}/skill.md`, `${j.url}/skill.md`]) {
+      const r = await fetch(u);
+      assert.equal(r.status, 200, u);
+      assert.match(r.headers.get("content-type"), /^text\/markdown/);
+      const body = await r.text();
+      assert.ok(!body.includes(j.token), `${u} leaked the token`);
+      assert.ok(body.includes(file), "names this install's control.json");
+      assert.match(body, /bin[\\/]sub8ctl\.mjs/);
+      assert.ok(body.includes(j.url), "names the live API address");
+    }
+    const g = await (await fetch(`${appBase}/api/control-access`, { headers: { "sec-fetch-site": "same-origin" } })).json();
+    assert.equal(g.skillUrl, `${appBase}/skill.md`);
+    assert.equal(g.agentPrompt, `Read ${appBase}/skill.md and use it to control Sub8.`);
+  });
+
+  await test("live server + CLI: screen falls back to the saved screenshot when the computer is not running", async () => {
+    const shots = path.join(data, "screens");
+    await fs.mkdir(shots, { recursive: true });
+    await fs.writeFile(path.join(shots, `${a.id}.png`), PNG_1PX);
+    const r = await fetch(`${j.url}/bots/Alpha/screen`, { headers: { authorization: `Bearer ${j.token}` } });
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get("x-sub8-fresh"), "0");
+    assert.deepEqual(Buffer.from(await r.arrayBuffer()), PNG_1PX);
+    const none = await fetch(`${j.url}/bots/Beta/screen`, { headers: { authorization: `Bearer ${j.token}` } });
+    assert.equal(none.status, 404);
+    const out = path.join(data, "alpha-out.png");
+    const c = await runCli(["screen", "Alpha", out], env);
+    assert.equal(c.code, 0, c.err);
+    assert.match(c.out, /Saved/);
+    assert.deepEqual(await fs.readFile(out), PNG_1PX);
+    const missing = await runCli(["screen", "Beta", path.join(data, "beta.png")], env);
+    assert.equal(missing.code, 1);
+    assert.match(missing.err, /no screenshot/);
+  });
+
   await test("CLI: stop on an idle bot reports nothing running", async () => {
     const r = await runCli(["stop", "Beta"], env);
     assert.equal(r.code, 0, r.err);
@@ -444,14 +528,18 @@ await withTempData(async ({ base: appBase, data }) => {
       { id: 2, method: "tools/list" },
       { id: 3, method: "tools/call", params: { name: "list_bots", arguments: {} } },
       { id: 4, method: "tools/call", params: { name: "get_bot", arguments: { bot: "nobody" } } },
+      { id: 5, method: "tools/call", params: { name: "get_screen", arguments: { bot: "Alpha" } } },
     ]);
     const byId = Object.fromEntries(replies.map((r) => [r.id, r]));
     assert.equal(byId[1].result.serverInfo.name, "sub8");
     const names = byId[2].result.tools.map((t) => t.name).sort();
-    for (const n of ["list_bots", "get_bot", "read_messages", "send_message", "stop_bot"]) assert.ok(names.includes(n), n);
+    for (const n of ["list_bots", "get_bot", "read_messages", "send_message", "stop_bot", "get_screen"]) assert.ok(names.includes(n), n);
     const listed = JSON.parse(byId[3].result.content[0].text);
     assert.deepEqual(listed.map((x) => x.name).sort(), ["Alpha", "Beta"]);
     assert.equal(byId[4].result.isError, true);
+    const img = byId[5].result.content.find((c) => c.type === "image");
+    assert.equal(img.mimeType, "image/png");
+    assert.deepEqual(Buffer.from(img.data, "base64"), PNG_1PX);
   });
 });
 

@@ -3879,3 +3879,56 @@ select:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 55%, 
 .control-snippet .row { margin-bottom: 6px; }
 .control-code { max-height: none; margin: 0; white-space: pre-wrap; word-break: break-all; }
 .control-confirm { gap: 12px; }
+
+/* Settings > Control Sub8 with a harness, and its entry on the Control API panel. */
+.harness-entry {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin: 4px 0 18px;
+  text-align: left;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--text);
+  border-radius: 14px;
+  padding: 12px 14px;
+  cursor: pointer;
+  font: inherit;
+  transition: background .15s var(--ease);
+}
+.harness-entry:hover { background: var(--hover); }
+.harness-entry-ico {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text) 6%, var(--bg));
+}
+.harness-entry strong { display: block; font-size: 13.5px; font-weight: 650; }
+.harness-entry em { display: block; margin-top: 2px; font-style: normal; font-size: 12px; color: var(--muted); }
+.harness-intro { line-height: 1.5; max-width: 60ch; }
+.harness-row { display: grid; gap: 6px; padding: 10px 0; }
+.harness-row + .harness-row { border-top: 1px solid var(--line); }
+.harness-value {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 4%, var(--bg));
+}
+.harness-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+.harness-off { margin-bottom: 14px; }
+.harness-off .row { gap: 12px; }
+.harness-foot { font-size: 12px; line-height: 1.5; margin-top: 12px; }
+.harness-foot .linkbtn {
+  border: 0;
+  background: none;
+  padding: 0;
+  margin-left: 4px;
+  font: inherit;
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}

@@ -14,11 +14,12 @@
  *   sub8ctl stop <bot>
  *   sub8ctl tail <bot> [--limit <n>]
  *   sub8ctl events [--bot <bot>]
+ *   sub8ctl screen <bot> [out.png] [--cached]
  *   sub8ctl mcp            (stdio MCP server for Claude Code, Codex and others)
  *
  * <bot> is a bot id or its exact name (case-insensitive).
  */
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
@@ -95,6 +96,28 @@ async function call(opts, method, route, body, { signal } = {}) {
 }
 
 const enc = (s) => encodeURIComponent(String(s));
+
+/** GET /bots/:bot/screen as raw PNG bytes plus when it was taken. */
+async function fetchScreen(opts, bot, { cached = false } = {}) {
+  const { url, token } = loadControl(opts);
+  let res;
+  try {
+    res = await fetch(`${url}/bots/${enc(bot)}/screen${cached ? "?cached=1" : ""}`, { headers: { authorization: `Bearer ${token}` } });
+  } catch {
+    throw new CtlError(`Sub8 is not answering at ${url}. Is the app running?`);
+  }
+  if (!res.ok) {
+    let e = null;
+    try {
+      e = (await res.json())?.error;
+    } catch {
+      /* non-JSON */
+    }
+    throw new CtlError((e && (e.message || e)) || `HTTP ${res.status}`, res.status, (e && e.code) || "");
+  }
+  const png = Buffer.from(await res.arrayBuffer());
+  return { png, ts: Number(res.headers.get("x-sub8-captured-at")) || 0, fresh: res.headers.get("x-sub8-fresh") === "1" };
+}
 
 /** Server-sent events as an async iterator of {event, data}. */
 async function* streamEvents(opts, query = "", signal) {
@@ -240,6 +263,15 @@ async function cmdEvents(opts) {
   for await (const ev of streamEvents(opts, q)) console.log(JSON.stringify(ev));
 }
 
+async function cmdScreen(opts, bot, out) {
+  need(bot, "screen <bot> [out.png]");
+  const shot = await fetchScreen(opts, bot, { cached: opts.cached });
+  const file = path.resolve(out || `sub8-${String(bot).replace(/[^A-Za-z0-9._-]+/g, "_")}-screen.png`);
+  writeFileSync(file, shot.png);
+  if (opts.json) return print({ file, bytes: shot.png.length, ts: shot.ts, fresh: shot.fresh });
+  console.log(`Saved ${file} (${shot.png.length} bytes, ${shot.fresh ? "just captured" : `saved ${when(shot.ts)}`}).`);
+}
+
 function print(v) {
   console.log(JSON.stringify(v, null, 2));
 }
@@ -300,6 +332,17 @@ const MCP_TOOLS = [
     inputSchema: {
       type: "object",
       properties: { bot: BOT_ARG, timeout_seconds: { type: "number", description: "Default 300, max 600." } },
+      required: ["bot"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "get_screen",
+    description:
+      "See a Sub8 bot's Linux desktop: returns a PNG screenshot of its computer (a fresh capture when the computer is running, otherwise the latest saved one).",
+    inputSchema: {
+      type: "object",
+      properties: { bot: BOT_ARG, cached: { type: "boolean", description: "Return the latest saved screenshot without capturing a new one." } },
       required: ["bot"],
       additionalProperties: false,
     },
@@ -370,7 +413,7 @@ function runMcp(opts) {
             capabilities: { tools: { listChanged: false } },
             serverInfo: { name: "sub8", version: VERSION },
             instructions:
-              "Controls bots in the Sub8 desktop app on this computer. Use list_bots to find a bot, send_message to give it work (wait=true to get the reply), read_messages to follow along, and stop_bot to halt it.",
+              "Controls bots in the Sub8 desktop app on this computer. Each bot has its own Linux desktop with a browser. Use list_bots to find a bot, send_message to give it work (wait=true to get the reply), read_messages to follow along, get_screen to see its desktop, and stop_bot to halt it.",
           },
         });
       }
@@ -378,6 +421,16 @@ function runMcp(opts) {
       if (method === "tools/list") return out({ jsonrpc: "2.0", id, result: { tools: MCP_TOOLS } });
       if (method === "tools/call") {
         try {
+          if (params?.name === "get_screen") {
+            const a = params?.arguments || {};
+            const shot = await fetchScreen(opts, a.bot, { cached: Boolean(a.cached) });
+            const note = shot.fresh ? "Captured just now." : `Latest saved screenshot${shot.ts ? ` from ${new Date(shot.ts).toISOString()}` : ""}.`;
+            return out({
+              jsonrpc: "2.0",
+              id,
+              result: { content: [{ type: "image", data: shot.png.toString("base64"), mimeType: "image/png" }, { type: "text", text: note }] },
+            });
+          }
           const data = await mcpTool(opts, params?.name, params?.arguments || {});
           return out({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] } });
         } catch (err) {
@@ -406,6 +459,7 @@ usage:
   sub8ctl stop <bot>
   sub8ctl tail <bot> [--limit <n>]
   sub8ctl events [--bot <bot>]
+  sub8ctl screen <bot> [out.png] [--cached]
   sub8ctl mcp
 
 options:
@@ -426,6 +480,7 @@ function parseArgs(argv) {
     else if (a === "--limit") opts.limit = Number(argv[++i]);
     else if (a === "--file") opts.file = argv[++i];
     else if (a === "--bot") opts.bot = argv[++i];
+    else if (a === "--cached") opts.cached = true;
     else if (a === "-h" || a === "--help") opts.help = true;
     else pos.push(a);
   }
@@ -451,6 +506,7 @@ export async function main(argv = process.argv.slice(2)) {
     stop: () => cmdStop(opts, rest[0]),
     tail: () => cmdTail(opts, rest[0]),
     events: () => cmdEvents(opts),
+    screen: () => cmdScreen(opts, rest[0], rest[1]),
   };
   if (!table[cmd]) {
     console.error(`unknown command: ${cmd}\n\n${HELP}`);

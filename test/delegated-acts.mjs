@@ -85,6 +85,7 @@ const HANDLED = [
   "control-regenerate-cancel",
   "control-regenerate-confirm",
   "control-toggle",
+  "open-harness-control",
   "create",
   "create-face",
   "create-pay-back",
@@ -318,8 +319,10 @@ assert.deepEqual(covered, expected);
 // 229 -> 235: control-toggle, control-copy-token, control-copy-snippet,
 //             control-regenerate, -regenerate-confirm, -regenerate-cancel
 //             (Settings > Control API).
-assert.equal(HANDLED.length, 235);
-assert.equal(covered.length, 235);
+// 235 -> 236: open-harness-control (Control Sub8 with a harness: title bar
+//             button and the Control API panel header).
+assert.equal(HANDLED.length, 236);
+assert.equal(covered.length, 236);
 
 console.log(
   "ok delegated-acts (" + keys.length + " in ACTIONS, " + new Set(chain).size +
