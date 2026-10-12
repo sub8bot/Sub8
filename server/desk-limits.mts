@@ -16,6 +16,12 @@ export const USAGE_MARGIN_MB = 256;
 export const IDLE_HEADROOM_MB = 768;
 /** Caps are rounded up to this step. */
 export const CAP_STEP_MB = 128;
+/** No desk wants more than this by default (8g = 2 CPU); LOCALBOT_MAX_MEMORY overrides. */
+export const DESK_CEILING_MB = 8192;
+/** A desk using this share of its cap wants the next rung up (2g -> 4g -> 8g). */
+export const GROW_AT_FRACTION = 0.75;
+/** The rungs a busy desk steps through on its own, up to the ceiling. */
+export const GROW_RUNGS_MB: readonly number[] = [2048, 4096, 8192];
 
 /** "2g", "4096m", "1.5g", "3221225472" (bytes) -> MiB. 0 when unreadable. */
 export function parseMemMb(value: unknown): number {
@@ -53,6 +59,17 @@ export function memoryUpdateArgs(container: string, memMb: number, extra: readon
 
 const stepUp = (mb: number) => Math.ceil(mb / CAP_STEP_MB) * CAP_STEP_MB;
 
+/**
+ * The size a busy desk grows toward: the next rung above its cap once usage
+ * reaches GROW_AT_FRACTION of it, never above the ceiling. 0 when not busy
+ * (or unreadable), so idle desks keep their member size.
+ */
+export function growWantMb(usedMb: number | null, capMb: number, ceilingMb: number = DESK_CEILING_MB): number {
+  if (usedMb == null || capMb <= 0 || usedMb < capMb * GROW_AT_FRACTION) return 0;
+  const next = GROW_RUNGS_MB.find((r) => r > capMb) ?? ceilingMb;
+  return Math.min(ceilingMb, next);
+}
+
 export interface DeskSizing {
   name: string;
   /** memory.current in MiB; null when unreadable (a paused desk). */
@@ -88,12 +105,15 @@ export function minCapMb(d: DeskSizing): number {
  *     usage + headroom.
  *  3. Whatever is left goes, in the same order, toward each desk's want.
  *
+ * A want is the desk's member size or manual raise, stepped up one rung when
+ * the desk is busy (growWantMb), and never above `ceilingMb` (8 GiB).
+ *
  * When the minimums alone do not fit, every desk drops to its minimum (but no
  * desk is raised above its current cap) and overBudget is set: lowering a cap
  * below usage would only trade a slow desk for an OOM kill, so the fix there
  * is shedding memory (a tab reset), not a cap.
  */
-export function allocateDeskCaps(desks: readonly DeskSizing[], budgetMb: number): DeskCapPlan {
+export function allocateDeskCaps(desks: readonly DeskSizing[], budgetMb: number, ceilingMb: number = DESK_CEILING_MB): DeskCapPlan {
   const caps = new Map<string, number>();
   const order = [...desks].sort((a, b) => {
     if (Boolean(a.priority) !== Boolean(b.priority)) return a.priority ? -1 : 1;
@@ -118,8 +138,15 @@ export function allocateDeskCaps(desks: readonly DeskSizing[], budgetMb: number)
     }
     return { caps, budgetMb, totalMb: total, overBudget: true };
   }
+  // Wants stop at the ceiling; only usage itself (minCapMb) can sit above it.
   const fullWant = (d: DeskSizing) =>
-    Math.max(minCapMb(d), stepUp(d.wantMb || 0), d.usedMb == null ? 0 : stepUp(d.usedMb + IDLE_HEADROOM_MB));
+    Math.max(
+      minCapMb(d),
+      Math.min(
+        ceilingMb,
+        Math.max(stepUp(d.wantMb || 0), growWantMb(d.usedMb, d.capMb, ceilingMb), d.usedMb == null ? 0 : stepUp(d.usedMb + IDLE_HEADROOM_MB)),
+      ),
+    );
   const give = (d: DeskSizing, target: number) => {
     const cur = caps.get(d.name)!;
     const room = Math.floor((budgetMb - total) / CAP_STEP_MB) * CAP_STEP_MB;

@@ -85,11 +85,17 @@ assert.equal(tiny.memory, 2);
 
 const mid = colimaStartArgs({ cpus: 8, totalMemBytes: 16 * 1024 ** 3 });
 assert.equal(mid.cpu, 4);
-assert.equal(mid.memory, 4);
+assert.equal(mid.memory, 8);
 
 const big = colimaStartArgs({ cpus: 12, totalMemBytes: 32 * 1024 ** 3 });
 assert.equal(big.cpu, 4);
-assert.equal(big.memory, 8);
+// Room for two 8 GiB desks on a 32 GB Mac.
+assert.equal(big.memory, 16);
+// Half the RAM, 6..16 GB, always leaving 6 GB to macOS.
+assert.equal(colimaStartArgs({ cpus: 8, totalMemBytes: 12 * 1024 ** 3 }).memory, 6);
+assert.equal(colimaStartArgs({ cpus: 8, totalMemBytes: 24 * 1024 ** 3 }).memory, 12);
+assert.equal(colimaStartArgs({ cpus: 12, totalMemBytes: 64 * 1024 ** 3 }).memory, 16);
+assert.equal(colimaStartArgs({ cpus: 12, totalMemBytes: 128 * 1024 ** 3 }).memory, 16);
 
 assert.equal(dockerStaticArch("arm64"), "aarch64");
 assert.equal(dockerStaticArch("x64"), "x86_64");

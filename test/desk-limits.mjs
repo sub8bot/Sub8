@@ -4,6 +4,8 @@ import {
   budgetFromMemTotal,
   cpusForMemory,
   decideTabReset,
+  growWantMb,
+  DESK_CEILING_MB,
   dockerRuntimeName,
   memoryUpdateArgs,
   memString,
@@ -14,7 +16,7 @@ import {
   VM_RESERVE_MB,
   TAB_RESET_INTERVAL_MS,
 } from "../server/desk-limits.mjs";
-import { deskCreateArgs } from "../server/vm.mjs";
+import { deskCreateArgs, deskWantMb, noteDeskRaisedWant } from "../server/vm.mjs";
 
 // ---- memory strings and CPU that follows memory
 assert.equal(parseMemMb("2g"), 2048);
@@ -233,5 +235,60 @@ assert.deepEqual(
   ]).map((t) => t.id),
   ["A", "E"],
 );
+
+// ---- 8 GiB per-desk ceiling and stepping up when busy
+assert.equal(DESK_CEILING_MB, 8192);
+assert.equal(cpusForMemory(DESK_CEILING_MB), "2.0");
+assert.equal(growWantMb(1000, 2048), 0); // idle: no step
+assert.equal(growWantMb(null, 2048), 0); // unreadable: no step
+assert.equal(growWantMb(1600, 2048), 4096); // 75% of 2g: next rung
+assert.equal(growWantMb(3200, 4096), 8192);
+assert.equal(growWantMb(3000, 2688), 4096); // a clamped cap steps to the next rung
+assert.equal(growWantMb(7000, 8192), 8192); // at the ceiling: stays
+assert.equal(growWantMb(1600, 2048, 3072), 3072); // a lower ceiling wins
+{
+  // A busy desk grows toward 8 GiB in a roomy VM; the idle one stays small.
+  let plan = allocateDeskCaps(
+    [
+      { name: "busy", usedMb: 3500, capMb: 4096, wantMb: 2048 },
+      { name: "idle", usedMb: 500, capMb: 2048, wantMb: 2048 },
+    ],
+    13700,
+  );
+  assert.equal(plan.caps.get("busy"), 8192);
+  assert.equal(plan.caps.get("idle"), 2048);
+  assert.ok(sum(plan) <= 13700);
+  // Never past the ceiling, even with budget to spare and a bigger manual raise.
+  plan = allocateDeskCaps([{ name: "raised", usedMb: 7000, capMb: 8192, wantMb: 16384 }], 30000);
+  assert.equal(plan.caps.get("raised"), 8192);
+  // Two busy desks in a tight VM: the budget still bounds the sum.
+  plan = allocateDeskCaps(
+    [
+      { name: "a", usedMb: 3500, capMb: 4096, wantMb: 2048 },
+      { name: "b", usedMb: 3400, capMb: 4096, wantMb: 2048 },
+    ],
+    13700,
+  );
+  assert.equal(plan.caps.get("a"), 8192);
+  assert.ok(plan.caps.get("b") >= 3400 + 256);
+  assert.ok(sum(plan) <= 13700);
+  // Usage above the ceiling (an old 16g raise) is never cut below usage.
+  plan = allocateDeskCaps([{ name: "old", usedMb: 9000, capMb: 16384, wantMb: 16384 }], 30000);
+  assert.equal(plan.caps.get("old"), 9344);
+}
+
+// ---- a persisted raise (bot.vm.ramMb) seeds the desk's want after a restart
+{
+  const base = deskWantMb("localbot-raised-test");
+  noteDeskRaisedWant("localbot-raised-test", 4096);
+  assert.equal(deskWantMb("localbot-raised-test"), Math.max(base, 4096));
+  // Two bots on one desk: the larger raise wins, a smaller one never lowers it.
+  noteDeskRaisedWant("localbot-raised-test", 8192);
+  assert.equal(deskWantMb("localbot-raised-test"), Math.max(base, 8192));
+  noteDeskRaisedWant("localbot-raised-test", 4096);
+  assert.equal(deskWantMb("localbot-raised-test"), Math.max(base, 8192));
+  // Other desks are untouched.
+  assert.equal(deskWantMb("localbot-other-test"), base);
+}
 
 console.log("desk-limits ok");
