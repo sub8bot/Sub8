@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type {
+  InstructionHistoryEntry,
   AdvancedTrigger,
   AutomationJson,
   AutomationWriter,
@@ -1025,6 +1026,27 @@ export function automationJson(routine: Routine | null | undefined): AutomationJ
 }
 
 /**
+ * Every key either mirror writer puts in `automation.json`: `automationJson`
+ * above, and the seed `ensureLayout` (server/memory.mts) writes when a file is
+ * missing ({id, name, cadence, instruction}).
+ */
+const MIRROR_KEYS = new Set(["id", "name", "cadence", "instruction", "prompt", "schedule", "enabled", "createdAt", "lastRunAt"]);
+
+/**
+ * True when a parsed `automation.json` is one the routine mirror wrote: an
+ * object with a string name, a string brief (`prompt` or `instruction`) and no
+ * key outside the two mirror shapes. Pruning stale mirrors deletes only these,
+ * so a file a user or the bot wrote by hand in that folder is left alone.
+ */
+export function isMirroredAutomationJson(json: unknown): boolean {
+  if (!json || typeof json !== "object" || Array.isArray(json)) return false;
+  const row = json as Record<string, unknown>;
+  if (typeof row.name !== "string") return false;
+  if (typeof row.prompt !== "string" && typeof row.instruction !== "string") return false;
+  return Object.keys(row).every((k) => MIRROR_KEYS.has(k));
+}
+
+/**
  * The desk filesystem, injected by the host process. `server/routines.mjs`
  * reached vm.mjs through a lazy dynamic import here; that seam is the package
  * boundary now, so nothing in this package knows about the container tunnel.
@@ -1059,6 +1081,104 @@ export async function persistRoutineAutomation(
 function persistAfterUpsert(bot: RoutineBot, routine: Routine): void {
   if (!canWriteDesk(bot) || !routine) return;
   void persistRoutineAutomation(bot, routine).catch(() => {});
+}
+
+/** How many replaced briefs a routine keeps on `instructionHistory`. */
+export const INSTRUCTION_HISTORY_MAX = 5;
+
+/**
+ * Replace a routine's brief, keeping the old one on `instructionHistory`. Every
+ * write to `instruction` on an existing row goes through here, so a brief that
+ * was overwritten by mistake can always be put back.
+ */
+function setInstruction(routine: Routine, next: string, now: number = Date.now()): void {
+  const prev = String(routine.instruction || "");
+  if (prev === next) return;
+  if (prev.trim()) {
+    const history = Array.isArray(routine.instructionHistory) ? routine.instructionHistory : [];
+    history.push({ instruction: prev, replacedAt: now });
+    routine.instructionHistory = history.slice(-INSTRUCTION_HISTORY_MAX);
+  }
+  routine.instruction = next;
+}
+
+/**
+ * Put back the brief a routine had before its last replacement. The current
+ * brief goes onto the history in its place, so a restore can itself be undone.
+ * Returns null when the routine is missing or has nothing to restore.
+ */
+export function restorePreviousInstruction(
+  bot: RoutineBot,
+  id: string,
+  now: number = Date.now(),
+): Routine | null {
+  const routine = (bot?.routines || []).find((r) => r.id === id);
+  const history = routine?.instructionHistory;
+  if (!routine || !Array.isArray(history) || !history.length) return null;
+  const last = history.pop()!;
+  const current = String(routine.instruction || "");
+  if (current.trim()) history.push({ instruction: current, replacedAt: now });
+  routine.instructionHistory = history.slice(-INSTRUCTION_HISTORY_MAX);
+  routine.instruction = last.instruction;
+  routine.updatedAt = now;
+  return routine;
+}
+
+/**
+ * Routines as list_routines shows them. The full history would repeat every
+ * old brief in each listing, so each earlier brief appears as when it was
+ * replaced, its length and how it began: enough to decide on a restore.
+ */
+export function routinesForListing<T extends object>(rows: readonly T[] | null | undefined): Record<string, unknown>[] {
+  return (rows || []).map((r) => {
+    const { instructionHistory, ...row } = r as T & { instructionHistory?: InstructionHistoryEntry[] | undefined };
+    return Array.isArray(instructionHistory) && instructionHistory.length
+      ? {
+          ...row,
+          previousInstructions: instructionHistory.map((h) => ({
+            replacedAt: new Date(h.replacedAt).toISOString(),
+            chars: String(h.instruction || "").length,
+            begins: String(h.instruction || "").slice(0, 160),
+          })),
+        }
+      : { ...row };
+  });
+}
+
+/**
+ * The schedule a plain chat message carries, applied to the bot's routines.
+ *
+ * A user line like "check the inbox every 30 minutes" becomes a routine when
+ * the bot has none. Once a standing routine exists, the message is NOT a new
+ * brief: it is a chat turn the model reads and acts on (it has upsert_routine
+ * for real edits). Treating it as one is how a long "new standing orders"
+ * message (which mentioned an old routine as "hourly") replaced a bot's
+ * whole standing brief with the message text, reset its 30-minute cadence to
+ * hourly and, through the solo default, dropped every other routine. So with
+ * a routine in place this only ever adjusts the cadence, only for a short
+ * one-line request, and never touches the brief or any other row.
+ */
+export function captureChatSchedule(
+  bot: RoutineBot,
+  text: unknown,
+  { timeZone, now }: { timeZone?: string; now?: number } = {},
+): UpsertResult | null {
+  const t = String(text || "");
+  if (looksLikeTeammateTraffic(t) || !looksLikeSchedule(t)) return null;
+  const parsed = parseSchedule(t);
+  if (!parsed) return null;
+  const cadence = {
+    ...(parsed.intervalMs !== undefined ? { intervalMs: parsed.intervalMs } : {}),
+    ...(parsed.schedule !== undefined ? { schedule: parsed.schedule } : {}),
+    ...(timeZone ? { timeZone } : {}),
+    ...(now !== undefined ? { now } : {}),
+  };
+  const standing = (bot?.routines || []).filter(
+    (r) => !(Array.isArray(r.triggers) && r.triggers.length > 0 && r.triggers.every((x) => x.kind === "once")),
+  );
+  if (!standing.length) return upsertRoutine(bot, { instruction: t, ...cadence });
+  if (!looksLikeChatLine(t)) return null;
+  return upsertRoutine(bot, { instruction: t, ...cadence, keepInstruction: true, solo: false });
 }
 
 export function upsertRoutine(bot: RoutineBot, spec: RoutineSpec): UpsertResult {
@@ -1135,16 +1255,20 @@ function applyRoutineUpsert(bot: RoutineBot, spec: RoutineSpec): UpsertResult {
     // change the cadence alone. Now it declines only the INSTRUCTION and the
     // rest of the spec applies.
     let keptBrief = false;
-    if (text) {
+    // `keepInstruction`: a cadence-only update (a schedule captured from chat).
+    // It must not write the brief, and like a refused rewrite it must not
+    // quietly resume a paused routine either.
+    const cadenceOnly = spec.keepInstruction === true;
+    if (text && !cadenceOnly) {
       const prev = existing.instruction || "";
       const weak = isWeakRoutineInstruction(text);
       const casual = (looksLikeChatLine(text) || weak) && !parseSchedule(text);
       if ((weak || (casual && prev.length > 80)) && spec.forceReplace !== true) {
         keptBrief = true;
       } else if (spec.replace === false && prev) {
-        if (!prev.includes(text)) existing.instruction = `${prev.trim()}\n\n${text}`;
+        if (!prev.includes(text)) setInstruction(existing, `${prev.trim()}\n\n${text}`, spec.now);
       } else {
-        existing.instruction = text;
+        setInstruction(existing, text, spec.now);
       }
     }
     if (schedule) {
@@ -1186,7 +1310,7 @@ function applyRoutineUpsert(bot: RoutineBot, spec: RoutineSpec): UpsertResult {
     // `!keptBrief`: the old early return never reached this auto-re-enable, so a
     // refused rewrite must not quietly resume a paused routine now that it
     // falls through.
-    else if (!keptBrief && existing.enabled === false && !spec.forceNew) existing.enabled = true;
+    else if (!keptBrief && !cadenceOnly && existing.enabled === false && !spec.forceNew) existing.enabled = true;
     existing.updatedAt = Date.now();
     if (spec.solo !== false && !spec.forceNew) {
       bot.routines = rows.filter((r) => r.id === existing.id);

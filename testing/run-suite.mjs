@@ -125,6 +125,7 @@ const ORDER = [
   "interrupted.mjs",
   "desk-limits.mjs",
   "control-api.mjs",
+  "routine-guard.mjs",
 ];
 
 function runOne(file) {
