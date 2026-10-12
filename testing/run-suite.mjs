@@ -115,6 +115,8 @@ const ORDER = [
   "mcp-shell-report.mjs",
   "settings-key.mjs",
   "teams-remove.mjs",
+  "teams-repair.mjs",
+  "team-groups.mjs",
   "team-channel.mjs",
   "spend-guard.mjs",
   "secret-file-modes.mjs",

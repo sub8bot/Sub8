@@ -748,6 +748,100 @@ export async function pruneSoloTeams(): Promise<void> {
   }
 }
 
+/** The slice of a bot `planMembershipRepair` reads. */
+export type MembershipBot = {
+  id: string;
+  teamId?: string | undefined;
+  teamRole?: string | undefined;
+};
+
+/** What `planMembershipRepair` decides: fields to fill, ids to add. Never a removal. */
+export interface MembershipRepairPlan {
+  /** botId -> the team fields to write on that bot. */
+  bots: Map<string, { teamId: string; teamRole: string }>;
+  /** teamId -> bot ids to append to that team's memberIds. */
+  teams: Map<string, string[]>;
+}
+
+/**
+ * Reconcile the two places team membership is stored: the team row
+ * (`chiefId`, `memberIds`) and each bot (`teamId`, `teamRole`).
+ *
+ * They drifted apart when a lead created a teammate mid-turn: the tool wrote
+ * the lead's `teamId`/`teamRole`, then the turn's end-of-turn save copied its
+ * start-of-turn snapshot (empty team fields) back over the row. The team row
+ * listed the lead, the lead's row said "no team", and the sidebar (which
+ * groups by `teamId`) showed the lead and its worker as two loose bots.
+ *
+ * Only fills gaps. A bot whose `teamId` names another team that exists is left
+ * alone, and nothing is ever removed from a team or cleared on a bot.
+ */
+export function planMembershipRepair(
+  rows: readonly TeamView[],
+  bots: readonly MembershipBot[],
+): MembershipRepairPlan {
+  const plan: MembershipRepairPlan = { bots: new Map(), teams: new Map() };
+  const teamIds = new Set(rows.map((t) => t.id).filter(Boolean) as string[]);
+  const byId = new Map(bots.map((b) => [b.id, b]));
+  const current = (b: MembershipBot) => plan.bots.get(b.id) || { teamId: b.teamId || "", teamRole: b.teamRole || "" };
+  for (const t of rows) {
+    if (!t.id) continue;
+    const ids = new Set((t.memberIds || []).filter(Boolean));
+    const add: string[] = [];
+    if (t.chiefId && byId.has(t.chiefId) && !ids.has(t.chiefId)) {
+      const chief = byId.get(t.chiefId)!;
+      const cur = current(chief);
+      // A lead that already belongs to another live team keeps that team.
+      if (!cur.teamId || cur.teamId === t.id || !teamIds.has(cur.teamId)) add.push(t.chiefId);
+    }
+    for (const b of bots) {
+      if (b.teamId === t.id && !ids.has(b.id) && !add.includes(b.id)) add.push(b.id);
+    }
+    if (add.length) {
+      plan.teams.set(t.id, add);
+      for (const id of add) ids.add(id);
+    }
+    for (const id of ids) {
+      const b = byId.get(id);
+      if (!b) continue;
+      const cur = current(b);
+      if (cur.teamId && cur.teamId !== t.id && teamIds.has(cur.teamId)) continue;
+      const role = cur.teamRole === "chief" || cur.teamRole === "worker" ? cur.teamRole : id === t.chiefId ? "chief" : "worker";
+      if (cur.teamId === t.id && cur.teamRole === role) continue;
+      plan.bots.set(id, { teamId: t.id, teamRole: role });
+    }
+  }
+  return plan;
+}
+
+/**
+ * Startup repair: apply `planMembershipRepair` to what is on disk. Each write
+ * re-checks under its own lock, so a bot edited meanwhile is not overwritten.
+ */
+export async function repairMembership(): Promise<{ bots: string[]; teams: string[] }> {
+  const [rows, bots] = await Promise.all([listTeams(), store.loadBots()]);
+  const plan = planMembershipRepair(rows, bots);
+  const fixedTeams: string[] = [];
+  for (const [teamId, add] of plan.teams) {
+    const done = await mutateTeam(teamId, (row) => {
+      row.memberIds = [...new Set([...(row.memberIds || []), ...add])];
+    });
+    if (done) fixedTeams.push(teamId);
+  }
+  const liveTeams = new Set((await listTeams()).map((t) => t.id));
+  const fixedBots: string[] = [];
+  for (const [botId, want] of plan.bots) {
+    if (!liveTeams.has(want.teamId)) continue;
+    await store.patchBot(botId, (row) => {
+      if (row.teamId && row.teamId !== want.teamId && liveTeams.has(row.teamId)) return;
+      row.teamId = want.teamId;
+      if (row.teamRole !== "chief" && row.teamRole !== "worker") row.teamRole = want.teamRole;
+      fixedBots.push(botId);
+    });
+  }
+  return { bots: fixedBots, teams: fixedTeams };
+}
+
 /**
  * Resolve what a model passed as a teammate reference — the exact bot id, the
  * teammate's name (case-insensitive), or an id prefix — to a member. A lead

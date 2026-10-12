@@ -9,6 +9,7 @@ import { mergeCloudMessages, mergeCloudDraft, isTransientChatStatus } from "./ch
 import { activityLabel, applyChatBusy as applyChatBusyPure, liveBusyLabel, usageLimitInfo, chatNoticeKind, collapseRepeats, workingRowState, formatElapsed } from "./chat-activity.mjs";
 import type { ChatBusyEvent, ChatNoticeKind } from "./chat-activity.mjs";
 import { api } from "./api-client.mjs";
+import { leadOf, reconcileTeamFields } from "./team-groups.mjs";
 import { SEPARATE_LOGIN_PROVIDERS, cleanupBannerHtml, identityOptionLabel, identityRowHtml as identityRowMarkup } from "./identity-rows.mjs";
 import type { IdentityLoginView } from "./identity-rows.mjs";
 import { iconAbout, iconBack, iconChevrons, iconClip, iconClock, iconClose, iconCompact, iconComputer, iconExpand, iconGear, iconGitHub, iconGlobe, iconHarness, iconLicense, iconLock, iconMic, iconMonitor, iconPerson, iconPlus, iconRecord, iconSend, iconStop, iconLol, iconTerminal } from "./icons.mjs";
@@ -1219,7 +1220,13 @@ function restoreFieldFocus(el: HTMLElement | null | undefined): void {
 }
 
 function viewBots(): Bot[] {
-  return isCloudPlace() ? state.cloudDraft?.bots || [] : state.bots;
+  const bots = isCloudPlace() ? state.cloudDraft?.bots || [] : state.bots;
+  const teams = isCloudPlace() ? state.cloudDraft?.teams || [] : state.teams || [];
+  // The rail groups by teamId, the tab strip by memberIds, the Team tab finds
+  // its lead by role. Fill a bot's missing team fields from the team rows so
+  // all three agree even when the stored copies drifted apart.
+  reconcileTeamFields(bots, teams);
+  return bots;
 }
 
 function botById(id: string | null | undefined): Bot | null {
@@ -2390,7 +2397,7 @@ function namedBubble(m: Message, assistant: boolean): string {
   // `aid !== state.selected` alone would show it on every lead bubble.)
   const selfLead = (() => {
     const t = teamOf(currentBot());
-    return t ? teamBots(t).find((b) => b.teamRole === "chief")?.id || "" : "";
+    return t ? leadOf(t, teamBots(t))?.id || "" : "";
   })();
   const openBtn = aid && aid !== state.selected && aid !== selfLead
     ? `<button type="button" class="mate-open" data-act="team-tab" data-id="${escapeHtml(aid)}">Open ${name}</button>`
@@ -2410,7 +2417,7 @@ function namedBubble(m: Message, assistant: boolean): string {
 }
 
 function renderTeamChannel(thread: HTMLElement, team: Team): void {
-  const chief = teamBots(team).find((b) => b.teamRole === "chief");
+  const chief = leadOf(team, teamBots(team));
   // A CLOUD team has no channel transcript of its own: the Worker writes the
   // user's turns, the lead's replies and the workers' reports into the lead's
   // thread (which is what the phone shows). Render that thread as the channel,
@@ -2649,7 +2656,7 @@ function paintComposerCopy(bot: Bot): void {
   const team = teamOf(bot);
   const mates = teamBots(team).filter((b) => b.id !== bot.id);
   const inChannel = Boolean(state.channelTeamId && team && team.id === state.channelTeamId);
-  const lead = teamBots(team).find((b) => b.teamRole === "chief");
+  const lead = leadOf(team, teamBots(team));
   // In the Team channel the lead is who is (or is not) working.
   const worker = inChannel ? lead || bot : bot;
   const busy = Boolean(worker.busy);
@@ -4184,7 +4191,7 @@ function paintTeamTabs(bot: Bot): void {
   const channelTab = `<button type="button" class="chrome-tab channel-tab ${chOn ? "on" : ""}" data-act="team-channel" data-id="${team.id}" title="${escapeHtml(team.name || "Team")} · shared log">
     <span class="chrome-tab-title">Team</span>
   </button>`;
-  host.innerHTML = channelTab + members
+  const html = channelTab + members
     .map((b) => {
       const memberOn = !chOn && b.id === bot.id;
       const role = b.teamRole === "chief" ? "Chief" : b.teamRole === "worker" ? "Worker" : "";
@@ -4195,6 +4202,17 @@ function paintTeamTabs(bot: Bot): void {
       </button>`;
     })
     .join("");
+  // Repainting the same strip would drop the tab avatars' canvases, and this
+  // runs from paths (Team tab click, channel messages) that never call
+  // refreshAvatars afterwards, which left every tab icon an empty circle.
+  if (host.innerHTML !== html) {
+    host.innerHTML = html;
+    try {
+      refreshAvatars();
+    } catch (err) {
+      console.warn("avatars", err);
+    }
+  }
   paintTeamBrief(bot);
 }
 
@@ -8716,7 +8734,8 @@ const ACTIONS: Record<string, ActHandler> = {
     state.channelTeamId = teamId;
     // The channel is the lead's conversation, so the chief becomes the active
     // bot — the screen pane and everything keyed off the selection follow it.
-    const chief = viewBots().find((x) => x.teamId === teamId && x.teamRole === "chief");
+    const team = teamOf(viewBots().find((x) => x.teamId === teamId)) || teamFromBots(teamId);
+    const chief = leadOf(team, teamBots(team));
     if (chief) {
       rememberSelected(chief.id);
       if (!isCloudPlace()) api(`/api/teams/${teamId}/focus`, { method: "POST", body: { botId: chief.id } }).catch(() => {});
@@ -10960,7 +10979,7 @@ async function onSend(e: ComposerSubmit): Promise<void> {
     if (bot) paintChat(bot);
     try {
       if (isCloudPlace()) {
-        const chief = teamBots(channelTeam).find((b) => b.teamRole === "chief") || bot;
+        const chief = leadOf(channelTeam, teamBots(channelTeam)) || bot;
         if (chief) {
           const computerId = chief.computerId || chief.vm?.computerId;
           const snap = await api(`/api/cloud/draft/bots/${chief.id}/messages`, {
