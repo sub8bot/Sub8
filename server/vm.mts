@@ -27,6 +27,7 @@ import {
   CAP_STEP_MB,
   cpusForMemory,
   decideTabReset,
+  DESK_CEILING_MB,
   DESK_FLOOR_MB,
   dockerRuntimeName,
   memoryUpdateArgs,
@@ -537,6 +538,11 @@ export function deskMemory(memberCount?: unknown): string {
   return `${Math.min(6, 2 + (n - 1))}g`;
 }
 
+/** The most one desk grows to on its own: 8 GiB, or LOCALBOT_MAX_MEMORY. */
+export function deskCeilingMb(): number {
+  return parseMemMb(process.env.LOCALBOT_MAX_MEMORY) || DESK_CEILING_MB;
+}
+
 /** What a desk is actually using vs allowed, plus the ceilings above it. */
 export interface DeskResourceStatus {
   container: string;
@@ -623,8 +629,18 @@ export async function deskResourceStatus(container: string): Promise<DeskResourc
 const deskMemberWantMb = new Map<string, number>();
 const deskRaisedWantMb = new Map<string, number>();
 
-function deskWantMb(name: string): number {
+export function deskWantMb(name: string): number {
   return Math.max(deskMemberWantMb.get(name) || parseMemMb(deskMemory()) || 2048, deskRaisedWantMb.get(name) || 0);
+}
+
+/**
+ * Record a manual raise (the `ramMb` rung) as this desk's floor. raiseDeskResources
+ * calls it; deskUpkeep calls it again from the persisted `bot.vm.ramMb` so a raise
+ * survives an app restart and the desk grows back when the VM does.
+ */
+export function noteDeskRaisedWant(container: string, ramMb: number): void {
+  const mb = parseMemMb(limitsFromRamMb(ramMb).memory);
+  if (container && mb > 0) deskRaisedWantMb.set(container, Math.max(deskRaisedWantMb.get(container) || 0, mb));
 }
 
 interface RunningDesk {
@@ -716,7 +732,7 @@ export async function rebalanceDeskCaps({
     wantMb: d.name === priority && wantMb ? wantMb : deskWantMb(d.name),
     priority: d.name === priority,
   }));
-  const plan = allocateDeskCaps(sizing, budgetMb);
+  const plan = allocateDeskCaps(sizing, budgetMb, deskCeilingMb());
   const changes = dryRun ? [] : await applyDeskCaps(desks, plan.caps);
   for (const c of changes) {
     const line = `desk caps: ${c.name} ${memString(c.fromMb)} -> ${memString(c.toMb)} (cpus ${cpusForMemory(c.toMb)})${c.ok ? "" : ` failed: ${c.error}`}`;
@@ -743,6 +759,7 @@ export async function deskCreateMemoryMb(wantMb: number = parseMemMb(deskMemory(
   const plan = allocateDeskCaps(
     [...desks.map((d) => ({ name: d.name, usedMb: d.usedMb, capMb: d.capMb, wantMb: deskWantMb(d.name) })), { name: "\0new", usedMb: 0, capMb: 0, wantMb }],
     budgetMb,
+    deskCeilingMb(),
   );
   return Math.min(wantMb, plan.caps.get("\0new") || DESK_FLOOR_MB);
 }
@@ -758,7 +775,7 @@ export async function raiseDeskResources(
 ): Promise<{ ok: boolean; memory: string; cpus: string; pids: number; clamped: boolean; requested: string; error?: string }> {
   const l = limitsFromRamMb(ramMb);
   const requestedMb = parseMemMb(l.memory);
-  deskRaisedWantMb.set(container, Math.max(deskRaisedWantMb.get(container) || 0, requestedMb));
+  noteDeskRaisedWant(container, ramMb);
   let gotMb = requestedMb;
   let error = "";
   const plan = await rebalanceDeskCaps({ priority: container, wantMb: requestedMb }).catch((err) => {
@@ -1391,6 +1408,17 @@ export function pickLatestDockerTarball(listing: string = ""): string {
   return found.at(-1)!.file;
 }
 
+/**
+ * Memory (GB) for a NEW Colima VM, from the Mac's RAM: half of it, at least 6
+ * and at most 16 (two 8 GiB desks), but always leaving 6 GB to macOS and never
+ * under 2. 8 GB Mac -> 2, 16 -> 8, 24 -> 12, 32+ -> 16. Only used when creating
+ * the profile; an existing VM is started as it is, never resized.
+ */
+export function colimaMemoryGb(hostGb: number): number {
+  const gb = Math.floor(Number(hostGb) || 0);
+  return Math.max(2, Math.min(16, Math.max(6, Math.floor(gb / 2)), gb - 6));
+}
+
 export function colimaStartArgs({
   cpus,
   totalMemBytes,
@@ -1398,8 +1426,7 @@ export function colimaStartArgs({
   const ncpu = Number(cpus) > 0 ? Number(cpus) : os.cpus()?.length || 4;
   const gb = (Number(totalMemBytes) > 0 ? Number(totalMemBytes) : os.totalmem()) / 1024 ** 3;
   const cpu = Math.max(2, Math.min(4, Math.floor(ncpu / 2) || 2));
-  const memory = gb >= 24 ? 8 : gb >= 12 ? 4 : 2;
-  return { cpu, memory };
+  return { cpu, memory: colimaMemoryGb(gb) };
 }
 
 export function planDockerInstall(facts: DockerFacts = {}): DockerPlan {

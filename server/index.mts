@@ -5047,9 +5047,11 @@ setInterval(async () => {
       if (owner.awaitingUserSelection) continue;
       deskPressureCardAt.set(container, Date.now());
       if (st.pressure === "memory") deskTabCheck(container, mates).catch(() => {});
-      const nextRamMb = Math.min(16384, Math.max(4096, (st.memMaxMb || 2048) * 2));
+      const nextRamMb = Math.min(vm.deskCeilingMb(), Math.max(4096, (st.memMaxMb || 2048) * 2));
       const nextPids = Math.min(8192, Math.max(1024, (st.pidsMax || 768) * 2));
-      const vmCeiling = st.budgetMb > 0 && nextRamMb > st.budgetMb * 0.8;
+      // Already at the per-desk ceiling: nothing to offer, same as the VM ceiling.
+      const atDeskCeiling = st.memMaxMb > 0 && nextRamMb <= st.memMaxMb;
+      const vmCeiling = atDeskCeiling || (st.budgetMb > 0 && nextRamMb > st.budgetMb * 0.8);
       const facts = `memory ${st.memUsedMb}/${st.memMaxMb || "∞"} MiB, processes ${st.pids}/${st.pidsMax || "∞"}`;
       // Pids pressure is cheap to fix (raise the process limit, live, no VM
       // impact). Only MEMORY pressure can hit the Docker VM ceiling.
@@ -5075,7 +5077,9 @@ setInterval(async () => {
             id: `dr${Date.now()}`,
             role: "assistant",
             kind: "choices",
-            content: `My computer is near its limits (${facts}). The ceiling is ${st.runtime} itself: it gives Docker ${(st.vmTotalMb / 1024).toFixed(1)} GB of this Mac's ${(st.hostTotalMb / 1024).toFixed(0)} GB, shared by every computer.`,
+            content: atDeskCeiling
+              ? `My computer is near its limits (${facts}). It already has the most memory one computer gets (${(st.memMaxMb / 1024).toFixed(0)} GB).`
+              : `My computer is near its limits (${facts}). The ceiling is ${st.runtime} itself: it gives Docker ${(st.vmTotalMb / 1024).toFixed(1)} GB of this Mac's ${(st.hostTotalMb / 1024).toFixed(0)} GB, shared by every computer.`,
             hint: "Nothing to do: I reset tabs that have grown too large and rebalance memory across computers automatically, live, without restarting anything.",
             choices: [{ id: "ack", label: "Got it" }],
             pending: true,
@@ -5373,6 +5377,11 @@ async function deskUpkeep(bots: readonly IndexBot[]): Promise<void> {
   deskUpkeepRunning = true;
   deskUpkeepAt = Date.now();
   try {
+    // Raises live in memory; seed them from the persisted rung so a restart keeps them.
+    for (const b of bots) {
+      const ramMb = (b.vm as { ramMb?: number } | undefined)?.ramMb;
+      if (b.vm?.container && b.vm.status === "running" && ramMb) vm.noteDeskRaisedWant(b.vm.container, ramMb);
+    }
     await vm.rebalanceDeskCaps().catch((err) => console.error("rebalanceDeskCaps", err));
     const containers = new Set(bots.filter((b) => b.vm?.container && b.vm.status === "running").map((b) => b.vm!.container as string));
     for (const c of containers) await deskTabCheck(c, bots).catch(() => {});
