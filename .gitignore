@@ -60,6 +60,7 @@ plan/
 /web/harness-models.mjs
 /web/icons.mjs
 /web/identity-rows.mjs
+/web/team-groups.mjs
 /web/markdown.js
 /web/palette.js
 /web/stream-bind.mjs

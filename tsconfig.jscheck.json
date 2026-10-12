@@ -83,6 +83,7 @@
     "web/grok-bot.js",
     "web/harness-models.mjs",
     "web/icons.mjs",
+    "web/team-groups.mjs",
     "web/markdown.js",
     "web/palette.js",
     "web/stream-bind.mjs",

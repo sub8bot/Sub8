@@ -4753,7 +4753,13 @@ async function runUserTurn(botId: string, text: string, hidden: boolean, images:
       merged.sort((a, b) => Number(a?.ts || 0) - Number(b?.ts || 0));
       const routines = live.routines || [];
       const vm = live.vm;
-      Object.assign(live, bot, { messages: merged, routines, vm });
+      // Team membership is only ever written straight to disk (ensureTeamForBot,
+      // addMember, removeMembers), never left on the turn's copy. A lead that
+      // made a teammate mid-turn had its new teamId/teamRole wiped here by the
+      // start-of-turn snapshot, so the sidebar split the team into loose bots.
+      const teamId = live.teamId;
+      const teamRole = live.teamRole;
+      Object.assign(live, bot, { messages: merged, routines, vm, teamId, teamRole });
     }) as IndexBot | null;
     if (!saved) {
       if (!Array.isArray(bot.routines)) bot.routines = [];
@@ -5588,6 +5594,19 @@ const httpServer = app.listen(PORT, "127.0.0.1", async () => {
       }
       broadcast("bots", all.map(toClient));
       broadcast("teams", await publicTeams());
+    }
+    // A team row and its bots' teamId/teamRole can disagree after an older
+    // build's end-of-turn save wiped a lead's team fields. Fill the gaps from
+    // whichever side still has them; nothing is removed.
+    try {
+      const fixed = await teams.repairMembership();
+      if (fixed.bots.length || fixed.teams.length) {
+        console.log(`repaired team membership: ${fixed.bots.length} bot(s), ${fixed.teams.length} team(s)`);
+        broadcast("bots", (await store.loadBots() as IndexBot[]).map(toClient));
+        broadcast("teams", await publicTeams());
+      }
+    } catch (err) {
+      console.error("repair team membership", err);
     }
     // Before anything can drive a desk: re-arm Take control for bots that were
     // being driven when the host stopped. drainLeftoverWakes runs 5s from now
