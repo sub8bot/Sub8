@@ -37,6 +37,27 @@ assert.match(desk, /kill_unprofiled_chrome/);
 assert.match(desk, /ps -eo pid=/);
 assert.match(desk, /gl=us/);
 assert.match(desk, /accept_languages/);
+// Teammate desks (display :N, N != 1) seed their own profile from the lead's
+// once, so they start signed in to the same sites and can work in parallel.
+assert.match(desk, /seed_teammate_profile\(\)/);
+assert.match(desk, /LEAD_PROFILE=\/config\/chrome-desk\n/);
+assert.match(desk, /SEED_MARKER=\.sub8-seeded-from-lead/);
+assert.match(desk, /\[ -f "\$target\/\$SEED_MARKER" \] && return 0/);
+assert.match(desk, /SUB8_TEAMMATE_SHARE_LOGIN:-1/);
+assert.match(desk, /\.sub8-no-teammate-login/);
+for (const ex of ["Singleton*", "Cache", "Code Cache", "GPUCache", "ShaderCache", "GrShaderCache", "GraphiteDawnCache", "DawnCache", "component_crx_cache", "Crashpad", "CacheStorage", "ScriptCache", "Sessions"]) {
+  assert.ok(desk.includes(`'${ex}'`), `seed excludes ${ex}`);
+}
+assert.match(desk, /command -v rsync/);
+assert.match(desk, /--warning=no-file-changed/);
+assert.match(desk, /src\.backup\(dst\)/);
+assert.match(desk, /-journal -wal/);
+assert.match(desk, /Default\/Network\/Cookies/);
+// Seed only the teammate profile, only while its Chrome is not up, and before
+// Chrome starts on it.
+assert.match(desk, /\[ "\$PROFILE" != "\$LEAD_PROFILE" \]/);
+assert.ok(desk.indexOf('seed_teammate_profile "$PROFILE"') < desk.indexOf('exec "$CHROME"'));
+assert.ok(desk.indexOf('seed_teammate_profile "$PROFILE"') < desk.indexOf('mkdir -p "$PROFILE/Default"'));
 assert.match(fs.readFileSync(path.join(root, "vm", "desk-init.sh"), "utf8"), /chrome-desk/);
 assert.match(fs.readFileSync(path.join(root, "vm", "desk-init.sh"), "utf8"), /chown root:root \/tmp\/\.X11-unix/);
 assert.match(fs.readFileSync(path.join(root, "vm", "desk-display.sh"), "utf8"), /chrome-desktop/);

@@ -23,7 +23,7 @@ Delete a Bot: that Bot's pane → Delete. They can keep the computer or delete i
 
 ## Teams
 
-Create a group from the sidebar. Everyone in the group shares one Linux computer, one Chrome, one tab.
+Create a group from the sidebar. Everyone in the group shares one Linux computer, but each teammate gets its own display and its own Chrome. On a teammate's first start its Chrome profile is copied from the lead's, so it is already signed in to the same sites (opt out with SUB8_TEAMMATE_SHARE_LOGIN=0).
 `send_message` is the team chat the human sees. `message_teammate` assigns work to another Bot.
 `ask_user` shows a choice card in chat.
 
