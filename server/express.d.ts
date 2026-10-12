@@ -164,6 +164,8 @@ declare module "express" {
     imageId: string;
     mid: string;
     rid: string;
+    /** /api/control/v1/bots/:bot, a bot id or name. */
+    bot?: string;
   }
 
   /**
@@ -240,9 +242,17 @@ declare module "express" {
     use(path: string, handler: Middleware): this;
   }
 
+  /** `express.Router()`: a mountable handler with its own routes (the control API). */
+  export interface Router extends Middleware {
+    get(path: string, handler: Handler): this;
+    post(path: string, handler: Handler): this;
+    use(handler: Middleware): this;
+  }
+
   /** The default export: callable, and the namespace the middleware hangs off. */
   export interface Express {
     (): App;
+    Router(): Router;
     json(options?: JsonOptions): Middleware;
     static(root: string, options?: StaticOptions): Middleware;
   }

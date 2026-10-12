@@ -3872,3 +3872,10 @@ select:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 55%, 
   vertical-align: 1px;
   animation: pulse 1.4s ease-in-out infinite;
 }
+
+/* Settings > Control API: paths, the masked token and copy-ready snippets. */
+.control-mono { font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
+.control-snippet + .control-snippet { margin-top: 10px; }
+.control-snippet .row { margin-bottom: 6px; }
+.control-code { max-height: none; margin: 0; white-space: pre-wrap; word-break: break-all; }
+.control-confirm { gap: 12px; }

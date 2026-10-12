@@ -124,6 +124,7 @@ const ORDER = [
   "conversation-tail.mjs", "usage-limit.mjs", "steering.mjs",
   "interrupted.mjs",
   "desk-limits.mjs",
+  "control-api.mjs",
 ];
 
 function runOne(file) {

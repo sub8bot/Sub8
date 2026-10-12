@@ -701,6 +701,18 @@ interface ComposerSubmit {
   target?: EventTarget | null;
 }
 
+/** GET /api/control-access: the local control API's switch and how to reach it. Never carries the token. */
+interface ControlAccess {
+  ok?: boolean;
+  enabled: boolean;
+  url: string;
+  file: string;
+  version?: number;
+  tokenHint: string;
+  cliPath: string;
+  mcpCommand: string;
+}
+
 /** Everything the shell renders from. One object, mutated in place, read by every painter. */
 interface AppState {
   bots: Bot[];
@@ -769,6 +781,12 @@ interface AppState {
   harnessPlace: "local" | "cloud" | null;
   /** The Cloud desk the Harnesses panel is about (its dropdown); only while Settings is open. */
   harnessDesk: string | null;
+  /** Settings > Control API: what GET /api/control-access answered, loaded when the section opens. */
+  controlAccess: ControlAccess | null;
+  controlAccessLoading: boolean;
+  controlAccessError: string;
+  /** The Regenerate button's inline confirm is showing. */
+  controlConfirmRegen: boolean;
   cloudPlugins: Record<string, HarnessPluginsState>;
   identities: IdentityRow[];
   identityCatalog: { id: string; label: string }[];
@@ -944,6 +962,10 @@ const state: AppState = {
   harnessOpen: {},
   harnessPlace: null,
   harnessDesk: null,
+  controlAccess: null,
+  controlAccessLoading: false,
+  controlAccessError: "",
+  controlConfirmRegen: false,
   cloudPlugins: {},
   identities: [],
   identityCatalog: [],
@@ -7728,6 +7750,93 @@ function accountHtml(): string {
     </div>`;
 }
 
+/** Fetch the control API's state for Settings and repaint if that section is still open. */
+function loadControlAccess(): void {
+  if (state.controlAccessLoading) return;
+  state.controlAccessLoading = true;
+  void api("/api/control-access")
+    .then((r) => {
+      state.controlAccess = r as ControlAccess;
+      state.controlAccessError = "";
+    })
+    .catch((err) => {
+      state.controlAccessError = (err as CaughtError | undefined)?.message || "Could not load the control API settings.";
+    })
+    .finally(() => {
+      state.controlAccessLoading = false;
+      if (state.modal === "settings" && state.section === "control") paintModal();
+    });
+}
+
+/** Apply a control-access answer (toggle, regenerate) and repaint the section. */
+function applyControlAccess(p: Promise<unknown>, failure: string): void {
+  void p
+    .then((r) => {
+      state.controlAccess = r as ControlAccess;
+      state.controlAccessError = "";
+    })
+    .catch((err) => {
+      state.controlAccessError = (err as CaughtError | undefined)?.message || failure;
+    })
+    .finally(() => {
+      if (state.modal === "settings" && state.section === "control") paintModal();
+    });
+}
+
+/** One copy-ready snippet: the text in a code block and a Copy button that copies exactly it. */
+function controlSnippetHtml(label: string, text: string): string {
+  return `<div class="control-snippet">
+      <div class="row"><div class="lbl">${escapeHtml(label)}</div>
+        <button type="button" class="pill" data-act="control-copy-snippet" data-text="${escapeHtml(text)}">Copy</button></div>
+      <pre class="harness-log control-code"><code>${escapeHtml(text)}</code></pre>
+    </div>`;
+}
+
+/** Settings > Control API: lets other local apps and agent harnesses drive bots over a token-gated local API. */
+function controlApiHtml(): string {
+  const c = state.controlAccess;
+  if (!c && !state.controlAccessLoading && !state.controlAccessError) loadControlAccess();
+  const intro = `<p class="muted">Other apps on this Mac can list, message and stop your bots through a local API. Requests must come from this Mac and carry the token.</p>`;
+  if (!c) {
+    return `<h2>Control API</h2>${intro}
+      <div class="card"><div class="sub">${escapeHtml(state.controlAccessError || "Loading…")}</div>
+      ${state.controlAccessError ? `<div class="row" style="justify-content:flex-end"><button type="button" class="pill" data-act="sec" data-id="control">Try again</button></div>` : ""}</div>`;
+  }
+  const on = Boolean(c.enabled);
+  const curl = `curl -s -H "Authorization: Bearer $(node -p 'require(process.argv[1]).token' "${c.file}")" ${c.url}/bots`;
+  const status = `node "${c.cliPath}" status`;
+  const regen = state.controlConfirmRegen
+    ? `<div class="row control-confirm"><div class="sub">Regenerate? Apps using the old token will stop working.</div>
+        <div class="row" style="gap:8px;justify-content:flex-end">
+          <button type="button" class="pill" data-act="control-regenerate-cancel">Cancel</button>
+          <button type="button" class="pill primary" data-act="control-regenerate-confirm">Confirm</button>
+        </div></div>`
+    : "";
+  return `<h2>Control API</h2>${intro}
+    ${state.controlAccessError ? `<div class="card"><div class="sub">${escapeHtml(state.controlAccessError)}</div></div>` : ""}
+    <div class="block"><h3>Access</h3>
+      <div class="card">
+        <div class="row"><div><div class="lbl">Allow other apps to control Sub8</div><div class="sub">${on ? "On. Apps with the token can reach your bots." : "Off. Every request is refused."}</div></div>
+          <button type="button" class="toggle ${on ? "on" : ""}" data-act="control-toggle" title="${on ? "Turn off" : "Turn on"}"><i></i></button></div>
+        <div class="row"><div><div class="lbl">Token</div><div class="sub control-mono">••••••••${escapeHtml(c.tokenHint || "")}</div></div>
+          <div class="row" style="gap:8px;justify-content:flex-end">
+            <button type="button" class="pill" data-act="control-copy-token">Copy</button>
+            <button type="button" class="pill" data-act="control-regenerate">Regenerate</button>
+          </div></div>
+        ${regen}
+        <div class="row"><div><div class="lbl">API address</div><div class="sub control-mono">${escapeHtml(c.url)}</div></div></div>
+        <div class="row"><div><div class="lbl">Token file</div><div class="sub control-mono">${escapeHtml(c.file)}</div></div></div>
+      </div>
+    </div>
+    <div class="block"><h3>Connect</h3>
+      <div class="card">
+        ${controlSnippetHtml("Add to Claude Code as an MCP server", c.mcpCommand)}
+        ${controlSnippetHtml("Command line", status)}
+        ${controlSnippetHtml("curl", curl)}
+      </div>
+    </div>`;
+}
+
 function aboutHtml(): string {
   const ver = state.appVersion || state.update?.currentVersion || "0.3.21";
   const credit = (act: string, url: string, icon: string, title: string, sub: string) =>
@@ -7785,6 +7894,7 @@ function settingsHtml(): string {
         <button type="button" class="${sec === "updates" ? "active" : ""}" data-act="sec" data-id="updates">${iconMonitor()} <span>Computer</span></button>
         <button type="button" data-act="open-passwords" title="Passwords">${iconLock()} <span>Passwords</span></button>
         <button type="button" class="${sec === "lol" ? "active" : ""}" data-act="sec" data-id="lol">${iconLol()} <span>Bots.lol</span></button>
+        <button type="button" class="${sec === "control" ? "active" : ""}" data-act="sec" data-id="control">${iconChevrons()} <span>Control API</span></button>
         <button type="button" class="${sec === "about" ? "active" : ""}" data-act="sec" data-id="about">${iconAbout()} <span>About</span></button>
       </nav>
       <div class="sbody">
@@ -7796,6 +7906,8 @@ function settingsHtml(): string {
             ? harnessesHtml(h)
             : sec === "lol"
             ? lolPanelHtml()
+            : sec === "control"
+            ? controlApiHtml()
             : sec === "about"
             ? aboutHtml()
             : sec === "general"
@@ -8404,6 +8516,11 @@ const ACTIONS: Record<string, ActHandler> = {
   },
   "sec": (e, { el }) => {
     state.section = el.dataset.id;
+    if (el.dataset.id === "control") {
+      state.controlConfirmRegen = false;
+      state.controlAccessError = "";
+      loadControlAccess();
+    }
     // The merged section needs both what Identities and This Mac used to load.
     if (el.dataset.id === "harnesses") {
       Promise.all([loadIdentities(), loadClaudeAuth(), loadHarnessStatus()]).then(() => {
@@ -9523,6 +9640,58 @@ const ACTIONS: Record<string, ActHandler> = {
     state.harnessTab = String(el.dataset.id || "");
     state.harnessOpen[state.harnessTab] = true;
     testHarness(el.dataset.id);
+    return;
+  },
+  "control-toggle": () => {
+    const on = !state.controlAccess?.enabled;
+    applyControlAccess(api("/api/control-access", { method: "PUT", body: { enabled: on } }), "Could not change that.");
+    return;
+  },
+  "control-copy-token": (e, { el }) => {
+    void api("/api/control-access/reveal", { method: "POST" })
+      .then((r) => {
+        const token = String((r as { token?: unknown } | null)?.token || "");
+        if (!token) throw new Error("No token to copy.");
+        return navigator.clipboard?.writeText(token);
+      })
+      .then(() => {
+        const was = el.textContent;
+        el.textContent = "Copied";
+        setTimeout(() => { el.textContent = was; }, 1400);
+        flashToast("Token copied.");
+      })
+      .catch((err) => flashToast((err as CaughtError | undefined)?.message || "Could not copy the token."));
+    return;
+  },
+  "control-regenerate": () => {
+    state.controlConfirmRegen = true;
+    paintModal();
+    return;
+  },
+  "control-regenerate-cancel": () => {
+    state.controlConfirmRegen = false;
+    paintModal();
+    return;
+  },
+  "control-regenerate-confirm": () => {
+    state.controlConfirmRegen = false;
+    applyControlAccess(
+      api("/api/control-access/regenerate", { method: "POST" }).then((r) => {
+        flashToast("New token made. Apps using the old one need the new token.");
+        return r;
+      }),
+      "Could not regenerate the token.",
+    );
+    return;
+  },
+  "control-copy-snippet": (e, { el }) => {
+    const text = String(el.dataset.text || "");
+    if (!text) return;
+    void navigator.clipboard?.writeText(text).then(() => {
+      const was = el.textContent;
+      el.textContent = "Copied";
+      setTimeout(() => { el.textContent = was; }, 1400);
+    });
     return;
   },
   "copy-link": (e) => {

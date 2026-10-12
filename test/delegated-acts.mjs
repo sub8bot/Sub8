@@ -79,6 +79,12 @@ const HANDLED = [
   "confirm-create",
   "confirm-create-team",
   "copy-link",
+  "control-copy-snippet",
+  "control-copy-token",
+  "control-regenerate",
+  "control-regenerate-cancel",
+  "control-regenerate-confirm",
+  "control-toggle",
   "create",
   "create-face",
   "create-pay-back",
@@ -309,8 +315,11 @@ assert.deepEqual(covered, expected);
 // 221 -> 229: identity-login, -login-open, -login-cancel, -login-dismiss,
 //             -code-submit, -logout, -cleanup, -cleanup-keep (separate logins
 //             per identity: sign in, sign out, remove unused).
-assert.equal(HANDLED.length, 229);
-assert.equal(covered.length, 229);
+// 229 -> 235: control-toggle, control-copy-token, control-copy-snippet,
+//             control-regenerate, -regenerate-confirm, -regenerate-cancel
+//             (Settings > Control API).
+assert.equal(HANDLED.length, 235);
+assert.equal(covered.length, 235);
 
 console.log(
   "ok delegated-acts (" + keys.length + " in ACTIONS, " + new Set(chain).size +

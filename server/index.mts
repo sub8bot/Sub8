@@ -18,7 +18,7 @@ import { applySimulate } from "../web/brain-setup.mjs";
 import { looksLikeAuthFailure, rewriteHarnessOutput } from "@sub8/harness-auth";
 import { randomBytes, randomUUID } from "node:crypto";
 import { setHumanControl, isHumanControl, releaseHumanControl, boxHelpReleasedWake } from "@sub8/control";
-import { appRoot, dataDir } from "./paths.mjs";
+import { appRoot, dataDir, fileRoot } from "./paths.mjs";
 import * as appUpdate from "./update.mjs";
 import * as vault from "./vault.mjs";
 import * as vaultSync from "./vault-sync.mjs";
@@ -53,6 +53,7 @@ import * as spendGuard from "./spend-guard.mjs";
 import { TurnInbox, type DeliveryState, type Nudge } from "./steer.mjs";
 import { activeBotLimit, parseUsageLimit, routinePausedNotice, type BotUsageLimit } from "./usage-limit.mjs";
 import * as mcpRemote from "@sub8/web-fetch/mcp-remote";
+import * as controlApi from "./control-api.mjs";
 
 import type { Request, Response } from "express";
 import type { AgentSettings, RunTurnOptions } from "./agent.mjs";
@@ -391,9 +392,19 @@ app.use(
 
 const clients = new Set<Response>();
 
+/** In-process listeners on every broadcast (the control API's event feed). */
+const broadcastTaps = new Set<(event: string, data: unknown) => void>();
+
 function broadcast(event: string, data: unknown): void {
   const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const res of clients) res.write(payload);
+  for (const tap of broadcastTaps) {
+    try {
+      tap(event, data);
+    } catch {
+      /* a listener must never break the UI feed */
+    }
+  }
   // The attention event: a bot just asked the human for something (a pick, a
   // credential, a verification code). One structural hook — every card funnels
   // through broadcast — so the desktop app can toast + fire a native macOS
@@ -470,6 +481,68 @@ app.get("/api/events", (req, res) => {
     clearInterval(iv);
     clients.delete(res);
   });
+});
+
+/**
+ * The control API for other local apps and agent harnesses (docs/control-api.md).
+ * Bearer token in <dataDir>/control.json, loopback only, separate from the
+ * internal token above. The routes reuse the chat box's send and Stop.
+ */
+app.use(
+  controlApi.CONTROL_PREFIX,
+  controlApi.controlRouter({
+    dataDir: store.dataDir,
+    port: PORT,
+    appVersion: () => appUpdate.appVersion(),
+    loadBots: async () => (await store.loadBots()) as controlApi.ControlBot[],
+    getBot: async (id) => {
+      try {
+        return (await store.getBot(id)) as controlApi.ControlBot | null;
+      } catch {
+        return null;
+      }
+    },
+    busyIds: () => busyIds as Set<string>,
+    limited: (b) => Boolean(activeBotLimit(b as Parameters<typeof activeBotLimit>[0])),
+    send: (botId, text) => acceptUserMessage(botId, text),
+    stop: (botId) => stopBotTurn(botId),
+    subscribe: (fn) => {
+      broadcastTaps.add(fn);
+      return () => broadcastTaps.delete(fn);
+    },
+  }),
+);
+
+/** Settings → Control API. App-only, the same guard as /api/vault. */
+function controlAccessPayload(rec: controlApi.ControlFile) {
+  const cliPath = path.join(fileRoot, "bin", "sub8ctl.mjs");
+  return {
+    ok: true,
+    enabled: rec.enabled,
+    url: rec.url,
+    file: controlApi.controlFilePath(store.dataDir),
+    version: rec.version,
+    tokenHint: controlApi.tokenHint(rec.token),
+    cliPath,
+    mcpCommand: `claude mcp add sub8 -- node "${cliPath}" mcp`,
+  };
+}
+app.use("/api/control-access", (req, res, next) => {
+  if (fromBrowser(req)) return next();
+  res.status(403).json({ ok: false, error: "control settings are reachable from the app only" });
+});
+app.get("/api/control-access", (_req, res) => {
+  res.json(controlAccessPayload(controlApi.ensureControlFile(store.dataDir, PORT)));
+});
+app.put("/api/control-access", (req, res) => {
+  const enabled = req.body?.enabled !== false;
+  res.json(controlAccessPayload(controlApi.setControlEnabled(store.dataDir, PORT, enabled)));
+});
+app.post("/api/control-access/regenerate", (_req, res) => {
+  res.json(controlAccessPayload(controlApi.regenerateControlToken(store.dataDir, PORT)));
+});
+app.post("/api/control-access/reveal", (_req, res) => {
+  res.json({ ok: true, token: controlApi.ensureControlFile(store.dataDir, PORT).token });
 });
 
 function whisperModel() {
@@ -3958,13 +4031,12 @@ app.post("/api/bots/:id/control", async (req, res) => {
   res.json({ ok: true, on });
 });
 
-app.post("/api/bots/:id/stop", async (req, res) => {
-  const bot = await store.getBot(req.params.id) as IndexBot | null;
-  if (!bot) return res.status(404).json({ error: "not found" });
-  const wasBusy = busyIds.has(bot.id);
-  stopTurn(bot.id);
+/** The Stop button. Shared by the UI route and the control API. */
+async function stopBotTurn(botId: string): Promise<{ stopped: boolean }> {
+  const wasBusy = busyIds.has(botId);
+  stopTurn(botId);
   if (wasBusy) {
-    await store.patchBot(bot.id, (live) => {
+    await store.patchBot(botId, (live) => {
       live.messages = live.messages || [];
       live.messages.push({
         id: `stop${Date.now()}`,
@@ -3974,10 +4046,16 @@ app.post("/api/bots/:id/stop", async (req, res) => {
       });
     });
   }
-  const live = await store.getBot(bot.id) as IndexBot | null;
-  // The 404 at the top of this route already loaded this id.
-  broadcast("bot", toClient(live!));
-  res.json({ ok: true, stopped: wasBusy });
+  const live = await store.getBot(botId) as IndexBot | null;
+  if (live) broadcast("bot", toClient(live));
+  return { stopped: wasBusy };
+}
+
+app.post("/api/bots/:id/stop", async (req, res) => {
+  const bot = await store.getBot(req.params.id) as IndexBot | null;
+  if (!bot) return res.status(404).json({ error: "not found" });
+  const { stopped } = await stopBotTurn(bot.id);
+  res.json({ ok: true, stopped });
 });
 
 app.delete("/api/bots/:id/messages/:mid", async (req, res) => {
@@ -4001,6 +4079,36 @@ app.post("/api/spend-guard/resume", (_req, res) => {
   res.json(spendGuard.snapshot());
 });
 
+/**
+ * What the chat box does with a line the user typed: record it, then steer it
+ * into the running turn when the bot is busy, or start a turn when it is idle.
+ * Shared by the UI route and the control API.
+ */
+async function acceptUserMessage(botId: string, text: string, images: string[] = []): Promise<{ id: string; ts: number; queued: boolean }> {
+  spendGuard.noteUserActivity();
+  const userMsg = {
+    id: `u${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
+    role: "user",
+    content: text || "See attached.",
+    ts: Date.now(),
+  };
+  await store.patchBot(botId, (b) => {
+    b.messages = b.messages || [];
+    userSpoke(b);
+    b.messages.push(userMsg);
+  });
+  broadcast("message", { botId, ...userMsg });
+  const live = inflightTurns.get(botId);
+  const busy = busyIds.has(botId) && live;
+  if (busy) {
+    live.push({ text: userMsg.content, messageId: userMsg.id });
+    talkWhileWorking(botId, userMsg.content).catch(() => {});
+    return { id: userMsg.id, ts: userMsg.ts, queued: true };
+  }
+  enqueueTurn(botId, () => runUserTurn(botId, userMsg.content, false, images, { persistUser: false, messageIds: [userMsg.id] }));
+  return { id: userMsg.id, ts: userMsg.ts, queued: false };
+}
+
 app.post("/api/bots/:id/messages", async (req, res) => {
   spendGuard.noteUserActivity();
   const bot = await store.getBot(req.params.id) as IndexBot | null;
@@ -4008,28 +4116,8 @@ app.post("/api/bots/:id/messages", async (req, res) => {
   const text = String(req.body?.content || "").trim();
   const images = Array.isArray(req.body?.images) ? req.body.images.filter((x) => typeof x === "string").slice(0, 16) : [];
   if (!text && !images.length) return res.status(400).json({ error: "empty" });
-  const userMsg = {
-    id: `u${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
-    role: "user",
-    content: text || "See attached.",
-    ts: Date.now(),
-  };
-  await store.patchBot(bot.id, (b) => {
-    b.messages = b.messages || [];
-    userSpoke(b);
-    b.messages.push(userMsg);
-  });
-  broadcast("message", { botId: bot.id, ...userMsg });
-  const live = inflightTurns.get(bot.id);
-  const busy = busyIds.has(bot.id) && live;
-  if (busy) {
-    live.push({ text: userMsg.content, messageId: userMsg.id });
-    talkWhileWorking(bot.id, userMsg.content).catch(() => {});
-    res.json({ ok: true, queued: true, id: userMsg.id });
-    return;
-  }
-  res.json({ ok: true, queued: false });
-  enqueueTurn(bot.id, () => runUserTurn(bot.id, userMsg.content, false, images, { persistUser: false, messageIds: [userMsg.id] }));
+  const sent = await acceptUserMessage(bot.id, text, images);
+  res.json(sent.queued ? { ok: true, queued: true, id: sent.id } : { ok: true, queued: false });
 });
 
 app.post("/api/bots/:id/choice", async (req, res) => {
@@ -5425,6 +5513,13 @@ const httpServer = app.listen(PORT, "127.0.0.1", async () => {
     );
   }
   console.log(`Sub8 http://127.0.0.1:${PORT}`);
+  // Write control.json now so a harness can discover the API before anyone
+  // opens Settings. Only the path is logged, never the token.
+  try {
+    controlApi.ensureControlFile(store.dataDir, PORT);
+  } catch (err) {
+    console.warn("[control] could not write control.json:", (err as Error).message);
+  }
   try {
     const hints = await collectRecoverHints();
     const recovered = await store.recoverMissingBots(hints);

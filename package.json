@@ -8,6 +8,9 @@
   ],
   "type": "module",
   "main": "electron/main.mjs",
+  "bin": {
+    "sub8ctl": "bin/sub8ctl.mjs"
+  },
   "author": "Daniel Farina",
   "license": "BUSL-1.1",
   "description": "Sub8 — local desktop assistants that live on their own Linux computers.",
@@ -94,6 +97,7 @@
       "electron/**/*",
       "server/**/*",
       "web/**/*",
+      "bin/**/*",
       "!electron/**/*.mts",
       "!server/**/*.mts",
       "!web/**/*.mts",
@@ -110,7 +114,8 @@
       "prompts/**/*",
       "server/**/*",
       "web/palette.js",
-      "packages/*/dist/**/*"
+      "packages/*/dist/**/*",
+      "bin/**/*"
     ],
     "extraResources": [
       {

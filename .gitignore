@@ -82,6 +82,7 @@ plan/
 /server/cloud/turn.mjs
 /server/code-agent.mjs
 /server/computers.mjs
+/server/control-api.mjs
 /server/context.mjs
 /server/delivery.mjs
 /server/desk-client.mjs
