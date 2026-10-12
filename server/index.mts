@@ -1619,6 +1619,9 @@ app.post("/api/internal/team-dispatch", async (req, res) => {
     return res.json(r);
   }
   const toId = String(req.body?.toId || "");
+  // A message_teammate hop with an empty `to` lands here too; answer in the
+  // tool's own parameter names, not this legacy body's.
+  if (!toId && fromId) return res.status(400).json({ error: "message_teammate needs `bot_id` (a teammate or room id from list_teammates) and `content`" });
   if (!toId || !content) return res.status(400).json({ error: "toId and content required" });
   const from = fromId ? await store.getBot(fromId) as IndexBot | null : null;
   dispatchToTeammate(toId, content, from);
@@ -4452,6 +4455,8 @@ app.delete("/api/bots/:id/routines/:rid", async (req, res) => {
   });
   if (!live) return res.status(404).json({ error: "not found" });
   if (missing) return res.status(404).json({ error: "routine not found" });
+  // Drop the deleted routine's desk mirror (automations/<slug>/).
+  memory.pruneAutomations(live as memory.MemoryBot, { allowEmpty: true }).catch(() => {});
   broadcast("bot", toClient(live));
   res.json({ ok: true });
 });
@@ -5527,11 +5532,13 @@ async function restoreDeskAutomations(bot: IndexBot) {
       rows.push({
         id: auto.id || undefined,
         name: auto.name || "Routine",
-        instruction: auto.instruction || "",
+        // persistRoutineAutomation writes the brief as `prompt`; the
+        // ensureLayout seed writes `instruction`.
+        instruction: auto.instruction || auto.prompt || "",
         intervalMs: parsed?.intervalMs,
         schedule: parsed?.schedule,
         enabled: false,
-        groupKey: auto.groupKey || routines.groupKey(auto.instruction || auto.name || ""),
+        groupKey: auto.groupKey || routines.groupKey(auto.instruction || auto.prompt || auto.name || ""),
         createdAt: Date.now(),
         updatedAt: Date.now(),
       });

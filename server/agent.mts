@@ -941,29 +941,18 @@ function withUserRequest(job: string, userText: string | undefined): string {
 export async function runTurn({ bot, settings, userText, emit, hidden = false, images = [], signal, pullNudges, steering, persistUser = true }: RunTurnOptions = {} as RunTurnOptions): Promise<AgentBot> {
   if (!Array.isArray(bot.routines)) bot.routines = [];
   await memory.ensureLayout(bot).catch(() => {});
-  if (
-    !hidden &&
-    !settings?.__replyTo &&
-    !routines.looksLikeTeammateTraffic(userText) &&
-    routines.looksLikeSchedule(userText)
-  ) {
-    const parsed = routines.parseSchedule(userText);
-    // `!` twice: `looksLikeSchedule` said yes on the line above, and every text it
-    // says yes to is one `parseSchedule` parses. A text that split those two would
-    // have thrown here before this file had types too.
-    //
-    // `as RoutineSpec`: that type spells `intervalMs` as `number | null` and
-    // `schedule` as `unknown`, neither with an explicit `| undefined`, and
-    // `parseSchedule` answers with exactly one of the two present. `upsertRoutine`
-    // reads both through `Number.isFinite` / `normalizeSchedule`, which treat an
-    // undefined value and a missing key identically.
-    const { routine, merged, rejected } = routines.upsertRoutine(bot, {
-      instruction: userText,
-      intervalMs: parsed!.intervalMs,
-      schedule: parsed!.schedule,
-      timeZone: ctx.resolveZone(settings),
-    } as routines.RoutineSpec);
-    if (routine) await Promise.resolve(emit("routine", { routine, merged, rejected }));
+  if (!hidden && !settings?.__replyTo) {
+    // A cadence in the user's own words creates the routine when there is
+    // none. With a routine in place it may only move the cadence: a chat
+    // message is never written into the standing brief (see
+    // `captureChatSchedule`). This used to call upsertRoutine with the whole
+    // message as the instruction, so a long message that happened to mention
+    // "hourly" replaced the bot's brief with the message text.
+    const captured = routines.captureChatSchedule(bot, userText, { timeZone: ctx.resolveZone(settings) });
+    if (captured?.routine) {
+      const { routine, merged, rejected } = captured;
+      await Promise.resolve(emit("routine", { routine, merged, rejected }));
+    }
   }
 
   const harness = resolveClient(settings, bot);
@@ -2165,7 +2154,7 @@ async function execTool(
       return { text: `deleted ${labels.join(", ")}` };
     }
     if (name === "list_routines") {
-      return { text: JSON.stringify(bot.routines || [], null, 2) };
+      return { text: JSON.stringify(routines.routinesForListing(bot.routines), null, 2) };
     }
     if (name === "disable_routine") {
       const r = (bot.routines || []).find((x) => x.id === args.id);
@@ -2183,8 +2172,15 @@ async function execTool(
       });
       if (!removed || bot.routines.length === before) return { text: "routine not found" };
       await store.upsertBot(bot);
+      await memory.pruneAutomations(bot, { allowEmpty: true }).catch(() => []);
       emit("routine", { deleted: (removed as { id: string }).id });
       return { text: `deleted ${(removed as { name: string }).name}` };
+    }
+    if (name === "upsert_routine" && args.restore_previous === true) {
+      const r = routines.restorePreviousInstruction(bot, String(args.id || ""));
+      if (!r) return { text: "routine not found, or it has no earlier brief to restore" };
+      await Promise.resolve(emit("routine", { routine: r, merged: true }));
+      return { text: `Restored the earlier brief of "${r.name}" (${r.id}), ${String(r.instruction || "").length} chars. The replaced one is kept and can be restored the same way.` };
     }
     if (name === "upsert_routine") {
       const minutes = Number(args.interval_minutes);

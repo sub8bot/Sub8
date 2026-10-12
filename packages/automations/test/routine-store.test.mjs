@@ -471,3 +471,149 @@ test("an upsert that changes only the cadence applies it and keeps the brief", (
   assert.equal(afterInterval.routine.instruction, brief);
   assert.equal(afterInterval.routine.intervalMs, 3600_000);
 });
+
+// ---------------------------------------------------------------------------
+// A chat message is never a standing brief. Replays the 2026-10-12 incident:
+// a long "new standing orders" message (it mentioned an old routine as
+// "hourly") went through the chat schedule capture, which called
+// upsertRoutine with the whole message as the instruction. That replaced the
+// X loop's brief with the message text, reset its 30-minute cadence to hourly
+// and, through the solo default, dropped every other routine.
+// ---------------------------------------------------------------------------
+
+const LOOP_BRIEF = [
+  "X ENGAGEMENT LOOP for the owner. Run silently.",
+  "1) NOTIFICATIONS. Like every new reply on the owner's posts that is not already liked.",
+  "2) TIMELINE. Like 8-10 posts in lane per pass, cap 12.",
+  "3) BOOKMARKS. Bookmark 1-3 posts per pass.",
+  "4) LOG. Append one line to the monthly log.",
+].join("\n");
+
+const ORDERS = [
+  "New standing orders. Save them to profile.md, update your routines, then reply with a short confirmation.",
+  "",
+  "1. CREATE ONE PERSISTENT TEAMMATE named \"Poster\". Keep it alive; do not delete it after a task.",
+  "2. NO LONG SLEEPS. Never run a shell sleep longer than 20 seconds.",
+  "3. DMs, every pass. Open x.com/messages, including message requests, and draft replies.",
+  "4. DISABLE the old \"General\" routine (hourly, never ran). The X engagement loop is the only routine.",
+  "5. DIGEST. At most 3 times a day, and only when something needs the owner, send one short message here.",
+].join("\n");
+
+function loopBot() {
+  return {
+    routines: [
+      { id: "loop", name: "X engagement loop", groupKey: "general", instruction: LOOP_BRIEF, enabled: true, intervalMs: 30 * 60_000, lastRunAt: 1, createdAt: 1 },
+      { id: "other", name: "Inbox", groupKey: "email", instruction: standing("the inbox"), enabled: true, intervalMs: 15 * 60_000, lastRunAt: 1, createdAt: 1 },
+    ],
+  };
+}
+
+test("the incident message reads as a schedule, so the old capture path would have taken it", () => {
+  // Pins the premise: without captureChatSchedule's guard this text reaches upsertRoutine.
+  assert.equal(looksLikeSchedule(ORDERS), true);
+  const bot = loopBot();
+  const p = routines.parseSchedule(ORDERS);
+  upsertRoutine(bot, { instruction: ORDERS, intervalMs: p.intervalMs, schedule: p.schedule });
+  assert.equal(bot.routines.length, 1, "old path: solo default dropped the other routine");
+  assert.equal(bot.routines[0].instruction, ORDERS, "old path: the brief became the message");
+});
+
+test("a long chat message never rewrites an existing routine", () => {
+  const bot = loopBot();
+  const out = routines.captureChatSchedule(bot, ORDERS);
+  assert.equal(out, null);
+  assert.equal(bot.routines.length, 2);
+  assert.equal(bot.routines[0].instruction, LOOP_BRIEF);
+  assert.equal(bot.routines[0].intervalMs, 30 * 60_000);
+  assert.equal(bot.routines[0].instructionHistory, undefined);
+});
+
+test("a short cadence line moves only the cadence, never the brief or other rows", () => {
+  const bot = loopBot();
+  bot.routines[0].enabled = false;
+  const out = routines.captureChatSchedule(bot, "check it every 2 hours from now on");
+  assert.equal(out?.routine?.id, "loop");
+  const loop = bot.routines.find((r) => r.id === "loop");
+  assert.equal(loop.instruction, LOOP_BRIEF);
+  assert.equal(loop.instructionHistory, undefined);
+  assert.equal(loop.intervalMs, 2 * 60 * 60_000);
+  assert.equal(loop.enabled, false, "a chat line does not resume a paused routine");
+  assert.equal(bot.routines.length, 2, "no solo drop from a chat line");
+  assert.equal(bot.routines.find((r) => r.id === "other").instruction, standing("the inbox"));
+});
+
+test("with no routine yet, a chat cadence still creates one", () => {
+  const bot = { routines: [] };
+  const text = "Check the status page every 30 minutes and tell me when anything goes red.";
+  const out = routines.captureChatSchedule(bot, text);
+  assert.equal(out?.merged, false);
+  assert.equal(bot.routines.length, 1);
+  assert.equal(bot.routines[0].instruction, text);
+  assert.equal(bot.routines[0].intervalMs, 30 * 60_000);
+});
+
+test("teammate traffic and questions are never captured", () => {
+  const bot = { routines: [] };
+  assert.equal(routines.captureChatSchedule(bot, "Poster replies: checked every 30 minutes, all fine"), null);
+  assert.equal(routines.captureChatSchedule(bot, "Can you check the inbox every 30 minutes?"), null);
+  assert.equal(bot.routines.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Replaced briefs are kept and can be put back.
+// ---------------------------------------------------------------------------
+
+test("replacing a brief keeps the old one, and restore puts it back", () => {
+  const bot = loopBot();
+  const next = `${LOOP_BRIEF}\n5) DMs every pass, draft replies, never send.`;
+  upsertRoutine(bot, { id: "loop", instruction: next, forceReplace: true, now: 1000 });
+  const loop = bot.routines.find((r) => r.id === "loop");
+  assert.equal(loop.instruction, next);
+  assert.deepEqual(loop.instructionHistory, [{ instruction: LOOP_BRIEF, replacedAt: 1000 }]);
+
+  const back = routines.restorePreviousInstruction(bot, "loop", 2000);
+  assert.equal(back.instruction, LOOP_BRIEF);
+  assert.deepEqual(back.instructionHistory, [{ instruction: next, replacedAt: 2000 }], "the restore itself can be undone");
+  assert.equal(routines.restorePreviousInstruction(bot, "missing"), null);
+  assert.equal(routines.restorePreviousInstruction({ routines: [{ id: "x", instruction: "y" }] }, "x"), null);
+});
+
+test("an unchanged brief adds no history and the history is capped", () => {
+  const bot = loopBot();
+  upsertRoutine(bot, { id: "loop", instruction: LOOP_BRIEF, forceReplace: true });
+  assert.equal(bot.routines.find((r) => r.id === "loop").instructionHistory, undefined);
+  for (let i = 0; i < routines.INSTRUCTION_HISTORY_MAX + 3; i++) {
+    upsertRoutine(bot, { id: "loop", instruction: `${LOOP_BRIEF}\nrevision ${i}`, forceReplace: true });
+  }
+  const loop = bot.routines.find((r) => r.id === "loop");
+  assert.equal(loop.instructionHistory.length, routines.INSTRUCTION_HISTORY_MAX);
+  assert.match(loop.instructionHistory.at(-1).instruction, new RegExp(`revision ${routines.INSTRUCTION_HISTORY_MAX + 1}$`));
+});
+
+test("appending (replace=false) also records the earlier brief", () => {
+  const bot = loopBot();
+  upsertRoutine(bot, { id: "loop", instruction: "6) Archive reply drafts older than six hours every pass.", replace: false, forceReplace: true });
+  const loop = bot.routines.find((r) => r.id === "loop");
+  assert.ok(loop.instruction.startsWith(LOOP_BRIEF));
+  assert.equal(loop.instructionHistory[0].instruction, LOOP_BRIEF);
+});
+
+test("listing summarizes history instead of repeating every old brief", () => {
+  const bot = loopBot();
+  upsertRoutine(bot, { id: "loop", instruction: `${LOOP_BRIEF}\nmore`, forceReplace: true, solo: false, now: Date.parse("2026-10-12T18:12:04Z") });
+  const [loop, other] = routines.routinesForListing(bot.routines);
+  assert.equal(loop.instructionHistory, undefined);
+  assert.deepEqual(loop.previousInstructions, [{ replacedAt: "2026-10-12T18:12:04.000Z", chars: LOOP_BRIEF.length, begins: LOOP_BRIEF.slice(0, 160) }]);
+  assert.equal(other.previousInstructions, undefined);
+  assert.equal(other.instruction, standing("the inbox"));
+});
+
+test("isMirroredAutomationJson accepts both mirror shapes and nothing else", () => {
+  assert.equal(routines.isMirroredAutomationJson(routines.automationJson({ id: "a", name: "General", instruction: "x", intervalMs: 3600000 })), true);
+  assert.equal(routines.isMirroredAutomationJson({ id: "a", name: "General", cadence: "Every hour", instruction: "x" }), true);
+  assert.equal(routines.isMirroredAutomationJson({ name: "Mine", prompt: "x", notes: "hand-written" }), false);
+  assert.equal(routines.isMirroredAutomationJson({ prompt: "x" }), false);
+  assert.equal(routines.isMirroredAutomationJson({ name: "n" }), false);
+  assert.equal(routines.isMirroredAutomationJson([]), false);
+  assert.equal(routines.isMirroredAutomationJson(null), false);
+});

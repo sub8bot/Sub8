@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dataDir } from "./paths.mjs";
 import * as store from "@sub8/store";
 import * as vm from "./vm.mjs";
-import { cadenceLabel, type Routine } from "@sub8/automations";
+import { cadenceLabel, isMirroredAutomationJson, type Routine } from "@sub8/automations";
 
 /** A routine plus the rolling run log @sub8/automations does not model. */
 export type MemoryRoutine = Routine & { runs?: { ts?: number }[] };
@@ -48,6 +48,10 @@ export interface MemoryIo {
   mkdirpInContainer(container: string | undefined, dir: string): Promise<void>;
   readFileFromContainer(container: string | undefined, dest: string): Promise<string>;
   writeFileToContainer(container: string | undefined, dest: string, text: string): Promise<void>;
+  /** Only the automations mirror prune uses these three; without them it does nothing. */
+  listDirInContainer?(container: string | undefined, dir: string): Promise<string[]>;
+  removeFileInContainer?(container: string | undefined, dest: string): Promise<void>;
+  rmdirInContainer?(container: string | undefined, dir: string): Promise<void>;
 }
 
 /** Desk identity, as `profile.json` holds it. */
@@ -404,6 +408,15 @@ function memoryIo(bot: MemoryBot): MemoryIo {
         await fs.mkdir(path.posix.dirname(dest), { recursive: true });
         await fs.writeFile(dest, text, "utf8");
       },
+      async listDirInContainer(_container, dir) {
+        return fs.readdir(dir).catch(() => []);
+      },
+      async removeFileInContainer(_container, dest) {
+        await fs.rm(dest, { force: true });
+      },
+      async rmdirInContainer(_container, dir) {
+        await fs.rmdir(dir);
+      },
     };
   }
   if (kind === "remote") {
@@ -423,9 +436,25 @@ function memoryIo(bot: MemoryBot): MemoryIo {
           `mkdir -p ${JSON.stringify(dir)} && echo ${b64} | base64 -d > ${JSON.stringify(dest)}`,
         );
       },
+      // Single-quoted: these paths carry desk directory names, which nothing
+      // here chose, and double quotes would still expand $(...) in them.
+      async listDirInContainer(_container, dir) {
+        const r = await vm.shell(bot as never, `ls -1A -- ${shq(dir)} 2>/dev/null || true`);
+        return String(r.output || "").split("\n").map((l) => l.trim()).filter(Boolean);
+      },
+      async removeFileInContainer(_container, dest) {
+        await vm.shell(bot as never, `rm -f -- ${shq(dest)}`);
+      },
+      async rmdirInContainer(_container, dir) {
+        await vm.shell(bot as never, `rmdir -- ${shq(dir)} 2>/dev/null || true`);
+      },
     };
   }
   return vm;
+}
+
+function shq(text: string): string {
+  return `'${String(text).replace(/'/g, `'\\''`)}'`;
 }
 
 /** Desk identity. Host `bots.json` is an index (id, vm, team, harness, messages). */
@@ -530,7 +559,78 @@ export async function ensureLayout(bot: MemoryBot, io: MemoryIo = memoryIo(bot))
     );
     await writeIfMissing(box, `${dir}/runs.jsonl`, "", io);
   }
+  await pruneAutomations(bot, { io }).catch(() => []);
   return paths.root;
+}
+
+/** True when every line of a runs.jsonl is a run record the host appended. */
+function onlyRunRecords(text: string): boolean {
+  return String(text || "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .every((l) => {
+      try {
+        const row = JSON.parse(l);
+        return Boolean(row) && typeof row === "object" && typeof row.event === "string";
+      } catch {
+        return false;
+      }
+    });
+}
+
+/**
+ * Remove the desk mirror of routines that no longer exist.
+ *
+ * `automations/<slug>/` holds automation.json and runs.jsonl for each routine,
+ * written by ensureLayout and persistRoutineAutomation. Nothing ever removed
+ * them, so a deleted or renamed routine left an "enabled" automation.json on
+ * the desk that list_routines did not show. For each folder that matches no
+ * current routine this deletes automation.json only when it is a mirror file
+ * (`isMirroredAutomationJson`), runs.jsonl only when it holds nothing but run
+ * records, and then the folder only if that left it empty. Anything else in
+ * the folder, and any folder without a mirror automation.json, stays.
+ *
+ * With no routines at all it does nothing unless `allowEmpty`: an empty list
+ * can also mean a host record that lost its routines, and
+ * restoreDeskAutomations (index.mts) rebuilds them from these very files. The
+ * routine delete paths pass `allowEmpty`, because there the empty list is the
+ * user's doing.
+ */
+export async function pruneAutomations(
+  bot: MemoryBot,
+  { io, allowEmpty = false }: { io?: MemoryIo; allowEmpty?: boolean } = {},
+): Promise<string[]> {
+  if (!io && !memoryReady(bot)) return [];
+  const desk = io || memoryIo(bot);
+  if (!desk.listDirInContainer || !desk.removeFileInContainer) return [];
+  const rows = (bot.routines || []).filter((r) => r?.id);
+  if (!rows.length && !allowEmpty) return [];
+  const box = boxOf(bot);
+  const root = layoutPaths(bot).automations;
+  const live = new Set(rows.map((r) => slug(r.name || r.id)));
+  const removed: string[] = [];
+  for (const entry of await desk.listDirInContainer(box, root)) {
+    if (live.has(entry) || !/^[a-z0-9-]+$/.test(entry)) continue;
+    const dir = `${root}/${entry}`;
+    const file = `${dir}/automation.json`;
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(await desk.readFileFromContainer(box, file));
+    } catch {
+      continue;
+    }
+    if (!isMirroredAutomationJson(parsed)) continue;
+    await desk.removeFileInContainer(box, file);
+    removed.push(file);
+    const runs = `${dir}/runs.jsonl`;
+    if (onlyRunRecords(await desk.readFileFromContainer(box, runs))) {
+      await desk.removeFileInContainer(box, runs);
+    }
+    // Fails, and is meant to, when anything else is still in the folder.
+    if (desk.rmdirInContainer) await desk.rmdirInContainer(box, dir).catch(() => {});
+  }
+  return removed;
 }
 
 export async function ensureProjectLayout(

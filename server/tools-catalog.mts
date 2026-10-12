@@ -364,6 +364,10 @@ export const TOOLS: ToolSpec[] = [
           solo: { type: "boolean", description: "default true: drop other routines so only this one remains" },
           replace: { type: "boolean", description: "default true: replace instruction instead of appending" },
           enabled: { type: "boolean" },
+          restore_previous: {
+            type: "boolean",
+            description: "With id: put back the brief this routine had before its last replacement. instruction is ignored; pass \"\".",
+          },
         },
         required: ["instruction"],
       },

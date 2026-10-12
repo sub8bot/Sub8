@@ -146,6 +146,8 @@ export type ToolArgs = {
   query?: unknown;
   member_ids?: unknown;
   add_id?: unknown;
+  /** upsert_routine: put back the brief the routine had before its last replacement. */
+  restore_previous?: unknown;
   remove_id?: unknown;
   channel_id?: string | undefined;
   server_id?: string | undefined;
@@ -445,6 +447,10 @@ export const TOOLS: ToolSpec[] = [
         force_new: { type: "boolean" },
         force_replace: { type: "boolean" },
         enabled: { type: "boolean" },
+        restore_previous: {
+          type: "boolean",
+          description: "With id: put back the brief this routine had before its last replacement (list_routines shows previousInstructions). instruction is ignored; pass \"\".",
+        },
       },
       required: ["instruction"],
     },
@@ -1159,7 +1165,7 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
   if (name === "list_routines") {
     const bot = await store.getBot(botId);
     if (!bot) throw new Error("Bot not found");
-    const rows = bot.routines || [];
+    const rows = routines.routinesForListing(bot.routines);
     await emit("message", {
       id: `tl${Date.now()}rt`,
       role: "activity",
@@ -1212,9 +1218,27 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     });
     const r = box.row;
     if (!r) return { content: [{ type: "text", text: "routine not found" }], isError: true };
+    // Drop the deleted routine's desk mirror (automations/<slug>/).
+    const after = await store.getBot(botId).catch(() => null);
+    if (after) await memory.pruneAutomations(after as memory.MemoryBot, { allowEmpty: true }).catch(() => []);
     await emit("routine", { deleted: r.id });
     await emit("message", { id: `tl${Date.now()}rt`, role: "activity", kind: "tool", name: "delete_routine", action: "delete_routine", summary: `Deleted ${r.name}`, ts: Date.now() });
     return { content: [{ type: "text", text: `deleted ${r.name}` }] };
+  }
+  if (name === "upsert_routine" && args.restore_previous === true) {
+    const id = String(args.id || "");
+    if (!id) return { content: [{ type: "text", text: "restore_previous needs `id` (from list_routines)" }], isError: true };
+    const box: { row: { id: string; name: string; chars: number } | null } = { row: null };
+    await store.patchBot(botId, (b) => {
+      const r = routines.restorePreviousInstruction(b as McpBot, id);
+      if (r) box.row = { id: r.id, name: String(r.name || "routine"), chars: String(r.instruction || "").length };
+    });
+    const r = box.row;
+    if (!r) return { content: [{ type: "text", text: "routine not found, or it has no earlier brief to restore" }], isError: true };
+    const fresh = ((await store.getBot(botId)) as McpBot | null)?.routines?.find((x) => x.id === r.id);
+    if (fresh) await emit("routine", { routine: fresh, merged: true });
+    await emit("message", { id: `tl${Date.now()}rt`, role: "activity", kind: "tool", name: "upsert_routine", action: "upsert_routine", summary: `Restored the earlier brief of ${r.name}`, ts: Date.now() });
+    return { content: [{ type: "text", text: `Restored the earlier brief of "${r.name}" (${r.id}), ${r.chars} chars. The replaced one is kept and can be restored the same way.` }] };
   }
   if (name === "upsert_routine") {
     const bot = await store.getBot(botId) as McpBot | null;
@@ -1233,7 +1257,11 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     // snapshot and wrote the routine away — the bot "confirmed" a routine that
     // did not exist on its record.
     let result = null as unknown as ReturnType<typeof routines.upsertRoutine>;
+    // Briefs by id before the upsert: without an id it merges into whichever
+    // row it picks, so compare against that row once it is known.
+    const briefs = new Map<string, string>();
     await store.patchBot(botId, (b) => {
+      for (const r of b.routines || []) briefs.set(String(r.id), String(r.instruction || ""));
       result = routines.upsertRoutine(b as McpBot, {
         id: args.id || undefined,
         name: args.name,
@@ -1276,6 +1304,18 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
         isError: true,
       };
     }
+    // Say plainly when the brief itself was replaced, with the sizes, so a
+    // rewrite that dropped most of the brief is visible in the tool result
+    // and in the log, and point at the way back.
+    const after = String(routine?.instruction || "");
+    const prior = routine ? briefs.get(String(routine.id)) : undefined;
+    const replaced = merged && prior !== undefined && prior !== after;
+    if (replaced) {
+      console.error(`upsert_routine ${routine!.id}: instruction replaced (${prior!.length} -> ${after.length} chars)`);
+    }
+    const note = replaced
+      ? ` The brief was replaced (${prior!.length} -> ${after.length} chars); the previous one is kept, and upsert_routine with this id and restore_previous=true puts it back.`
+      : "";
     return {
       content: [
         {
@@ -1283,7 +1323,7 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
           text: merged
             // Non-null: `upsertRoutine` returns `routine: null` only together with
             // `rejected`, and the `if (rejected)` above has already returned.
-            ? `Updated "${routine!.name}" (${routine!.id}) ${routines.cadenceLabel(routine).toLowerCase()}.`
+            ? `Updated "${routine!.name}" (${routine!.id}) ${routines.cadenceLabel(routine).toLowerCase()}.${note}`
             : `Created "${routine!.name}" (${routine!.id}) ${routines.cadenceLabel(routine).toLowerCase()}.`,
         },
       ],
@@ -1336,7 +1376,7 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     // path did not, so a secret reaching model-authored content was written
     // verbatim into the chat, the stored message list and team history.
     const content = vault.redactSecrets(String(args.content || "").trim(), await vault.listSecrets());
-    if (!content) return { content: [{ type: "text", text: "empty" }], isError: true };
+    if (!content) return { content: [{ type: "text", text: "send_message needs `content` (the message text)" }], isError: true };
     const out = {
       id: `a${Date.now()}${Math.random().toString(36).slice(2, 5)}`,
       role: "assistant",
@@ -1399,7 +1439,19 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
   if (name === "message_teammate") {
     // Done by the server (see index.mts teammateMessage): the subprocess no
     // longer touches the store for this — one call, no cross-process locks.
-    const to = String(args.bot_id || "");
+    const to = String(args.bot_id || "").trim();
+    // Name the parameters this tool actually takes. With no bot_id the hop
+    // below fell through to the server's legacy {toId, content} shape, whose
+    // error ("toId and content required") sent the model looking for a
+    // `toId` parameter this tool does not have.
+    if (!to) {
+      const given = args as Record<string, unknown>;
+      const got = Object.keys(given).filter((k) => given[k] !== undefined && given[k] !== "");
+      return {
+        content: [{ type: "text", text: `message_teammate needs \`bot_id\` (a teammate or room id from list_teammates / create_teammate / create_channel) and \`content\`${got.length ? `; got ${got.join(", ")}` : ""}` }],
+        isError: true,
+      };
+    }
     const rawBody = [args.content, args.message, args.text, args.detail].map((v) => String(v || "").trim()).find(Boolean) || "";
     // Redacted here before the hop AND again server-side: a vault secret must
     // never leave this process in the clear, whoever ends up storing it.

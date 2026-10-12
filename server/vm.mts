@@ -3312,6 +3312,36 @@ export async function readFileFromContainer(container: string, dest: string): Pr
   return r.ok ? String(r.out || "") : "";
 }
 
+/** Entry names in a desk directory ("" lines dropped); [] when it is missing. */
+export async function listDirInContainer(container: string, dir: string): Promise<string[]> {
+  if (!String(dir || "").startsWith("/config/")) throw new Error("list must be under /config");
+  // argv, not `bash -lc`, for the same reason as readFileFromContainer.
+  const r = await docker(["exec", "-u", "abc", container, "ls", "-1A", "--", dir]);
+  if (!r.ok) return [];
+  return String(r.out || "")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Remove one file under the agent-data tree. Narrower than the other helpers on
+ * purpose: only the automations mirror calls it, and nothing else on a desk is
+ * the host's to delete.
+ */
+export async function removeFileInContainer(container: string, dest: string): Promise<void> {
+  const d = String(dest || "");
+  if (!d.startsWith("/config/agent-data/") || d.includes("/../")) throw new Error("remove must be under /config/agent-data");
+  await docker(["exec", "-u", "abc", container, "rm", "-f", "--", d]);
+}
+
+/** `rmdir`: removes the directory only when it is already empty. */
+export async function rmdirInContainer(container: string, dir: string): Promise<void> {
+  const d = String(dir || "");
+  if (!d.startsWith("/config/agent-data/") || d.includes("/../")) throw new Error("rmdir must be under /config/agent-data");
+  await docker(["exec", "-u", "abc", container, "rmdir", "--", d]);
+}
+
 export async function installAgentsMd(container: string, extra: string = ""): Promise<void> {
   const host = path.resolve(appRoot, "prompts", "grok-build-vm.txt");
   const control = path.resolve(appRoot, "prompts", "computer-control.txt");

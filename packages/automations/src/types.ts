@@ -106,6 +106,18 @@ export interface Routine {
   nextRunAt?: number | null;
   nextRunTimeZone?: string;
   triggers?: Trigger[];
+  /**
+   * Earlier briefs, newest last, kept whenever an upsert replaces `instruction`
+   * so a bad rewrite can be put back (`restorePreviousInstruction`). Capped at
+   * `INSTRUCTION_HISTORY_MAX`.
+   */
+  instructionHistory?: InstructionHistoryEntry[];
+}
+
+/** One replaced brief on `Routine.instructionHistory`. */
+export interface InstructionHistoryEntry {
+  instruction: string;
+  replacedAt: number;
 }
 
 /** The slice of a bot these helpers read. */
@@ -131,6 +143,12 @@ export interface RoutineSpec {
   forceReplace?: boolean;
   replace?: boolean;
   solo?: boolean;
+  /**
+   * Apply the cadence fields only and never write `instruction`, whatever the
+   * text says. Chat-captured schedules pass this when a routine already exists:
+   * a user message is not a standing brief.
+   */
+  keepInstruction?: boolean;
 }
 
 export interface UpsertResult {
