@@ -148,6 +148,10 @@ export type ToolArgs = {
   add_id?: unknown;
   /** upsert_routine: put back the brief the routine had before its last replacement. */
   restore_previous?: unknown;
+  /** upsert_routine: the firing window {start, end, tz, days?}; null clears it. */
+  active_hours?: unknown;
+  /** upsert_routine: true clears the firing window. */
+  clear_active_hours?: unknown;
   remove_id?: unknown;
   channel_id?: string | undefined;
   server_id?: string | undefined;
@@ -284,6 +288,12 @@ async function emit(event: string, data: unknown): Promise<void> {
   } catch {
     /* UI notify is best-effort */
   }
+}
+
+/** ", active 08:00-20:00 America/New_York only" for a routine with a window. */
+function hoursNote(routine: { activeHours?: unknown } | null | undefined): string {
+  const label = routines.activeHoursLabel(routine?.activeHours);
+  return label ? `, active ${label} only` : "";
 }
 
 async function endTurnKeepBot(): Promise<void> {
@@ -424,7 +434,7 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "list_routines",
-    description: "List this Bot's standing routines (id, name, interval, instruction).",
+    description: "List this Bot's standing routines (id, name, interval, instruction, activeHours, and nextRun: when it fires next with the active hours applied).",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -447,6 +457,19 @@ export const TOOLS: ToolSpec[] = [
         force_new: { type: "boolean" },
         force_replace: { type: "boolean" },
         enabled: { type: "boolean" },
+        active_hours: {
+          type: "object",
+          description:
+            "Hours this routine may fire in; outside them a due run waits for the window to open (no turn, no cost). {start:\"08:00\", end:\"20:00\", tz:\"America/New_York\", days?:[\"mon\",\"tue\",...]}. 24-hour HH:MM; end before start crosses midnight (days = the day the window opens); start equal to end is all day; tz defaults to the user's zone; omit days for every day. Pass null (or clear_active_hours) to remove the window. Omit to keep the current one.",
+          properties: {
+            start: { type: "string", description: "HH:MM, 24-hour" },
+            end: { type: "string", description: "HH:MM, 24-hour" },
+            tz: { type: "string", description: "IANA time zone, e.g. America/New_York" },
+            days: { type: "array", items: { type: "string", enum: ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] } },
+          },
+          required: ["start", "end"],
+        },
+        clear_active_hours: { type: "boolean", description: "Remove the routine's active hours (same as active_hours: null)." },
         restore_previous: {
           type: "boolean",
           description: "With id: put back the brief this routine had before its last replacement (list_routines shows previousInstructions). instruction is ignored; pass \"\".",
@@ -1165,7 +1188,8 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
   if (name === "list_routines") {
     const bot = await store.getBot(botId);
     if (!bot) throw new Error("Bot not found");
-    const rows = routines.routinesForListing(bot.routines);
+    const listSettings = await store.loadSettings();
+    const rows = routines.routinesForListing(bot.routines, { timeZone: resolveZone(listSettings as ContextSettings) });
     await emit("message", {
       id: `tl${Date.now()}rt`,
       role: "activity",
@@ -1246,6 +1270,15 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
     const minutes = Number(args.interval_minutes);
     const instruction = String(args.instruction || "");
     const settings = await store.loadSettings();
+    // active_hours: absent keeps the stored window, null (or clear_active_hours)
+    // clears it. Checked here so a bad window gets its own error rather than
+    // the "second standing job" text below.
+    const hoursPresent = args.clear_active_hours === true || Object.prototype.hasOwnProperty.call(args, "active_hours");
+    const hoursValue = args.clear_active_hours === true ? null : args.active_hours;
+    if (hoursPresent) {
+      const check = routines.parseActiveHours(hoursValue, { defaultTimeZone: resolveZone(settings as ContextSettings) });
+      if (!check.ok) return { content: [{ type: "text", text: `active_hours not set: ${check.error}` }], isError: true };
+    }
     // `RoutineSpec` spells `id`, `name`, `groupKey`, `intervalMs` and `enabled`
     // without `| undefined`, so under exactOptionalPropertyTypes every absent
     // argument — which is most calls — is an error against a package type we do
@@ -1280,6 +1313,7 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
         // as an absent key. `resolveZone` ORs the field with the environment, so
         // both reach the same branch.
         timeZone: resolveZone(settings as ContextSettings),
+        ...(hoursPresent ? { activeHours: hoursValue } : {}),
       } as RoutineSpec);
     });
     const { routine, merged, rejected } = result;
@@ -1323,8 +1357,8 @@ export async function callTool(rawName: unknown, args: ToolArgs = {}): Promise<M
           text: merged
             // Non-null: `upsertRoutine` returns `routine: null` only together with
             // `rejected`, and the `if (rejected)` above has already returned.
-            ? `Updated "${routine!.name}" (${routine!.id}) ${routines.cadenceLabel(routine).toLowerCase()}.${note}`
-            : `Created "${routine!.name}" (${routine!.id}) ${routines.cadenceLabel(routine).toLowerCase()}.`,
+            ? `Updated "${routine!.name}" (${routine!.id}) ${routines.cadenceLabel(routine).toLowerCase()}${hoursNote(routine)}.${note}`
+            : `Created "${routine!.name}" (${routine!.id}) ${routines.cadenceLabel(routine).toLowerCase()}${hoursNote(routine)}.`,
         },
       ],
     };

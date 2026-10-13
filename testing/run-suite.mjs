@@ -128,6 +128,7 @@ const ORDER = [
   "desk-limits.mjs",
   "control-api.mjs",
   "routine-guard.mjs",
+  "routine-active-hours.mjs",
 ];
 
 function runOne(file) {

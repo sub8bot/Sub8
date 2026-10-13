@@ -169,7 +169,21 @@ interface Routine {
   runs?: RoutineRun[];
   lastRunAt?: number;
   cloud?: boolean;
+  /** Hours the routine may fire in; outside them a due run waits for the window. */
+  activeHours?: RoutineActiveHours | null;
+  /** Server-computed next fire, active hours applied (null when paused or never). */
+  nextFireAt?: number | null;
 }
+
+/** `Routine.activeHours`: 24-hour "HH:MM" wall times in `tz`; `days` absent = every day. */
+interface RoutineActiveHours {
+  start: string;
+  end: string;
+  tz: string;
+  days?: string[];
+}
+
+const ROUTINE_DAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 
 /** A wall-clock slot on a trigger. Hour/minute are optional because a legacy
  *  `schedule` row can be missing either, and routineClock() answers "" for that. */
@@ -5093,6 +5107,7 @@ function paintRoutineList(bot: Bot | null | undefined): void {
           <div class="routine-copy">
             <b>${escapeHtml(r.name || "Routine")}</b>
             <div class="muted">${escapeHtml(routineCadence(r))}${on ? "" : ", paused"}${r.lastRunAt ? ` · last ${fmtWhen(r.lastRunAt, r.schedule?.type === "daily" ? state.timezone : "")}` : ""}${who}</div>
+            ${routineHoursLine(r, on)}
           </div>
         </div>
         <p class="routine-body">${escapeHtml(previewRoutine(r.instruction))}</p>
@@ -5104,6 +5119,106 @@ function paintRoutineList(bot: Bot | null | undefined): void {
       </div>`;
     })
     .join("");
+}
+
+/** Short zone name for a label: "ET" for America/New_York, else the zone id. */
+function zoneShortName(tz: string): string {
+  try {
+    const part = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "shortGeneric" })
+      .formatToParts(new Date())
+      .find((p) => p.type === "timeZoneName");
+    if (part?.value && !/^GMT/.test(part.value)) return part.value;
+  } catch {
+    /* unknown zone: fall through */
+  }
+  return tz;
+}
+
+function activeDaysLabel(days: string[] | undefined): string {
+  if (!days || !days.length || days.length === 7) return "";
+  if (days.join(",") === "mon,tue,wed,thu,fri") return "weekdays";
+  if (days.join(",") === "sun,sat") return "weekends";
+  return days.map((d) => d.charAt(0).toUpperCase() + d.slice(1)).join(" ");
+}
+
+/** "Active 08:00-20:00 ET, weekdays" */
+function activeHoursText(h: RoutineActiveHours | null | undefined): string {
+  if (!h?.start || !h?.end) return "";
+  const days = activeDaysLabel(h.days);
+  const span = h.start === h.end ? "all day" : `${h.start}-${h.end}`;
+  return `Active ${span} ${zoneShortName(h.tz)}${days ? `, ${days}` : ""}`;
+}
+
+/** When a routine fires next, as a short future stamp in the user's zone. */
+function fmtNextRun(ts: number): string {
+  if (ts <= Date.now() + 60_000) return "now";
+  const zone = state.timezone || undefined;
+  const dayFmt: Intl.DateTimeFormatOptions = { year: "numeric", month: "numeric", day: "numeric", timeZone: zone };
+  const day = new Date(ts).toLocaleDateString([], dayFmt);
+  const time = new Date(ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", timeZone: zone });
+  if (day === new Date().toLocaleDateString([], dayFmt)) return `today ${time}`;
+  if (day === new Date(Date.now() + 86400_000).toLocaleDateString([], dayFmt)) return `tomorrow ${time}`;
+  return new Date(ts).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZone: zone });
+}
+
+/** The card's second line: the active-hours window and the next run. */
+function routineHoursLine(r: Routine, on: boolean): string {
+  const parts: string[] = [];
+  const hours = activeHoursText(r.activeHours);
+  if (hours) parts.push(hours);
+  if (on && typeof r.nextFireAt === "number" && Number.isFinite(r.nextFireAt)) parts.push(`Next run ${fmtNextRun(r.nextFireAt)}`);
+  return parts.length ? `<div class="muted routine-hours">${escapeHtml(parts.join(" · "))}</div>` : "";
+}
+
+/** Every IANA zone the browser knows, the Mac's own first; a short list when unsupported. */
+function timeZoneChoices(current: string): string[] {
+  const local = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  let all: string[] = [];
+  try {
+    all = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf?.("timeZone") || [];
+  } catch {
+    all = [];
+  }
+  if (!all.length) all = ["America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "Europe/London", "Europe/Paris", "Asia/Tokyo", "UTC"];
+  return [...new Set([current, local, ...all].filter(Boolean))];
+}
+
+/** The editor's "Active hours" block. Plain inputs, no data-act: changes save through bindRoutineFields. */
+function routineHoursHtml(r: Routine | undefined): string {
+  const h = r?.activeHours || null;
+  const on = Boolean(h?.start && h?.end);
+  const local = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const tz = h?.tz || local;
+  const days = new Set(h?.days?.length ? h.days : ROUTINE_DAYS);
+  const dis = on ? "" : "disabled";
+  return `<div class="re-field re-hours">
+    <span>Active hours</span>
+    <label class="re-hours-on"><input type="checkbox" id="re-hours-on" ${on ? "checked" : ""} /> Only run inside these hours</label>
+    <div class="re-hours-row">
+      <input class="field re-input re-hours-time" type="time" id="re-hours-start" value="${escapeHtml(h?.start || "08:00")}" ${dis} aria-label="Start" />
+      <span class="muted">to</span>
+      <input class="field re-input re-hours-time" type="time" id="re-hours-end" value="${escapeHtml(h?.end || "20:00")}" ${dis} aria-label="End" />
+      <select class="field re-input re-hours-tz" id="re-hours-tz" ${dis} aria-label="Time zone">
+        ${timeZoneChoices(tz).map((z) => `<option value="${escapeHtml(z)}" ${z === tz ? "selected" : ""}>${escapeHtml(z)}</option>`).join("")}
+      </select>
+    </div>
+    <div class="re-hours-days">
+      ${ROUTINE_DAYS.map((d) => `<label class="re-day"><input type="checkbox" value="${d}" ${days.has(d) ? "checked" : ""} ${dis} /><span>${d.charAt(0).toUpperCase() + d.slice(1)}</span></label>`).join("")}
+    </div>
+    <p class="muted re-hours-note">Outside these hours a due run waits for the window to open and costs nothing. End before start runs past midnight. Test run ignores the window.</p>
+  </div>`;
+}
+
+/** The editor's window as the API takes it: null when the box is off. */
+function collectRoutineHours(): RoutineActiveHours | null {
+  if (!$<HTMLInputElement>("#re-hours-on")?.checked) return null;
+  const start = $<HTMLInputElement>("#re-hours-start")?.value || "08:00";
+  const end = $<HTMLInputElement>("#re-hours-end")?.value || "20:00";
+  const tz = $<HTMLSelectElement>("#re-hours-tz")?.value || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const picked = [...document.querySelectorAll<HTMLInputElement>(".re-hours-days input:checked")].map((i) => i.value);
+  const row: RoutineActiveHours = { start, end, tz };
+  if (picked.length && picked.length < 7) row.days = picked;
+  return row;
 }
 
 function routineClock(hour: number | undefined, minute: number | undefined): string {
@@ -5743,6 +5858,18 @@ function bindRoutineFields(): void {
   host.addEventListener("input", (e) => {
     if ((e.target as HTMLElement | null)?.id === "rn" || (e.target as HTMLElement | null)?.id === "ri") scheduleRoutineSave();
   });
+  host.addEventListener("change", (e) => {
+    const el = e.target as HTMLInputElement | null;
+    if (!el?.closest(".re-hours")) return;
+    if (el.id === "re-hours-on") {
+      for (const input of host.querySelectorAll<HTMLInputElement | HTMLSelectElement>(".re-hours-row input, .re-hours-row select, .re-hours-days input")) {
+        input.disabled = !el.checked;
+      }
+    }
+    // Keep at least one day: unticking the last one would mean "never".
+    if (el.closest(".re-hours-days") && !host.querySelector(".re-hours-days input:checked")) el.checked = true;
+    scheduleRoutineSave();
+  });
 }
 
 let routineSaveTimer = 0;
@@ -5944,6 +6071,7 @@ function routineEditorHtml(bot: Bot): string {
           <span>When to run</span>
           <div id="re-when" class="re-when"></div>
         </div>
+        ${isCloudPlace() ? "" : routineHoursHtml(r)}
         <div class="re-field re-history">
           <span>Run history</span>
           ${
@@ -11985,6 +12113,7 @@ async function persistRoutine({ close = false, quiet = !close }: { close?: boole
     enabled: $("#re-tog") ? $("#re-tog")!.classList.contains("on") : true,
     triggers,
   };
+  if ($("#re-hours-on")) body.activeHours = collectRoutineHours();
   try {
     if (state.editingRoutineId) {
       const saved = await api(`/api/bots/${bot.id}/routines/${state.editingRoutineId}`, { method: "PATCH", body }) as Routine | null;

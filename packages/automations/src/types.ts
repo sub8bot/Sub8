@@ -87,6 +87,25 @@ export interface ParsedCadence {
   label: string;
 }
 
+/** A weekday as `ActiveHours.days` spells it. */
+export type ActiveDay = "sun" | "mon" | "tue" | "wed" | "thu" | "fri" | "sat";
+
+/**
+ * The hours a routine may fire in. Outside them a due fire is held (no turn,
+ * no model call) until the window next opens, then the cadence carries on.
+ *
+ * `start` and `end` are 24-hour "HH:MM" wall times in `tz` (an IANA zone).
+ * `end` earlier than `start` is a window that crosses midnight; `days` then
+ * names the day the window OPENED on. `start` equal to `end` is a full day
+ * (24 hours from `start`). `days` absent means every day.
+ */
+export interface ActiveHours {
+  start: string;
+  end: string;
+  tz: string;
+  days?: ActiveDay[];
+}
+
 /**
  * A standing routine as persisted on the bot. Every field but `id` is optional
  * because rows written by older builds are read back as-is and migrated lazily.
@@ -106,6 +125,8 @@ export interface Routine {
   nextRunAt?: number | null;
   nextRunTimeZone?: string;
   triggers?: Trigger[];
+  /** Optional firing window; absent or null means any time. */
+  activeHours?: ActiveHours | null;
   /**
    * Earlier briefs, newest last, kept whenever an upsert replaces `instruction`
    * so a bad rewrite can be put back (`restorePreviousInstruction`). Capped at
@@ -149,6 +170,11 @@ export interface RoutineSpec {
    * a user message is not a standing brief.
    */
   keepInstruction?: boolean;
+  /**
+   * The firing window. Absent leaves the stored one alone, null clears it, an
+   * object sets it (see `parseActiveHours`; a missing `tz` takes `timeZone`).
+   */
+  activeHours?: unknown;
 }
 
 export interface UpsertResult {
@@ -173,6 +199,7 @@ export interface AutomationJson {
   enabled: boolean;
   createdAt: number;
   lastRunAt: number | null;
+  activeHours?: ActiveHours;
 }
 
 /**

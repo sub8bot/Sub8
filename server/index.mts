@@ -178,6 +178,7 @@ interface RestoredRoutine {
   groupKey: string;
   createdAt: number;
   updatedAt: number;
+  activeHours?: routines.ActiveHours | undefined;
 }
 
 /** The three fields `POST /api/cloud/draft/bots/:id/messages` forwards on. */
@@ -367,8 +368,18 @@ function toClient(bot: store.Bot, opts: unknown = {}) {
       // three lines above just built and emits nothing.
     } as NonNullable<typeof client.vm>;
   }
+  // "Next run" for the routine cards: the cadence's next fire, moved into the
+  // active-hours window when it would fall outside it.
+  const routineNow = Date.now();
+  const routineRows = Array.isArray(client.routines)
+    ? (client.routines as routines.Routine[]).map((r) => ({
+        ...r,
+        nextFireAt: r.enabled === false ? null : routines.routineNextRunAt(r, routineNow, routineZone),
+      }))
+    : client.routines;
   return {
     ...client,
+    routines: routineRows,
     busy: busyIds.has(bot.id),
     storage: {
       sessionId: bot.id,
@@ -4324,6 +4335,16 @@ app.post("/api/bots/:id/teach", async (req, res) => {
   enqueueTurn(bot.id, () => runUserTurn(bot.id, text, false, frames));
 });
 
+/**
+ * `activeHours` (or `active_hours`) on a routine request body: absent leaves
+ * the stored window alone, null clears it, an object sets it.
+ */
+function activeHoursArg(body: Record<string, unknown>): { present: boolean; value: unknown } {
+  if (Object.prototype.hasOwnProperty.call(body, "activeHours")) return { present: true, value: body.activeHours };
+  if (Object.prototype.hasOwnProperty.call(body, "active_hours")) return { present: true, value: body.active_hours };
+  return { present: false, value: undefined };
+}
+
 app.get("/api/bots/:id/routines", async (req, res) => {
   const bot = await store.getBot(req.params.id) as IndexBot | null;
   if (!bot) return res.status(404).json({ error: "not found" });
@@ -4348,6 +4369,11 @@ app.post("/api/bots/:id/routines", async (req, res) => {
     return res.status(400).json({ error: "invalid routine schedule" });
   }
   const settings = await store.loadSettings();
+  const hoursGiven = activeHoursArg(body);
+  if (hoursGiven.present) {
+    const check = routines.parseActiveHours(hoursGiven.value, { defaultTimeZone: resolveZone(settings as ContextSettings) });
+    if (!check.ok) return res.status(400).json({ error: check.error });
+  }
   let result: routines.UpsertResult | undefined;
   const live = await store.patchBot(req.params.id, (bot) => {
     // `RoutineSpec` spells `name`, `groupKey` and `intervalMs` without
@@ -4364,6 +4390,7 @@ app.post("/api/bots/:id/routines", async (req, res) => {
       forceNew: body.force_new === true,
       solo: body.solo !== false,
       timeZone: resolveZone(settings as ContextSettings),
+      ...(hoursGiven.present ? { activeHours: hoursGiven.value } : {}),
     } as routines.RoutineSpec);
   });
   if (!live) return res.status(404).json({ error: "not found" });
@@ -4383,6 +4410,13 @@ app.patch("/api/bots/:id/routines/:rid", async (req, res) => {
   }
   if (!explicitInterval && !Array.isArray(body.triggers) && body.schedule != null && !routines.normalizeSchedule(body.schedule)) {
     return res.status(400).json({ error: "invalid routine schedule" });
+  }
+  const hoursGiven = activeHoursArg(body);
+  let hours: routines.ActiveHours | null = null;
+  if (hoursGiven.present) {
+    const check = routines.parseActiveHours(hoursGiven.value, { defaultTimeZone: resolveZone(settings as ContextSettings) });
+    if (!check.ok) return res.status(400).json({ error: check.error });
+    hours = check.value;
   }
   let updated = null;
   let missing = false;
@@ -4436,6 +4470,14 @@ app.patch("/api/bots/:id/routines/:rid", async (req, res) => {
         : routines.nextCalendarOccurrence(now, schedule, resolveZone(settings as ContextSettings));
       r.nextRunTimeZone = resolveZone(settings as ContextSettings);
     }
+    if (hoursGiven.present) {
+      const before = JSON.stringify(r.activeHours ?? null);
+      if (hours) r.activeHours = hours;
+      else delete r.activeHours;
+      if (before !== JSON.stringify(hours)) {
+        routines.rebaseHeldTriggers(r as routines.Routine, Date.now(), resolveZone(settings as ContextSettings));
+      }
+    }
     if (typeof body.enabled === "boolean") r.enabled = body.enabled;
     r.updatedAt = Date.now();
     updated = r;
@@ -4461,6 +4503,10 @@ app.delete("/api/bots/:id/routines/:rid", async (req, res) => {
   res.json({ ok: true });
 });
 
+/**
+ * "Test run": an explicit user action, so it runs now even outside the
+ * routine's active hours.
+ */
 app.post("/api/bots/:id/routines/:rid/run", async (req, res) => {
   const bot = await store.getBot(req.params.id) as IndexBot | null;
   if (!bot) return res.status(404).json({ error: "not found" });
@@ -4881,11 +4927,25 @@ async function settleUsageLimit(botId: string, bot: IndexBot, turnStart: number,
   }).catch(() => {});
 }
 
+/** The zone the last routine tick ran in, for `toClient`'s synchronous "next run". */
+let routineZone: string | undefined;
+
+/**
+ * Fires due routines. This is the ONLY path that starts a routine turn on its
+ * own: wakes carry no routine, an interrupted routine turn is never retried
+ * automatically (interrupted.mts retries "user" turns only; a routine gets a
+ * notice whose Retry button is a user action), and catch-up after a restart is
+ * just this tick finding an overdue row. So the active-hours check in
+ * `dueRoutines` covers every automatic fire. "Test run" in the routine editor
+ * (POST /api/bots/:id/routines/:rid/run) is an explicit user action and runs
+ * whatever the window says.
+ */
 async function tickRoutines() {
   const bots = await store.loadBots() as IndexBot[];
   const now = Date.now();
   const settings = await store.loadSettings();
   const timeZone = resolveZone(settings as ContextSettings);
+  routineZone = timeZone;
   for (const original of bots) {
     let bot = original;
     if (isHumanControl(bot.id)) continue;
@@ -4899,6 +4959,9 @@ async function tickRoutines() {
       // Same row, two owners: @sub8/automations spells the schedule fields,
       // @sub8/store spells `runs` and keeps the index signature.
       routines.hydrateRoutine(r as routines.Routine, now, timeZone);
+      // Due outside its active hours: move the fire to the window's next
+      // opening. dueRoutines below refuses it either way, so no turn starts.
+      routines.holdOutsideActiveHours(r as routines.Routine, now, timeZone);
       if (Array.isArray(r.triggers) && r.triggers.length) {
         for (const t of r.triggers) {
           // `t.nextRunAt!`: `Number.isFinite` on the left is what proves it a
@@ -4927,6 +4990,7 @@ async function tickRoutines() {
         ((await store.patchBot(bot.id, (live) => {
           for (const r of live.routines || []) {
             routines.hydrateRoutine(r as routines.Routine, now, timeZone);
+            if (routines.holdOutsideActiveHours(r as routines.Routine, now, timeZone)) r.updatedAt = now;
             if (Array.isArray(r.triggers) && r.triggers.length) {
               for (const t of r.triggers) {
                 if (!Number.isFinite(t.nextRunAt) || t.nextRunAt <= 0) {
@@ -5535,6 +5599,7 @@ async function restoreDeskAutomations(bot: IndexBot) {
     try {
       const auto = JSON.parse(got.out);
       const parsed = routines.parseSchedule(auto.cadence || auto.name || "");
+      const activeHours = routines.normalizeActiveHours(auto.activeHours);
       rows.push({
         id: auto.id || undefined,
         name: auto.name || "Routine",
@@ -5547,6 +5612,7 @@ async function restoreDeskAutomations(bot: IndexBot) {
         groupKey: auto.groupKey || routines.groupKey(auto.instruction || auto.prompt || auto.name || ""),
         createdAt: Date.now(),
         updatedAt: Date.now(),
+        ...(activeHours ? { activeHours } : {}),
       });
     } catch {
       /* skip one file */
@@ -5564,6 +5630,7 @@ async function restoreDeskAutomations(bot: IndexBot) {
       groupKey: r.groupKey || "general",
       createdAt: r.createdAt || Date.now(),
       updatedAt: Date.now(),
+      ...(r.activeHours ? { activeHours: r.activeHours } : {}),
       // Same three fields either way: @sub8/automations names the schedule,
       // @sub8/store keeps it open for the rows older builds wrote.
     } as store.StoredRoutine));

@@ -1,4 +1,6 @@
 export type {
+  ActiveDay,
+  ActiveHours,
   AdvancedTrigger,
   AutomationJson,
   AutomationWriter,
@@ -22,6 +24,16 @@ export type {
 } from "./types.js";
 
 export {
+  ACTIVE_DAYS,
+  activeHoursLabel,
+  cadenceNextRunAt,
+  holdOutsideActiveHours,
+  inActiveHours,
+  nextActiveStart,
+  normalizeActiveHours,
+  parseActiveHours,
+  rebaseHeldTriggers,
+  routineNextRunAt,
   advanceCalendarRoutine,
   advanceTrigger,
   automationJson,

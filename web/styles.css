@@ -1897,6 +1897,16 @@ form.desk-wait {
   resize: vertical;
 }
 .re-when { display: flex; flex-direction: column; gap: 8px; }
+.re-hours-on { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--text); }
+.re-hours-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.re-hours-row .re-input { padding: 8px 10px; border-radius: 10px; }
+.re-hours-time { width: 8.5em; }
+.re-hours-tz { flex: 1; min-width: 12em; }
+.re-hours-row :disabled, .re-hours-days :disabled + span { opacity: .5; }
+.re-hours-days { display: flex; flex-wrap: wrap; gap: 6px; }
+.re-day { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--ring); border-radius: 10px; padding: 4px 8px; font-size: 13px; color: var(--text); }
+.re-hours-note { margin: 0; font-size: 12px; line-height: 1.4; }
+.routine-hours { margin-top: 2px; }
 .re-chip {
   display: flex;
   align-items: center;

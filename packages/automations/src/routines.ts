@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 
 import type {
+  ActiveDay,
+  ActiveHours,
   InstructionHistoryEntry,
   AdvancedTrigger,
   AutomationJson,
@@ -1002,7 +1004,7 @@ export function automationSchedule(
   return label || undefined;
 }
 
-/** On-disk AutomationJson: name, prompt, schedule, enabled, createdAt, lastRunAt. */
+/** On-disk AutomationJson: name, prompt, schedule, enabled, createdAt, lastRunAt, and activeHours when set. */
 export function automationJson(routine: Routine | null | undefined): AutomationJson {
   const last = Number(routine?.lastRunAt);
   const created = Number(routine?.createdAt);
@@ -1015,6 +1017,7 @@ export function automationJson(routine: Routine | null | undefined): AutomationJ
     lastRunAt: Number.isFinite(last) && last > 0 ? last : null,
     schedule: schedule !== undefined && schedule !== "" ? schedule : undefined,
   };
+  const activeHours = normalizeActiveHours(routine?.activeHours);
   return {
     name: json.name,
     prompt: json.prompt,
@@ -1022,6 +1025,7 @@ export function automationJson(routine: Routine | null | undefined): AutomationJ
     enabled: json.enabled,
     createdAt: json.createdAt,
     lastRunAt: json.lastRunAt,
+    ...(activeHours ? { activeHours } : {}),
   };
 }
 
@@ -1030,7 +1034,18 @@ export function automationJson(routine: Routine | null | undefined): AutomationJ
  * above, and the seed `ensureLayout` (server/memory.mts) writes when a file is
  * missing ({id, name, cadence, instruction}).
  */
-const MIRROR_KEYS = new Set(["id", "name", "cadence", "instruction", "prompt", "schedule", "enabled", "createdAt", "lastRunAt"]);
+const MIRROR_KEYS = new Set([
+  "id",
+  "name",
+  "cadence",
+  "instruction",
+  "prompt",
+  "schedule",
+  "enabled",
+  "createdAt",
+  "lastRunAt",
+  "activeHours",
+]);
 
 /**
  * True when a parsed `automation.json` is one the routine mirror wrote: an
@@ -1129,9 +1144,17 @@ export function restorePreviousInstruction(
  * old brief in each listing, so each earlier brief appears as when it was
  * replaced, its length and how it began: enough to decide on a restore.
  */
-export function routinesForListing<T extends object>(rows: readonly T[] | null | undefined): Record<string, unknown>[] {
+export function routinesForListing<T extends object>(
+  rows: readonly T[] | null | undefined,
+  { now, timeZone }: { now?: number; timeZone?: string } = {},
+): Record<string, unknown>[] {
+  const current = now ?? Date.now();
   return (rows || []).map((r) => {
-    const { instructionHistory, ...row } = r as T & { instructionHistory?: InstructionHistoryEntry[] | undefined };
+    const { instructionHistory, ...rest } = r as T & { instructionHistory?: InstructionHistoryEntry[] | undefined };
+    // When it fires next, the active-hours window applied: what "Next run" means.
+    const routine = r as unknown as Routine;
+    const next = routine.enabled === false ? null : routineNextRunAt(routine, current, timeZone);
+    const row = { ...rest, nextRun: next === null ? null : new Date(next).toISOString() };
     return Array.isArray(instructionHistory) && instructionHistory.length
       ? {
           ...row,
@@ -1215,6 +1238,13 @@ function applyRoutineUpsert(bot: RoutineBot, spec: RoutineSpec): UpsertResult {
   const byId = spec.id ? rows.find((r) => r.id === spec.id) : null;
   if (spec.id && !byId) {
     return { routine: null, merged: false, rejected: "routine not found" };
+  }
+  // undefined: leave the stored window; null: clear it; else: set it.
+  let activeHours: ActiveHours | null | undefined;
+  if (spec.activeHours !== undefined) {
+    const parsedHours = parseActiveHours(spec.activeHours, spec.timeZone ? { defaultTimeZone: spec.timeZone } : {});
+    if (!parsedHours.ok) return { routine: null, merged: false, rejected: parsedHours.error };
+    activeHours = parsedHours.value;
   }
   const creating = !spec.id && !rows.length;
   if (!byId && rejectedNew && (creating || spec.forceNew === true)) {
@@ -1306,6 +1336,12 @@ function applyRoutineUpsert(bot: RoutineBot, spec: RoutineSpec): UpsertResult {
       existing.triggers = stampTriggers(spec.triggers);
       syncLegacyFromTriggers(existing, spec.now ?? Date.now(), spec.timeZone);
     }
+    if (activeHours !== undefined) {
+      const before = JSON.stringify(existing.activeHours ?? null);
+      if (activeHours) existing.activeHours = activeHours;
+      else delete existing.activeHours;
+      if (before !== JSON.stringify(activeHours)) rebaseHeldTriggers(existing, spec.now ?? Date.now(), spec.timeZone);
+    }
     if (typeof spec.enabled === "boolean") existing.enabled = spec.enabled;
     // `!keptBrief`: the old early return never reached this auto-re-enable, so a
     // refused rewrite must not quietly resume a paused routine now that it
@@ -1347,6 +1383,7 @@ function applyRoutineUpsert(bot: RoutineBot, spec: RoutineSpec): UpsertResult {
     routine.triggers = stampTriggers(spec.triggers);
     syncLegacyFromTriggers(routine, spec.now ?? Date.now(), spec.timeZone);
   }
+  if (activeHours) routine.activeHours = activeHours;
   rows.push(routine);
   return { routine, merged: false };
 }
@@ -1359,6 +1396,10 @@ export function dueRoutines(
   return (bot.routines || []).filter((r) => {
     hydrateRoutine(r, now, timeZone);
     if (r.enabled === false) return false;
+    // Outside its active hours a routine is never due, whatever its cadence
+    // says: no turn, no model call. `holdOutsideActiveHours` moves the fire to
+    // the window's next opening.
+    if (r.activeHours && !inActiveHours(r.activeHours, now, timeZone)) return false;
     if (Array.isArray(r.triggers) && r.triggers.length) {
       return r.triggers.some((t) => triggerDue(t, now, timeZone));
     }
@@ -1402,11 +1443,11 @@ export function promptBlock(
   const lines = compact
     ? rows.map(
         (r) =>
-          `- [${r.groupKey}] ${r.name} ${cadenceLabel(r, timeZone).toLowerCase()}. The current user task is this job — do not paste the brief back.`,
+          `- [${r.groupKey}] ${r.name} ${cadenceLabel(r, timeZone).toLowerCase()}${hoursSuffix(r)}. The current user task is this job — do not paste the brief back.`,
       )
     : rows.map(
         (r) =>
-          `- [${r.groupKey}] ${r.name} ${cadenceLabel(r, timeZone).toLowerCase()}: ${String(r.instruction ?? "").replace(/\n/g, " | ")}`,
+          `- [${r.groupKey}] ${r.name} ${cadenceLabel(r, timeZone).toLowerCase()}${hoursSuffix(r)}: ${String(r.instruction ?? "").replace(/\n/g, " | ")}`,
       );
   return [
     "",
@@ -1415,4 +1456,271 @@ export function promptBlock(
     ...lines,
     "",
   ].join("\n");
+}
+
+/* ------------------------------------------------------------------------ */
+/* Active hours                                                              */
+/* ------------------------------------------------------------------------ */
+
+/** `ActiveHours.days` in week order, indexed like `Date#getDay`. */
+export const ACTIVE_DAYS: readonly ActiveDay[] = Object.freeze(["sun", "mon", "tue", "wed", "thu", "fri", "sat"]);
+
+const CLOCK_RE = /^(\d{1,2}):(\d{2})$/;
+
+function parseClock(value: unknown): TimeOfDay | null {
+  const m = String(value ?? "").trim().match(CLOCK_RE);
+  if (!m) return null;
+  const hour = Number(m[1]);
+  const minute = Number(m[2]);
+  if (hour > 23 || minute > 59) return null;
+  return { hour, minute };
+}
+
+function clockText(t: TimeOfDay): string {
+  return `${String(t.hour).padStart(2, "0")}:${String(t.minute).padStart(2, "0")}`;
+}
+
+function isTimeZone(zone: string): boolean {
+  if (!zone) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export type ActiveHoursParse = { ok: true; value: ActiveHours | null } | { ok: false; error: string };
+
+/**
+ * Validate a firing window from a tool call, the REST API, a mirror file or
+ * a hand-edited bots.json. null / undefined is "no window" (and on an upsert,
+ * "clear it"). `start` and `end` are "HH:MM" (24-hour, "8:00" is accepted and
+ * stored as "08:00"); `tz` is an IANA zone Intl accepts and falls back to
+ * `defaultTimeZone`; `days` is optional, three-letter weekday names, stored
+ * lowercase in week order (all seven collapse to "every day", i.e. absent).
+ * `start` equal to `end` is accepted and means the whole day.
+ */
+export function parseActiveHours(raw: unknown, { defaultTimeZone }: { defaultTimeZone?: string } = {}): ActiveHoursParse {
+  if (raw === null || raw === undefined) return { ok: true, value: null };
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return { ok: false, error: "active_hours must be an object {start, end, tz, days?} or null" };
+  }
+  const row = raw as Record<string, unknown>;
+  const start = parseClock(row.start);
+  if (!start) return { ok: false, error: 'active_hours.start must be a 24-hour time like "08:00"' };
+  const end = parseClock(row.end);
+  if (!end) return { ok: false, error: 'active_hours.end must be a 24-hour time like "20:00"' };
+  const tz = String(row.tz ?? row.timeZone ?? defaultTimeZone ?? "").trim();
+  if (!tz) return { ok: false, error: 'active_hours.tz is required (an IANA zone like "America/New_York")' };
+  if (!isTimeZone(tz)) return { ok: false, error: `active_hours.tz "${tz}" is not a time zone this system knows` };
+  const value: ActiveHours = { start: clockText(start), end: clockText(end), tz };
+  if (row.days !== undefined && row.days !== null) {
+    if (!Array.isArray(row.days)) return { ok: false, error: 'active_hours.days must be a list like ["mon", "tue"]' };
+    const picked = new Set<ActiveDay>();
+    for (const d of row.days) {
+      const key = String(d ?? "").trim().toLowerCase() as ActiveDay;
+      if (!ACTIVE_DAYS.includes(key)) {
+        return { ok: false, error: `active_hours.days: "${String(d)}" is not one of ${ACTIVE_DAYS.join(", ")}` };
+      }
+      picked.add(key);
+    }
+    if (!picked.size) return { ok: false, error: "active_hours.days is empty; omit it for every day" };
+    if (picked.size < 7) value.days = ACTIVE_DAYS.filter((d) => picked.has(d));
+  }
+  return { ok: true, value };
+}
+
+/** A stored window, or null when there is none or it does not validate. */
+export function normalizeActiveHours(raw: unknown, fallbackZone?: string): ActiveHours | null {
+  const parsed = parseActiveHours(raw, fallbackZone ? { defaultTimeZone: fallbackZone } : {});
+  return parsed.ok ? parsed.value : null;
+}
+
+/**
+ * The first instant whose wall time in `zone` is at or after `t` on `key`.
+ * Normally the one instant for that wall time (the earlier of two on a DST
+ * fall-back day). Inside a spring-forward gap the wall time never happens, and
+ * the window opens (or closes) at the end of the gap: a 02:30 start on that
+ * day opens at 03:00, not at 03:30.
+ */
+function wallAtOrAfter(key: string, t: TimeOfDay, zone: string): number {
+  const exact = localDateTimeInstants(key, t, zone);
+  if (exact[0] !== undefined) return exact[0];
+  const [year, month, day] = numbersFromKey(key);
+  const target = Date.UTC(year, month - 1, day, t.hour, t.minute, 0, 0);
+  let hi = localDateTimeToMillis(key, t, zone);
+  let lo = hi - 3 * 3600_000;
+  while (hi - lo > 60_000) {
+    const mid = lo + Math.max(60_000, Math.floor((hi - lo) / 120_000) * 60_000);
+    if (wallMillis(localParts(mid, zone)) >= target) hi = mid;
+    else lo = mid;
+  }
+  return hi;
+}
+
+function windowDayAllowed(ah: ActiveHours, key: string): boolean {
+  if (!ah.days) return true;
+  const dow = localWeekdayFromKey(key, ah.tz);
+  const name = ACTIVE_DAYS[dow];
+  return name !== undefined && ah.days.includes(name);
+}
+
+/** [open, close) of the window that opens on local day `key`. */
+function windowOn(ah: ActiveHours, key: string): { open: number; close: number } {
+  const start = parseClock(ah.start)!;
+  const end = parseClock(ah.end)!;
+  const crosses = end.hour * 60 + end.minute <= start.hour * 60 + start.minute;
+  return {
+    open: wallAtOrAfter(key, start, ah.tz),
+    close: wallAtOrAfter(crosses ? addLocalDays(key, 1) : key, end, ah.tz),
+  };
+}
+
+/** True when `now` falls inside the window (always true when there is none). */
+export function inActiveHours(raw: unknown, now: TimeInput, fallbackZone?: string): boolean {
+  const ah = normalizeActiveHours(raw, fallbackZone);
+  if (!ah) return true;
+  const current = asMillis(now);
+  const today = localDateKey(localParts(current, ah.tz));
+  // A window that crosses midnight and opened yesterday may still be open.
+  for (const key of [addLocalDays(today, -1), today]) {
+    if (!windowDayAllowed(ah, key)) continue;
+    const w = windowOn(ah, key);
+    if (w.open <= current && current < w.close) return true;
+  }
+  return false;
+}
+
+/**
+ * When the window is next open: `now` itself when it is open now, else the
+ * next opening. null only for a window with no day that ever opens.
+ */
+export function nextActiveStart(raw: unknown, now: TimeInput, fallbackZone?: string): number | null {
+  const current = asMillis(now);
+  const ah = normalizeActiveHours(raw, fallbackZone);
+  if (!ah || inActiveHours(ah, current)) return current;
+  let key = localDateKey(localParts(current, ah.tz));
+  for (let i = 0; i < 9; i++) {
+    if (windowDayAllowed(ah, key)) {
+      const { open, close } = windowOn(ah, key);
+      // `open < close`: a window that collapses to nothing (02:00-03:00 on a
+      // spring-forward day) never opens.
+      if (open > current && open < close) return open;
+    }
+    key = addLocalDays(key, 1);
+  }
+  return null;
+}
+
+/** "08:00-20:00 America/New_York" plus ", mon tue wed" when limited to days. */
+export function activeHoursLabel(raw: unknown): string {
+  const ah = normalizeActiveHours(raw);
+  if (!ah) return "";
+  return `${ah.start}-${ah.end} ${ah.tz}${ah.days ? `, ${ah.days.join(" ")}` : ""}`;
+}
+
+function hoursSuffix(r: Routine): string {
+  const label = activeHoursLabel(r.activeHours);
+  return label ? ` (active ${label} only)` : "";
+}
+
+/** When the cadence alone would fire next, ignoring the window. */
+export function cadenceNextRunAt(routine: Routine | null | undefined, now: TimeInput, timeZone?: string): number | null {
+  if (!routine) return null;
+  const current = asMillis(now);
+  const list = Array.isArray(routine.triggers) && routine.triggers.length
+    ? routine.triggers.map(normalizeTrigger).filter((t): t is Trigger => t !== null)
+    : [];
+  if (list.length) {
+    let best: number | null = null;
+    for (const t of list) {
+      let next: number | null;
+      if (isElapsedTrigger(t)) next = t.lastRunAt > 0 ? t.lastRunAt + (t.intervalMs || 3600_000) : current;
+      else if (t.nextRunAt !== null && Number.isFinite(t.nextRunAt) && t.nextRunAt > 0) next = t.nextRunAt;
+      else next = nextTriggerOccurrence(t, current, timeZone);
+      if (next !== null && (best === null || next < best)) best = next;
+    }
+    return best;
+  }
+  if (isCalendarRoutine(routine)) return calendarNextRunAt(routine, current, timeZone);
+  const interval = Number(routine.intervalMs);
+  if (interval > 0) return routine.lastRunAt ? routine.lastRunAt + interval : current;
+  return null;
+}
+
+/**
+ * When the routine will actually fire next: the cadence's next fire (now, if
+ * it is overdue), moved to the window's next opening when that falls outside
+ * the active hours.
+ */
+export function routineNextRunAt(routine: Routine | null | undefined, now: TimeInput, timeZone?: string): number | null {
+  const current = asMillis(now);
+  const next = cadenceNextRunAt(routine, current, timeZone);
+  if (next === null) return null;
+  const at = Math.max(next, current);
+  const ah = normalizeActiveHours(routine?.activeHours, timeZone);
+  if (!ah || inActiveHours(ah, at)) return at;
+  return nextActiveStart(ah, at);
+}
+
+/**
+ * A due fire outside the window: move it to the window's next opening instead
+ * of starting a turn. Returns true when the row changed.
+ *
+ * Clock triggers (daily, weekly, cron, once...) carry `nextRunAt`, so the
+ * held fire is written there and fires at the opening; `advanceTrigger` then
+ * resumes the normal cadence. Elapsed triggers (hourly, interval) and legacy
+ * `intervalMs` rows need nothing stored: they stay due by their own clock and
+ * `dueRoutines` keeps them closed until the window opens. A legacy calendar
+ * row (`schedule` + `nextRunAt`) is moved onto its equivalent daily trigger,
+ * because `calendarNextRunAt` would otherwise snap a held time back to the
+ * schedule's own wall time and the day's fire would be lost.
+ */
+export function holdOutsideActiveHours(routine: Routine | null | undefined, now: TimeInput, timeZone?: string): boolean {
+  if (!routine || routine.enabled === false) return false;
+  const ah = normalizeActiveHours(routine.activeHours, timeZone);
+  if (!ah) return false;
+  const current = asMillis(now);
+  if (inActiveHours(ah, current)) return false;
+  const open = nextActiveStart(ah, current);
+  if (open === null) return false;
+  if (Array.isArray(routine.triggers) && routine.triggers.length) {
+    let changed = false;
+    for (const t of routine.triggers) {
+      const row = normalizeTrigger(t);
+      if (!row || isElapsedTrigger(row)) continue;
+      if (!triggerDue(row, current, timeZone)) continue;
+      if (t.nextRunAt !== open) {
+        t.nextRunAt = open;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+  if (isCalendarRoutine(routine)) {
+    const next = calendarNextRunAt(routine, current, timeZone);
+    if (next !== null && current >= next) {
+      routine.triggers = triggersOf(routine).map((t) => ({ ...t, id: t.id || randomUUID(), nextRunAt: open }));
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * After the window changes (set, moved or cleared), drop any fire held for the
+ * old window: each clock trigger goes back to the cadence's next occurrence
+ * after its last fire. One that is overdue fires now (or is held again for the
+ * new window on the next tick).
+ */
+export function rebaseHeldTriggers(routine: Routine | null | undefined, now: TimeInput, timeZone?: string): void {
+  if (!routine || !Array.isArray(routine.triggers)) return;
+  const current = asMillis(now);
+  for (const t of routine.triggers) {
+    const row = normalizeTrigger(t);
+    if (!row || isElapsedTrigger(row)) continue;
+    const base = row.lastRunAt > 0 ? row.lastRunAt : current;
+    t.nextRunAt = nextTriggerOccurrence(row, base, timeZone, { inclusive: row.lastRunAt <= 0 });
+  }
 }
